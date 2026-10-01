@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: arn
+          POSTGRES_PASSWORD: arn
+          POSTGRES_DB: arn_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U arn" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://arn:arn@localhost:5432/arn_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install
+        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Type check
+        run: npm run typecheck
+      - name: Test (unit + PostgreSQL)
+        run: npm test
+      - name: License check (production dependencies)
+        run: npm run licenses
+      - name: License check (including dev tools)
+        run: node scripts/check-licenses.mjs --all
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t arn:ci .
+      - name: Smoke test (Postgres + app)
+        run: |
+          docker network create arn
+          docker run -d --name db --network arn -e POSTGRES_USER=arn -e POSTGRES_PASSWORD=arn -e POSTGRES_DB=arn postgres:16-alpine
+          for i in $(seq 1 30); do docker exec db pg_isready -U arn && break; sleep 1; done
+          docker run -d --name app --network arn -p 8787:8787 \
+            -e NODE_ENV=development -e STORE=postgres -e DATABASE_URL=postgres://arn:arn@db:5432/arn \
+            -e KEY_ENCRYPTION=local -e MASTER_KEY=$(openssl rand -base64 32) -e AUTH_MODE=dev -e ALLOW_MOCK_PROVIDER=true arn:ci
+          for i in $(seq 1 30); do curl -fs localhost:8787/health && break; sleep 1; done
+          ORG=$(curl -fs -X POST localhost:8787/api/orgs -H 'content-type: application/json' -d '{"name":"ci"}' | jq -r .id)
+          H=(-H 'content-type: application/json' -H "x-org-id: $ORG" -H 'x-role: admin')
+          P1=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/providers "${H[@]}" -d '{"vendor":"mock","model":"mock","label":"m1"}' | jq -r .id)
+          P2=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/providers "${H[@]}" -d '{"vendor":"mock","model":"mock","label":"m2"}' | jq -r .id)
+          P3=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/providers "${H[@]}" -d '{"vendor":"mock","model":"mock","label":"judge"}' | jq -r .id)
+          PJ=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/projects "${H[@]}" -d "{\"name\":\"ci\",\"aiConfig\":{\"mode\":\"multi\",\"generatorIds\":[\"$P1\",\"$P2\"],\"evaluatorId\":\"$P3\"}}" | jq -r .id)
+          R=$(curl -fs -X POST localhost:8787/api/projects/$PJ/rounds "${H[@]}" -d '{"answer":"電話予約を減らしたい"}' | jq -r .id)
+          curl -fs -X POST localhost:8787/api/rounds/$R/decision "${H[@]}" -d '{"pick":"merged"}' | jq .nextPhase
+          curl -fs localhost:8787/api/projects/$PJ/spec.md "${H[@]}" | head -20
+          curl -fs localhost:8787/ | grep -q '要件ナビ'
+          curl -fs localhost:8787/vendor/mermaid.min.js > /dev/null
+          curl -fs localhost:8787/THIRD_PARTY_NOTICES.txt | head -3
+      - name: Logs on failure
+        if: failure()
+        run: docker logs app || true
+
+  cdk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/aws
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - name: Type check CDK app
+        run: npx tsc -p tsconfig.json
+      - name: Synthesize (no AWS credentials needed)
+        run: npx cdk synth --quiet
+        env:
+          CDK_DEFAULT_ACCOUNT: "123456789012"
+          CDK_DEFAULT_REGION: ap-northeast-1

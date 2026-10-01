@@ -1,0 +1,22 @@
+{
+  "name": "@arn/deploy-aws",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AWS CDK（Apache-2.0）による AWS 環境の構築。ルートのワークスペースには含めず、必要なときだけ npm install する",
+  "scripts": {
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.170.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

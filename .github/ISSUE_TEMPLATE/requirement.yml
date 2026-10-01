@@ -1,0 +1,43 @@
+name: 要件（新規・追加）
+description: システムへの新しい要件や改善の要望を登録します
+title: "[要件] "
+labels: ["requirement"]
+body:
+  - type: dropdown
+    id: type
+    attributes:
+      label: 区分
+      options:
+        - 目的（BR）
+        - 利用者（AC）
+        - 機能要件（FR）
+        - 非機能要件（NFR）
+        - 制約条件（CN）
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: やりたいこと
+      description: 専門用語は不要です。困っていることや、できるようになりたいことを書いてください。
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: 理由・背景
+  - type: input
+    id: measure
+    attributes:
+      label: 達成の目安
+      description: 例「予約画面がスマホで3秒以内に表示される」
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 優先度
+      options: ["必須", "推奨", "任意"]
+  - type: input
+    id: trace
+    attributes:
+      label: 関連する要件ID
+      description: 要件定義書の ID（例 FR-03）

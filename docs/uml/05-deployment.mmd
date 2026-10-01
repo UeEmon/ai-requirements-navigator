@@ -1,0 +1,36 @@
+flowchart TB
+    subgraph Client[利用者端末]
+        BR[Webブラウザ]
+    end
+    subgraph Run[実行環境：AWS または ローカルDocker（同じコンテナイメージ）]
+        LB[ALB / ローカルはポート公開]
+        APP[アプリコンテナ<br/>Web画面＋API]
+        ORC[AIオーケストレータ]
+        subgraph ADP[AIアダプタ層]
+            A1[Anthropic]
+            A2[OpenAI]
+            A3[Gemini]
+            A4[Ollama]
+        end
+        DB[(PostgreSQL<br/>RDS / postgres コンテナ)]
+        ST[(成果物<br/>S3 / Dockerボリューム)]
+        KMS[APIキー暗号化<br/>AWS KMS / マスターキー]
+        AUTH[認証<br/>Cognito / Keycloak]
+    end
+    subgraph Ext[外部AIサービス]
+        C[Anthropic API]
+        O[OpenAI API]
+        G[Gemini API]
+    end
+    L[ローカルLLM<br/>Ollama]
+
+    BR --> LB --> APP
+    BR -.ログイン.-> AUTH
+    APP --> DB
+    APP --> ST
+    APP --> ORC --> A1 & A2 & A3 & A4
+    APP --> KMS
+    A1 --> C
+    A2 --> O
+    A3 --> G
+    A4 --> L

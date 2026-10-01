@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.vscode/
+.idea/
+apps/web/public/vendor/
+apps/web/public/THIRD_PARTY_NOTICES.txt
+data/
+deploy/aws/cdk.out/

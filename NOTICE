@@ -1,0 +1,8 @@
+AI要件定義支援システム（要件ナビ）テンプレート
+
+本ソフトウェアは、MIT・Apache-2.0 などのオープンソースソフトウェアを利用しています。
+利用しているソフトウェアの一覧と著作権表示・ライセンス本文は、コンテナイメージ内の
+apps/web/public/THIRD_PARTY_NOTICES.txt（画面からは /THIRD_PARTY_NOTICES.txt）にあります。
+このファイルはビルド時に scripts/check-licenses.mjs が生成します。
+
+利用方針は docs/oss-policy.md を参照してください。

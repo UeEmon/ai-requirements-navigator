@@ -1,0 +1,40 @@
+flowchart LR
+    U([業務担当者])
+    PM([プロジェクト管理者])
+    RV([レビュアー])
+    AD([組織の管理者])
+    GAI[[生成AI<br/>Claude / GPT / Gemini / ローカルLLM]]
+    EAI[[評価AI]]
+
+    subgraph SYS[AI要件定義支援システム]
+        UC1((プロジェクトを作成する))
+        UC2((AI構成を選ぶ<br/>単一 / 複数))
+        UC3((ヒアリングに答える))
+        UC4((用語解説を見る))
+        UC5((案を生成する))
+        UC6((案を評価・比較する))
+        UC7((採用案を選ぶ))
+        UC8((要件を編集・版管理する))
+        UC9((UMLを生成する))
+        UC10((仕様書を出力する))
+        UC11((レビュー・承認する))
+        UC12((タスクへ分解する))
+        UC13((AIとAPIキーを登録する<br/>利用量を確認する))
+    end
+
+    PM --- UC1
+    PM --- UC2
+    U --- UC3
+    U --- UC7
+    U --- UC8
+    U --- UC10
+    RV --- UC11
+    RV --- UC12
+    AD --- UC13
+    UC3 -.include.-> UC5
+    UC4 -.extend.-> UC3
+    UC5 -.include.-> UC6
+    UC7 -.include.-> UC8
+    UC10 -.include.-> UC9
+    UC5 --- GAI
+    UC6 --- EAI

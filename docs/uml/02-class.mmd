@@ -1,0 +1,83 @@
+classDiagram
+    direction LR
+    class Organization {
+        +id
+        +name
+    }
+    class User {
+        +id
+        +email
+    }
+    class Membership {
+        +role : admin|editor|reviewer|viewer
+    }
+    class ProviderCredential {
+        +id
+        +vendor : anthropic|openai|gemini|ollama
+        +model
+        +endpoint
+        +encryptedKey
+        +keyLast4
+        +isLocal
+    }
+    class Project {
+        +id
+        +name
+        +purpose
+        +phaseKey
+        +confidential
+    }
+    class AIConfig {
+        +mode : single|multi
+        +generatorIds[]
+        +evaluatorId
+    }
+    class Round {
+        +id
+        +phaseKey
+        +answer
+        +status
+    }
+    class Candidate {
+        +label : A|B|C|D
+        +providerId
+        +content(JSON)
+    }
+    class Evaluation {
+        +scores
+        +totals
+        +comments
+        +recommendation
+        +merged
+    }
+    class Decision {
+        +pick
+        +reason
+        +mapping
+    }
+    class Requirement {
+        +code : BR|AC|FR|NFR|CN-nn
+        +title
+        +description
+        +priority
+        +source
+        +version
+    }
+    class UsageRecord {
+        +inputTokens
+        +outputTokens
+    }
+
+    Organization "1" --> "*" Project
+    Organization "1" --> "*" ProviderCredential : 管理者が登録
+    Organization "1" --> "*" UsageRecord
+    User "1" --> "*" Membership
+    Organization "1" --> "*" Membership
+    Project "1" *-- "1" AIConfig
+    AIConfig "*" --> "1..*" ProviderCredential : uses
+    Project "1" *-- "*" Round
+    Round "1" *-- "1..*" Candidate
+    Round "1" *-- "0..1" Evaluation
+    Round "1" --> "0..1" Decision
+    Decision "1" --> "*" Requirement : creates
+    Project "1" *-- "*" Requirement

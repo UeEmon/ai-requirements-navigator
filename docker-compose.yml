@@ -1,0 +1,65 @@
+# ローカルDockerでの起動:
+#   cp .env.example .env   # MASTER_KEY を設定（npm run gen:key）
+#   docker compose up --build
+#   → http://localhost:8787
+#
+# 任意のプロファイル:
+#   --profile local-llm  … Ollama（ローカルLLM、MIT）
+#   --profile oidc       … Keycloak（OIDC認証、Apache-2.0）
+
+services:
+  app:
+    build: .
+    ports:
+      - "8787:8787"
+    env_file: .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      STORE: postgres
+      DATABASE_URL: postgres://arn:arn@db:5432/arn
+      KEY_ENCRYPTION: local
+      STORAGE: local
+      AUTH_MODE: ${AUTH_MODE:-dev}
+    volumes:
+      - artifacts:/data/artifacts
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: arn
+      POSTGRES_PASSWORD: arn
+      POSTGRES_DB: arn
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arn"]
+      interval: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    profiles: ["oidc"]
+    command: start-dev
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
+  artifacts:
+  ollama:

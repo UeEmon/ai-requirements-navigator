@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>要件ナビ プロトタイプ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@700;900&display=swap">
+<style>
+/* Layout: drafting-table tool — header bar, tab strip, work area (chat + phase/AI rail) */
+:root{
+  --paper:#f3f5f7; --sheet:#ffffff; --ink:#18222d; --ink-2:#55636f; --rule:#d6dde3; --tint:#e8eef4;
+  --accent:#1f5fa8; --accent-ink:#ffffff; --accent-soft:#dde8f5;
+  --good:#2e7d4f; --warn:#a86a10; --bad:#b33a3a; --good-soft:#e1f1e7; --warn-soft:#f8ecd6;
+  --f-display:"Zen Kaku Gothic New","Hiragino Sans","Noto Sans JP",sans-serif;
+  --f-body:"IBM Plex Sans JP","Hiragino Sans","Noto Sans JP",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:6px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --paper:#11171d; --sheet:#182029; --ink:#e3e9ef; --ink-2:#9aa8b4; --rule:#2c3844; --tint:#1f2a35;
+  --accent:#6ea6e8; --accent-ink:#0d1621; --accent-soft:#1d2f45;
+  --good:#6cc492; --warn:#e0a54a; --bad:#e57b7b; --good-soft:#18312a; --warn-soft:#3a2d17; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --paper:#11171d; --sheet:#182029; --ink:#e3e9ef; --ink-2:#9aa8b4; --rule:#2c3844; --tint:#1f2a35;
+  --accent:#6ea6e8; --accent-ink:#0d1621; --accent-soft:#1d2f45;
+  --good:#6cc492; --warn:#e0a54a; --bad:#e57b7b; --good-soft:#18312a; --warn-soft:#3a2d17; color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.65}
+.wrap{max-width:1120px;margin:0 auto;padding-inline:16px;padding-block:0 48px}
+header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px 16px;padding-block:20px 12px;border-bottom:1px solid var(--rule)}
+.brand{font-family:var(--f-display);font-weight:900;font-size:22px;letter-spacing:.02em;margin:0}
+.brand small{display:block;font-family:var(--f-mono);font-weight:400;font-size:11px;color:var(--ink-2);letter-spacing:.08em}
+.proj{font-size:13px;color:var(--ink-2)}
+.proj b{color:var(--ink);font-weight:500}
+.demo{font-family:var(--f-mono);font-size:11px;letter-spacing:.06em;border:1px solid var(--warn);color:var(--warn);padding:1px 6px;border-radius:3px;margin-left:6px;white-space:nowrap}
+nav.tabs{display:flex;gap:4px;overflow-x:auto;padding-block:10px;position:sticky;top:env(safe-area-inset-top,0px);background:var(--paper);z-index:5}
+nav.tabs button{font:inherit;font-size:14px;border:1px solid transparent;background:none;color:var(--ink-2);padding:6px 12px;border-radius:var(--r);cursor:pointer;white-space:nowrap}
+nav.tabs button[aria-selected="true"]{background:var(--sheet);border-color:var(--rule);color:var(--ink);font-weight:500}
+nav.tabs .n{font-family:var(--f-mono);font-size:11px;background:var(--tint);border-radius:9px;padding:0 6px;margin-left:4px}
+button{font:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+@media (max-width:860px){.grid{grid-template-columns:minmax(0,1fr)}.rail{order:-1}}
+.panel{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--r)}
+.rail{display:flex;flex-direction:column;gap:16px}
+.rail .panel{padding:14px 16px}
+h2.lbl{font-family:var(--f-mono);font-weight:500;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);margin:0 0 10px}
+.meter{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.meter .bar{flex:1;height:6px;background:var(--tint);border-radius:3px;overflow:hidden}
+.meter .bar i{display:block;height:100%;background:var(--accent);transition:width .4s}
+.meter span{font-family:var(--f-mono);font-size:12px;font-variant-numeric:tabular-nums}
+ol.phases{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+ol.phases li{display:flex;align-items:center;gap:10px;font-size:14px;padding:4px 0;color:var(--ink-2)}
+ol.phases li .dot{width:20px;height:20px;border-radius:50%;border:1.5px solid var(--rule);display:grid;place-items:center;font-family:var(--f-mono);font-size:11px;flex:none}
+ol.phases li.done{color:var(--ink)}
+ol.phases li.done .dot{background:var(--good);border-color:var(--good);color:var(--sheet)}
+ol.phases li.cur{color:var(--ink);font-weight:500}
+ol.phases li.cur .dot{border-color:var(--accent);color:var(--accent)}
+@media (max-width:860px){ol.phases{flex-direction:row;flex-wrap:wrap;gap:4px 12px}ol.phases li{font-size:13px}}
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--rule);border-radius:var(--r);overflow:hidden;margin-bottom:12px}
+.seg button{border:0;background:none;padding:6px;cursor:pointer;color:var(--ink-2);font-size:13px}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);font-weight:500}
+.field{font-size:12px;color:var(--ink-2);margin:10px 0 4px}
+.chk{display:flex;flex-wrap:wrap;gap:6px}
+.chk label{display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--rule);border-radius:16px;padding:3px 10px;cursor:pointer}
+.chk label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.chk input{accent-color:var(--accent);margin:0}
+select{font:inherit;font-size:13px;width:100%;padding:6px 8px;border:1px solid var(--rule);border-radius:var(--r);background:var(--sheet);color:var(--ink)}
+.note{font-size:12px;margin-top:8px;padding:6px 8px;border-radius:4px}
+.note.warn{background:var(--warn-soft);color:var(--warn)}
+.note.info{background:var(--tint);color:var(--ink-2)}
+/* chat */
+.chat{display:flex;flex-direction:column;min-height:420px}
+.log{padding:16px;display:flex;flex-direction:column;gap:14px}
+.msg{max-width:92%;min-width:0}
+.msg .who{font-family:var(--f-mono);font-size:11px;color:var(--ink-2);letter-spacing:.06em;margin-bottom:2px}
+.msg .body{padding:10px 14px;border-radius:var(--r);background:var(--tint)}
+.msg.user{align-self:flex-end}
+.msg.user .body{background:var(--accent);color:var(--accent-ink)}
+.msg.user .who{text-align:right}
+.msg.sys{max-width:100%;width:100%}
+.phase-tag{display:inline-block;font-family:var(--f-mono);font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 5px;margin-bottom:4px}
+.hint{font-size:13px;color:var(--ink-2);margin-top:4px}
+.term{border-bottom:1.5px dotted var(--accent);cursor:help;position:relative}
+.term:hover::after,.term:focus::after{content:attr(data-tip);position:absolute;left:0;top:calc(100% + 6px);width:min(260px,70vw);background:var(--ink);color:var(--paper);font-size:12px;line-height:1.5;padding:8px 10px;border-radius:4px;z-index:10;font-weight:400}
+.compose{border-top:1px solid var(--rule);padding:12px 16px;display:flex;flex-direction:column;gap:8px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chips button{border:1px dashed var(--accent);color:var(--accent);background:none;border-radius:16px;padding:3px 10px;font-size:13px;cursor:pointer;text-align:left}
+.chips button:hover{background:var(--accent-soft)}
+.row{display:flex;gap:8px}
+textarea{flex:1;min-width:0;font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--rule);border-radius:var(--r);background:var(--sheet);color:var(--ink);resize:vertical;min-height:44px}
+.btn{border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);border-radius:var(--r);padding:7px 14px;cursor:pointer;font-weight:500;font-size:14px;white-space:nowrap}
+.btn.ghost{background:none;color:var(--accent)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.sm{padding:4px 10px;font-size:13px}
+/* generation */
+.gen{border:1px solid var(--rule);border-radius:var(--r);padding:12px;background:var(--sheet)}
+.gen h3{font-size:14px;margin:0 0 8px;font-weight:700}
+.prog{display:grid;grid-template-columns:110px minmax(0,1fr) 64px;gap:8px;align-items:center;font-size:13px;margin:4px 0}
+.prog .bar{height:4px;background:var(--tint);border-radius:2px;overflow:hidden}
+.prog .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width 1.1s ease-out}
+.prog .st{font-family:var(--f-mono);font-size:11px;text-align:right;color:var(--ink-2)}
+.prog .st.ok{color:var(--good)}
+.cands{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:10px}
+.cand{border:1px solid var(--rule);border-radius:var(--r);padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.cand.rec{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.cand header{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
+.cand header b{font-family:var(--f-display);font-size:16px}
+.cand .score{font-family:var(--f-mono);font-size:20px;font-variant-numeric:tabular-nums}
+.cand .score small{font-size:11px;color:var(--ink-2)}
+.pill{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.05em;padding:1px 6px;border-radius:3px;background:var(--accent);color:var(--accent-ink)}
+.pill.merge{background:var(--good);color:var(--sheet)}
+.vendor{font-size:12px;color:var(--ink-2)}
+.cand ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.cand li label{display:flex;gap:6px;font-size:13px;line-height:1.5;cursor:pointer}
+.cand li input{accent-color:var(--accent);margin-top:3px;flex:none}
+.cand li.uniq label::after{content:"独自";font-family:var(--f-mono);font-size:10px;color:var(--good);border:1px solid var(--good);border-radius:3px;padding:0 4px;height:fit-content;margin-left:auto;flex:none}
+.pros{font-size:12px;line-height:1.5;color:var(--ink-2)}
+.pros b{color:var(--good);font-weight:500}.pros b.m{color:var(--bad)}
+.cand .acts{margin-top:auto;padding-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+.evtable{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.evtable th,.evtable td{border-bottom:1px solid var(--rule);padding:4px 6px;text-align:right;white-space:nowrap}
+.evtable th:first-child,.evtable td:first-child{text-align:left}
+.evtable thead th{font-family:var(--f-mono);font-weight:500;font-size:11px;color:var(--ink-2)}
+.scroll{overflow-x:auto}
+.verdict{margin-top:10px;padding:8px 12px;background:var(--accent-soft);border-radius:4px;font-size:13.5px}
+.decide{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}
+.decide input[type=text]{flex:1;min-width:180px;font:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--rule);border-radius:var(--r);background:var(--sheet);color:var(--ink)}
+.reveal{font-size:12.5px;color:var(--ink-2);margin-top:6px}
+/* other tabs */
+section.view{display:none}section.view.on{display:block}
+.sheet{padding:20px}
+.reqtbl{width:100%;border-collapse:collapse;font-size:14px}
+.reqtbl th,.reqtbl td{text-align:left;border-bottom:1px solid var(--rule);padding:8px 8px;vertical-align:top}
+.reqtbl th{font-family:var(--f-mono);font-weight:500;font-size:11px;letter-spacing:.06em;color:var(--ink-2)}
+.reqtbl td.id{font-family:var(--f-mono);font-size:12.5px;white-space:nowrap}
+.src{font-family:var(--f-mono);font-size:11px;color:var(--ink-2);white-space:nowrap}
+.dl{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.dl div{padding:6px 0;border-bottom:1px solid var(--rule)}
+.uml-grid{display:flex;flex-direction:column;gap:16px}
+.uml{padding:16px}
+.uml h3{font-family:var(--f-display);font-size:17px;margin:0 0 4px}
+.uml p{margin:0 0 10px;font-size:13px;color:var(--ink-2)}
+.uml .canvas{overflow-x:auto;background:var(--sheet);text-align:center}
+.uml .canvas svg{max-width:none;height:auto}
+details summary{cursor:pointer;font-size:13px;color:var(--accent);margin-top:8px}
+pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:var(--tint);padding:12px;border-radius:4px;overflow-x:auto;white-space:pre;margin:8px 0 0}
+.spec{max-width:72ch}
+.spec h1{font-family:var(--f-display);font-size:24px;margin:0 0 4px;text-wrap:balance}
+.spec h2{font-family:var(--f-display);font-size:18px;margin:24px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--rule)}
+.spec .meta{font-family:var(--f-mono);font-size:12px;color:var(--ink-2)}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:8px 16px;border-radius:var(--r);font-size:13px;z-index:20}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+  <header class="top">
+    <h1 class="brand"><small>REQUIREMENTS NAVIGATOR</small>要件ナビ</h1>
+    <div class="proj">プロジェクト：<b>美容室のWeb予約システム</b><span class="demo">DEMO・AI応答は模擬</span> <a href="./" style="font-size:12px;margin-left:6px">本番画面へ</a></div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="hear" id="t-hear">ヒアリング</button>
+    <button role="tab" aria-selected="false" data-tab="reqs" id="t-reqs">要件一覧<span class="n" id="reqCount">0</span></button>
+    <button role="tab" aria-selected="false" data-tab="uml" id="t-uml">UML</button>
+    <button role="tab" aria-selected="false" data-tab="spec" id="t-spec">仕様書</button>
+  </nav>
+
+  <section class="view on" id="v-hear">
+    <div class="grid">
+      <div class="panel chat">
+        <div class="log" id="log" aria-live="polite"></div>
+        <div class="compose" id="compose">
+          <div class="chips" id="chips"></div>
+          <div class="row">
+            <textarea id="answer" rows="2" placeholder="自由に回答するか、上の候補を選んでください"></textarea>
+            <button class="btn" id="send">送信</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <div class="panel">
+          <h2 class="lbl">進捗</h2>
+          <div class="meter"><div class="bar"><i id="covBar"></i></div><span id="covTxt">0%</span></div>
+          <ol class="phases" id="phases"></ol>
+        </div>
+        <div class="panel">
+          <h2 class="lbl">AI構成</h2>
+          <div class="seg" role="group" aria-label="AIモード">
+            <button id="mSingle" aria-pressed="false">単一AI</button>
+            <button id="mMulti" aria-pressed="true">複数AI</button>
+          </div>
+          <div class="field">生成AI</div>
+          <div class="chk" id="gens"></div>
+          <div id="evalWrap">
+            <div class="field">評価AI（生成AIとは別のものを推奨）</div>
+            <select id="evaluator"></select>
+          </div>
+          <div id="cfgNote"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="view" id="v-reqs">
+    <div class="panel sheet">
+      <div class="scroll"><table class="reqtbl"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>根拠</th></tr></thead><tbody id="reqBody"></tbody></table></div>
+      <h2 class="lbl" style="margin-top:28px">決定記録</h2>
+      <div class="dl" id="decLog"></div>
+    </div>
+  </section>
+
+  <section class="view" id="v-uml">
+    <div class="uml-grid" id="umlGrid"></div>
+  </section>
+
+  <section class="view" id="v-spec">
+    <div class="panel sheet">
+      <div class="toolbar">
+        <button class="btn sm" id="copySpec">Markdownをコピー</button>
+        <span class="hint">Word / PDF出力は本番版で対応予定</span>
+      </div>
+      <article class="spec" id="specView"></article>
+    </div>
+  </section>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="vendor/mermaid.min.js"></script>
+<script>
+const VENDORS = {
+  c:{name:"Claude", style:"網羅的で例外ケースまで記述"},
+  o:{name:"GPT", style:"構造化され実装寄り"},
+  g:{name:"Gemini", style:"簡潔で運用視点"},
+  l:{name:"ローカルLLM", style:"要点のみ・社外送信なし"}
+};
+const BIAS = {c:{acc:88,con:86,fea:80,cla:84},o:{acc:86,con:84,fea:88,cla:80},g:{acc:82,con:80,fea:82,cla:90},l:{acc:74,con:76,fea:80,cla:78}};
+const WEIGHTS = {cov:.25,acc:.25,con:.20,fea:.15,cla:.15};
+const GLOSS = {
+  "要件":"システムが満たすべき条件。「何ができるか」「どのくらいの品質か」を決めたもの。",
+  "業務フロー":"仕事が始まってから終わるまでの手順の流れ。",
+  "リマインド":"予定を忘れないよう、事前に自動でお知らせすること。",
+  "非機能要件":"機能以外の品質の条件。速さ、止まらなさ、安全性など。",
+  "排他制御":"同じ枠に2人が同時に予約しても、片方だけが成立するようにする仕組み。",
+  "稼働率":"システムが使える状態にある時間の割合。99.5%なら月約3.6時間まで停止を許容。",
+  "制約条件":"予算・期限・既存システムなど、選択肢を狭める前提条件。",
+  "認証":"利用者が本人であることを確認すること。"
+};
+const PHASES = [
+  {name:"目的整理", type:"BR", q:"このシステムで一番解決したい困りごとは何ですか？", chips:[], pool:[]},
+  {name:"利用者定義", type:"AC", q:"誰がこのシステムを使いますか？", chips:[], pool:[]},
+  {name:"業務フロー", type:"FR", q:"予約が入ってから、来店・会計までの業務フローを教えてください。", hint:"いつもの流れを順番に書くだけで大丈夫です。困っている場面があれば一緒に。",
+    chips:["予約→前日にリマインド→来店→施術→会計","当日の無断キャンセルが多くて困っている","担当スタイリストを指名できるようにしたい"],
+    pool:[
+      {t:"顧客はメニュー・日時・担当者を選んで予約する", by:"cogl"},
+      {t:"予約確定時に確認メールを自動送信する", by:"cog"},
+      {t:"来店前日にリマインド通知を自動送信する", by:"col"},
+      {t:"予約の変更・キャンセルは前日まで顧客自身が行える", by:"cg"},
+      {t:"無断キャンセルを記録し、3回で次回予約に事前確認を求める", by:"c"},
+      {t:"スタッフは来店受付と施術完了を記録する", by:"ogl"},
+      {t:"会計は既存レジで行い、システムは予約金額を表示する", by:"o"},
+      {t:"無断キャンセル率を月次で集計して店長に表示する", by:"g"}
+    ]},
+  {name:"機能要件", type:"FR", q:"予約画面と管理画面で、他にできてほしいことはありますか？", hint:"「あったら便利」も歓迎です。優先度は後で決められます。",
+    chips:["空いている時間がひと目で分かるようにしたい","スタッフのシフトを管理したい","前回のメニューを見られると嬉しい"],
+    pool:[
+      {t:"空き枠をカレンダー形式で表示する", by:"cogl"},
+      {t:"メニューの所要時間から予約枠を自動計算する", by:"co"},
+      {t:"会員登録なしでも電話番号の認証で予約できる", by:"cg"},
+      {t:"スタッフの来店履歴画面に前回メニューを表示する", by:"ol"},
+      {t:"店長はシフトを登録し、予約可能枠に反映する", by:"cogl"},
+      {t:"指名料を予約金額に自動で加算する", by:"g"},
+      {t:"LINEでも予約通知を受け取れる", by:"o"}
+    ]},
+  {name:"非機能要件", type:"NFR", q:"速さ・止まらなさ・安全性など、非機能要件で気になることはありますか？", hint:"例：お客様がスマホで待たされない、個人情報が漏れない、など。",
+    chips:["スマホで待たされないこと","個人情報はしっかり守りたい","年配のお客様も多い"],
+    pool:[
+      {t:"予約画面はスマホ回線で3秒以内に表示する", by:"cogl"},
+      {t:"同じ枠への二重予約を排他制御で防ぐ", by:"cg"},
+      {t:"顧客の個人情報は暗号化して保存する", by:"cog"},
+      {t:"稼働率は月99.5%以上とする", by:"o"},
+      {t:"毎日深夜にデータをバックアップする", by:"l"},
+      {t:"文字サイズを大きく切り替えられる", by:"g"}
+    ]},
+  {name:"制約条件", type:"CN", q:"予算・期限・既存の仕組みなど、制約条件を教えてください。", hint:"未定のものは「未定」で構いません。",
+    chips:["3か月後の繁忙期までに使いたい","今のレジはそのまま使う","予算はまだ決まっていない"],
+    pool:[
+      {t:"繁忙期の3か月前までに稼働させる", by:"cog"},
+      {t:"既存レジとは第1期では連携しない", by:"ol"},
+      {t:"個人情報保護法に準拠する", by:"cg"},
+      {t:"利用スタッフは10名以下を想定する", by:"g"},
+      {t:"予算は見積もり後に確定する（未決事項として管理）", by:"c"}
+    ]}
+];
+
+const S = {
+  mode:"multi", gens:["c","o","g"], evaluator:"l", phase:2, round:0,
+  reqs:[
+    {id:"BR-01",type:"BR",t:"電話予約の対応時間を減らし、施術に集中できるようにする",src:"R0 統合案"},
+    {id:"BR-02",type:"BR",t:"営業時間外も24時間予約を受け付ける",src:"R0 統合案"},
+    {id:"AC-01",type:"AC",t:"顧客：スマホから予約・変更する",src:"R1 案B"},
+    {id:"AC-02",type:"AC",t:"スタッフ：予約を確認し、来店と施術を記録する",src:"R1 案B"},
+    {id:"AC-03",type:"AC",t:"店長：シフトと予約状況、キャンセル状況を管理する",src:"R1 案B"}
+  ],
+  decisions:[
+    {r:"R0",phase:"目的整理",pick:"統合案",reason:"Claude案の網羅性とGemini案の簡潔さを両立",map:"A=Gemini / B=Claude / C=GPT"},
+    {r:"R1",phase:"利用者定義",pick:"案B",reason:"店長の役割が明確だった",map:"A=GPT / B=Claude / C=Gemini"}
+  ]
+};
+S.round = 2;
+
+const $ = s=>document.querySelector(s);
+const esc = s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function gloss(text){
+  const re = new RegExp(Object.keys(GLOSS).sort((a,b)=>b.length-a.length).join("|"),"g");
+  return esc(text).replace(re, k=>`<span class="term" tabindex="0" data-tip="${esc(GLOSS[k])}">${k}</span>`);
+}
+function toast(t){const el=$("#toast");el.textContent=t;el.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>el.hidden=true,2200)}
+function hash(s){let h=7;for(const c of s)h=(h*31+c.charCodeAt(0))>>>0;return h}
+
+/* ---------- tabs ---------- */
+document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav.tabs button").forEach(x=>x.setAttribute("aria-selected",x===b));
+  document.querySelectorAll("section.view").forEach(v=>v.classList.toggle("on",v.id==="v-"+b.dataset.tab));
+  if(b.dataset.tab==="uml")renderUML();
+  if(b.dataset.tab==="spec")renderSpec();
+  if(b.dataset.tab==="reqs")renderReqs();
+});
+
+/* ---------- AI config ---------- */
+function renderConfig(){
+  $("#mSingle").setAttribute("aria-pressed",S.mode==="single");
+  $("#mMulti").setAttribute("aria-pressed",S.mode==="multi");
+  $("#gens").innerHTML = Object.entries(VENDORS).map(([k,v])=>
+    `<label><input type="${S.mode==="single"?"radio":"checkbox"}" name="gen" id="gen-${k}" value="${k}" ${S.gens.includes(k)?"checked":""}>${v.name}</label>`).join("");
+  $("#gens").querySelectorAll("input").forEach(i=>i.onchange=()=>{
+    S.gens=[...$("#gens").querySelectorAll("input:checked")].map(x=>x.value);
+    renderConfigNote();
+  });
+  $("#evalWrap").hidden = S.mode==="single";
+  $("#evaluator").innerHTML = Object.entries(VENDORS).map(([k,v])=>`<option value="${k}" ${k===S.evaluator?"selected":""}>${v.name}</option>`).join("");
+  renderConfigNote();
+}
+function renderConfigNote(){
+  let n="";
+  if(S.gens.length===0) n=`<div class="note warn">生成AIを1つ以上選んでください。</div>`;
+  else if(S.mode==="multi" && S.gens.length<2) n=`<div class="note warn">複数AIモードでは生成AIを2つ以上選んでください。</div>`;
+  else if(S.mode==="multi" && S.gens.includes(S.evaluator)) n=`<div class="note warn">評価AIが生成AIにも含まれています。自分の案を高く評価する偏りが出る可能性があります。</div>`;
+  else if(S.mode==="multi") n=`<div class="note info">${S.gens.length}つのAIが並列に案を作り、${VENDORS[S.evaluator].name}が匿名で評価します。</div>`;
+  else n=`<div class="note info">${VENDORS[S.gens[0]].name}が案を1つ作ります。評価は行いません。</div>`;
+  $("#cfgNote").innerHTML=n;
+  $("#send").disabled = !configOK();
+}
+function configOK(){return S.gens.length>0 && (S.mode==="single"||S.gens.length>=2)}
+$("#mSingle").onclick=()=>{S.mode="single";S.gens=S.gens.slice(0,1);if(!S.gens.length)S.gens=["c"];renderConfig()};
+$("#mMulti").onclick=()=>{S.mode="multi";if(S.gens.length<2)S.gens=["c","o","g"];renderConfig()};
+$("#evaluator").onchange=e=>{S.evaluator=e.target.value;renderConfigNote()};
+
+/* ---------- progress ---------- */
+function renderPhases(){
+  $("#phases").innerHTML = PHASES.map((p,i)=>{
+    const cls = i<S.phase?"done":i===S.phase?"cur":"";
+    return `<li class="${cls}"><span class="dot">${i<S.phase?"✓":i+1}</span>${p.name}</li>`;}).join("");
+  const pct = Math.round(S.phase/PHASES.length*100);
+  $("#covBar").style.width=pct+"%"; $("#covTxt").textContent=pct+"%";
+  $("#reqCount").textContent=S.reqs.length;
+}
+
+/* ---------- chat ---------- */
+function addMsg(who,html,cls=""){
+  const d=document.createElement("div");d.className="msg "+cls;
+  d.innerHTML=`<div class="who">${who}</div><div class="body">${html}</div>`;
+  $("#log").appendChild(d);d.scrollIntoView({block:"nearest",behavior:"smooth"});return d;
+}
+function addBlock(el){const d=document.createElement("div");d.className="msg sys";d.appendChild(el);$("#log").appendChild(d);return d}
+function ask(){
+  const p=PHASES[S.phase];
+  if(!p){
+    addMsg("要件ナビ",`すべてのフェーズが完了しました。<b>UML</b> と <b>仕様書</b> タブで成果物を確認できます。`);
+    $("#compose").hidden=true;return;
+  }
+  addMsg("要件ナビ",`<span class="phase-tag">PHASE ${S.phase+1}/${PHASES.length} ${p.name}</span><div>${gloss(p.q)}</div>${p.hint?`<div class="hint">${gloss(p.hint)}</div>`:""}`);
+  $("#chips").innerHTML=p.chips.map(c=>`<button type="button">${esc(c)}</button>`).join("");
+  $("#chips").querySelectorAll("button").forEach(b=>b.onclick=()=>{
+    const t=$("#answer");t.value=t.value?t.value+"／"+b.textContent:b.textContent;t.focus();
+  });
+}
+$("#send").onclick=()=>{
+  const v=$("#answer").value.trim(); if(!v||!configOK())return;
+  addMsg("あなた",esc(v),"user"); $("#answer").value=""; $("#chips").innerHTML="";
+  $("#send").disabled=true; generate(v);
+};
+$("#answer").addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.metaKey||e.ctrlKey))$("#send").click()});
+
+/* ---------- generation & evaluation (simulated) ---------- */
+function candidateFor(v,p){return p.pool.filter(x=>x.by.includes(v)).map(x=>x.t)}
+function scoreFor(v,p,items){
+  const b=BIAS[v], j=k=>((hash(v+p.name+k)%7)-3);
+  const s={cov:Math.round(items.length/p.pool.length*100),acc:b.acc+j("a"),con:b.con+j("c"),fea:b.fea+j("f"),cla:b.cla+j("l")};
+  s.total=Math.round(Object.keys(WEIGHTS).reduce((a,k)=>a+s[k]*WEIGHTS[k],0));
+  return s;
+}
+function generate(answer){
+  const p=PHASES[S.phase], r="R"+S.round, gens=[...S.gens];
+  const box=document.createElement("div");box.className="gen";
+  box.innerHTML=`<h3>${r}：${S.mode==="multi"?gens.length+"つのAIで案を生成中":"案を生成中"}</h3>`+
+    gens.map(g=>`<div class="prog" id="pg-${g}"><span>${VENDORS[g].name}</span><span class="bar"><i></i></span><span class="st">待機中</span></div>`).join("")+
+    (S.mode==="multi"?`<div class="prog" id="pg-ev"><span>評価：${VENDORS[S.evaluator].name}</span><span class="bar"><i></i></span><span class="st">待機中</span></div>`:"");
+  addBlock(box);
+  gens.forEach((g,i)=>setTimeout(()=>{const el=box.querySelector("#pg-"+g);el.querySelector("i").style.width="100%";el.querySelector(".st").textContent="生成中";},150+i*120));
+  gens.forEach((g,i)=>setTimeout(()=>{const st=box.querySelector("#pg-"+g+" .st");st.textContent="完了";st.classList.add("ok")},1300+i*250));
+  const tGen=1300+gens.length*250;
+  if(S.mode==="multi"){
+    setTimeout(()=>{const el=box.querySelector("#pg-ev");el.querySelector("i").style.width="100%";el.querySelector(".st").textContent="匿名化・評価中"},tGen);
+    setTimeout(()=>{const st=box.querySelector("#pg-ev .st");st.textContent="完了";st.classList.add("ok");showMulti(box,p,r,gens,answer)},tGen+1300);
+  } else setTimeout(()=>showSingle(box,p,r,gens[0]),tGen);
+}
+function itemList(items,key,uniqSet){
+  return `<ul>${items.map((t,i)=>`<li class="${uniqSet&&uniqSet.has(t)?"uniq":""}"><label><input type="checkbox" id="${key}-${i}" data-t="${esc(t)}" checked>${gloss(t)}</label></li>`).join("")}</ul>`;
+}
+function showSingle(box,p,r,g){
+  const items=candidateFor(g,p);
+  const el=document.createElement("div");el.className="cands";
+  el.innerHTML=`<div class="cand"><header><b>案</b><span class="vendor">${VENDORS[g].name}</span></header>${itemList(items,r+"s")}
+    <div class="acts"><button class="btn sm" data-act="adopt">チェックした項目を採用</button></div></div>`;
+  box.appendChild(el);
+  box.appendChild(decideRow(r));
+  el.querySelector("[data-act=adopt]").onclick=()=>{
+    const pick=[...el.querySelectorAll("input:checked")].map(i=>i.dataset.t);
+    commit(box,p,r,pick,"案（単一AI）",VENDORS[g].name);
+  };
+}
+function showMulti(box,p,r,gens,answer){
+  const order=[...gens].sort((a,b)=>hash(r+a)-hash(r+b));
+  const labels="ABCD";
+  const C=order.map((g,i)=>{const items=candidateFor(g,p);return {g,label:"案"+labels[i],items,s:scoreFor(g,p,items)}});
+  const all=new Set(C.flatMap(c=>c.items));
+  const count=t=>C.filter(c=>c.items.includes(t)).length;
+  const merged=p.pool.map(x=>x.t).filter(t=>all.has(t));
+  const ms={cov:Math.round(merged.length/p.pool.length*100)};
+  ["acc","con","fea","cla"].forEach(k=>ms[k]=Math.max(...C.map(c=>c.s[k]))-2);
+  ms.total=Math.round(Object.keys(WEIGHTS).reduce((a,k)=>a+ms[k]*WEIGHTS[k],0));
+  const best=[...C].sort((a,b)=>b.s.total-a.s.total)[0];
+  const recMerged = ms.total>=best.s.total;
+  const wrap=document.createElement("div");
+  const rows=[["網羅性","cov"],["正確性","acc"],["一貫性","con"],["実現可能性","fea"],["分かりやすさ","cla"]];
+  wrap.innerHTML=`<div class="scroll" style="margin-top:12px"><table class="evtable"><thead><tr><th>評価基準（重み）</th>${C.map(c=>`<th>${c.label}</th>`).join("")}<th>統合案</th></tr></thead><tbody>
+    ${rows.map(([n,k])=>`<tr><td>${n}（${WEIGHTS[k]*100}%）</td>${C.map(c=>`<td>${c.s[k]}</td>`).join("")}<td>${ms[k]}</td></tr>`).join("")}
+    <tr><td><b>総合</b></td>${C.map(c=>`<td><b>${c.s.total}</b></td>`).join("")}<td><b>${ms.total}</b></td></tr></tbody></table></div>
+    <div class="verdict"><b>評価AIの所見：</b>${recMerged
+      ?`各案に独自の要件があり、どれか1案だけでは抜けが出ます。全${merged.length}項目を含む<b>統合案</b>を推奨します。不要な項目はチェックを外してください。`
+      :`${best.label}が最も網羅的です。${best.label}を基本に、他案の独自項目を追加するか検討してください。`}</div>`;
+  const grid=document.createElement("div");grid.className="cands";
+  C.forEach(c=>{
+    const uniq=new Set(c.items.filter(t=>count(t)===1));
+    const missing=[...all].filter(t=>!c.items.includes(t)).length;
+    const d=document.createElement("div");d.className="cand"+(!recMerged&&c===best?" rec":"");
+    d.innerHTML=`<header><b>${c.label}</b>${!recMerged&&c===best?`<span class="pill">推奨</span>`:""}<span class="score">${c.s.total}<small>/100</small></span></header>
+      <div class="pros"><b>強み</b> ${uniq.size?`独自の観点が${uniq.size}件`:`他案と共通の基本項目を押さえている`}　<b class="m">弱み</b> ${missing?`他案にある${missing}件が抜けている`:"抜けなし"}</div>
+      ${itemList(c.items,r+c.label,uniq)}
+      <div class="acts"><button class="btn sm ghost">この案のチェック項目を採用</button></div>`;
+    d.querySelector("button").onclick=()=>commit(box,p,r,[...d.querySelectorAll("input:checked")].map(i=>i.dataset.t),c.label,mapText(C));
+    grid.appendChild(d);
+  });
+  const m=document.createElement("div");m.className="cand"+(recMerged?" rec":"");
+  m.innerHTML=`<header><b>統合案</b><span class="pill merge">評価AI作成</span>${recMerged?`<span class="pill">推奨</span>`:""}<span class="score">${ms.total}<small>/100</small></span></header>
+    <div class="pros">全案の要件を重複なく統合。各項目を何案が挙げたかを表示。</div>
+    <ul>${merged.map((t,i)=>`<li><label><input type="checkbox" id="${r}m-${i}" data-t="${esc(t)}" ${count(t)>=2||recMerged?"checked":""}>${gloss(t)}<span class="src">&nbsp;${count(t)}/${C.length}</span></label></li>`).join("")}</ul>
+    <div class="acts"><button class="btn sm">統合案のチェック項目を採用</button></div>`;
+  m.querySelector("button").onclick=()=>commit(box,p,r,[...m.querySelectorAll("input:checked")].map(i=>i.dataset.t),"統合案",mapText(C));
+  grid.prepend(m);
+  wrap.appendChild(grid);
+  box.appendChild(wrap);
+  box.appendChild(decideRow(r));
+  box.scrollIntoView({block:"start",behavior:"smooth"});
+}
+function mapText(C){return C.map(c=>c.label.replace("案","")+"="+VENDORS[c.g].name).join(" / ")}
+function decideRow(r){
+  const d=document.createElement("div");d.className="decide";
+  d.innerHTML=`<input type="text" id="reason-${r}" placeholder="採用理由（任意）：例）抜けが少ないため">
+    <button class="btn sm ghost" data-act="regen">条件を変えて再生成</button>`;
+  d.querySelector("[data-act=regen]").onclick=()=>{
+    d.closest(".gen").querySelectorAll("button,input").forEach(x=>x.disabled=true);
+    addMsg("要件ナビ","了解しました。補足があれば入力して、もう一度送信してください。");
+    $("#send").disabled=false; ask();
+  };
+  return d;
+}
+function commit(box,p,r,picked,pickLabel,map){
+  if(!picked.length){toast("採用する項目を1つ以上チェックしてください");return}
+  const reason=(box.querySelector("input[type=text]")||{}).value||"";
+  const prefix=p.type, n=S.reqs.filter(x=>x.type===prefix).length;
+  picked.forEach((t,i)=>S.reqs.push({id:`${prefix}-${String(n+i+1).padStart(2,"0")}`,type:prefix,t,src:`${r} ${pickLabel}`}));
+  S.decisions.push({r,phase:p.name,pick:pickLabel,reason:reason||"（理由未入力）",map});
+  box.querySelectorAll("button,input").forEach(x=>x.disabled=true);
+  const rv=document.createElement("div");rv.className="reveal";
+  rv.textContent=`${pickLabel}から${picked.length}件を要件に追加しました。${S.mode==="multi"?"匿名化の内訳："+map:""}`;
+  box.appendChild(rv);
+  S.round++; S.phase++; renderPhases(); $("#send").disabled=false;
+  setTimeout(ask,400);
+}
+
+/* ---------- requirements tab ---------- */
+const TYPE_NAME={BR:"目的",AC:"利用者",FR:"機能",NFR:"非機能",CN:"制約"};
+function renderReqs(){
+  $("#reqBody").innerHTML=S.reqs.map(x=>`<tr><td class="id">${x.id}</td><td>${TYPE_NAME[x.type]}</td><td>${gloss(x.t)}</td><td class="src">${esc(x.src)}</td></tr>`).join("");
+  $("#decLog").innerHTML=[...S.decisions].reverse().map(d=>`<div><b>${d.r}</b>　${esc(d.phase)}：${esc(d.pick)}を採用 — ${esc(d.reason)}<br><span class="src">${esc(d.map||"")}</span></div>`).join("");
+}
+
+/* ---------- UML ---------- */
+const clean=s=>s.replace(/["\[\]{}()<>#;|]/g,"").replace(/：/g," ");
+function umlSources(){
+  const actors=S.reqs.filter(x=>x.type==="AC").map(x=>x.t.split("：")[0]);
+  const frs=S.reqs.filter(x=>x.type==="FR");
+  const who=t=>/店長|シフト|集計/.test(t)?"店長":/スタッフ|受付|施術|履歴/.test(t)?"スタッフ":"顧客";
+  let uc="flowchart LR\n";
+  actors.forEach((a,i)=>uc+=`  A${i}(["${clean(a)}"])\n`);
+  uc+=`  subgraph SYS["美容室Web予約システム"]\n`;
+  if(!frs.length) uc+=`    U0(("機能要件は未確定"))\n`;
+  frs.forEach((f,i)=>uc+=`    U${i}(("${f.id} ${clean(f.t.length>22?f.t.slice(0,22)+"…":f.t)}"))\n`);
+  uc+="  end\n";
+  frs.forEach((f,i)=>{const ai=actors.indexOf(who(f.t));uc+=`  A${ai<0?0:ai} --- U${i}\n`});
+  const cls=`classDiagram
+  direction LR
+  class Customer{+name +phone +email +noShowCount}
+  class Staff{+name +role}
+  class Shift{+date +start +end}
+  class Menu{+name +minutes +price}
+  class Reservation{+startAt +status +total +reserve() +cancel()}
+  class Notification{+channel +sendAt +type}
+  Customer "1" --> "*" Reservation
+  Staff "1" --> "*" Reservation : 担当
+  Staff "1" --> "*" Shift
+  Reservation "*" --> "1..*" Menu
+  Reservation "1" --> "*" Notification`;
+  const seq=`sequenceDiagram
+  actor C as 顧客
+  participant W as 予約画面
+  participant S as 予約サーバ
+  participant N as 通知サービス
+  C->>W: メニュー・日時・担当者を選ぶ
+  W->>S: 空き枠を問い合わせ
+  S-->>W: 空き枠一覧
+  C->>W: 予約を確定
+  W->>S: 予約登録（排他制御）
+  alt 枠が空いている
+    S-->>W: 予約完了
+    S->>N: 確認メール送信
+    N-->>C: 予約確認
+  else 先に埋まった
+    S-->>W: 他の枠を提案
+  end
+  Note over S,N: 来店前日にリマインド送信`;
+  const st=`stateDiagram-v2
+  [*] --> 仮予約
+  仮予約 --> 確定 : 登録成功
+  確定 --> 変更済み : 前日までに変更
+  変更済み --> 確定
+  確定 --> キャンセル : 前日までに取消
+  確定 --> 来店済み : 受付
+  確定 --> 無断キャンセル : 来店なし
+  来店済み --> 施術完了
+  施術完了 --> [*]
+  キャンセル --> [*]
+  無断キャンセル --> [*]`;
+  return [
+    {k:"uc",h:"ユースケース図",p:`採用済みの機能要件 ${frs.length}件から自動生成。要件を追加すると更新されます。`,src:uc},
+    {k:"cls",h:"クラス図（ドメインモデル）",p:"予約・顧客・スタッフ・メニューの関係。",src:cls},
+    {k:"seq",h:"シーケンス図：予約登録",p:"二重予約を防ぐ排他制御の位置を示します。",src:seq},
+    {k:"st",h:"状態遷移図：予約",p:"キャンセル・無断キャンセルの扱いを含む予約のライフサイクル。",src:st}
+  ];
+}
+let mmReady=false;
+function isDark(){const a=document.documentElement.dataset.theme;return a?a==="dark":matchMedia("(prefers-color-scheme: dark)").matches}
+async function renderUML(){
+  const list=umlSources();
+  $("#umlGrid").innerHTML=list.map(u=>`<div class="panel uml"><h3>${u.h}</h3><p>${esc(u.p)}</p><div class="canvas" id="cv-${u.k}"><span class="hint">描画中…</span></div>
+    <details><summary>Mermaidソースを表示</summary><pre class="code">${esc(u.src)}</pre><button class="btn sm ghost" style="margin-top:8px" data-src="${u.k}">ソースをコピー</button></details></div>`).join("");
+  $("#umlGrid").querySelectorAll("[data-src]").forEach(b=>b.onclick=()=>copy(list.find(x=>x.k===b.dataset.src).src));
+  if(!window.mermaid){list.forEach(u=>$("#cv-"+u.k).innerHTML=`<span class="hint">図の描画ライブラリを読み込めませんでした。ソースを表示してください。</span>`);return}
+  if(!mmReady){mermaid.initialize({startOnLoad:false,theme:isDark()?"dark":"neutral",securityLevel:"strict",fontFamily:"IBM Plex Sans JP, sans-serif"});mmReady=true}
+  for(const u of list){
+    try{const {svg}=await mermaid.render("mm-"+u.k+"-"+Date.now(),u.src);$("#cv-"+u.k).innerHTML=svg}
+    catch(e){$("#cv-"+u.k).innerHTML=`<span class="hint">この図は描画できませんでした。ソースを確認してください。</span>`}
+  }
+}
+
+/* ---------- spec ---------- */
+function specMarkdown(){
+  const sec=(t,ty)=>{const r=S.reqs.filter(x=>x.type===ty);return `## ${t}\n\n`+(r.length?`| ID | 内容 | 根拠 |\n| --- | --- | --- |\n`+r.map(x=>`| ${x.id} | ${x.t} | ${x.src} |`).join("\n"):"（未確定）")+"\n"};
+  const today=new Date().toISOString().slice(0,10);
+  let md=`# 美容室のWeb予約システム 要件定義書\n\n作成日：${today}　生成：要件ナビ（AI構成：${S.mode==="multi"?"複数AI＋評価AI":"単一AI"}）\n\n`;
+  md+=sec("1. 目的","BR")+"\n"+sec("2. 利用者","AC")+"\n"+sec("3. 機能要件","FR")+"\n"+sec("4. 非機能要件","NFR")+"\n"+sec("5. 制約条件","CN")+"\n";
+  md+=`## 6. UML\n\n`+umlSources().map(u=>`### ${u.h}\n\n\`\`\`mermaid\n${u.src}\n\`\`\`\n`).join("\n")+"\n";
+  md+=`## 7. 決定記録\n\n`+S.decisions.map(d=>`- ${d.r} ${d.phase}：${d.pick}を採用（${d.reason}）${d.map?" ["+d.map+"]":""}`).join("\n")+"\n";
+  return md;
+}
+function renderSpec(){
+  const today=new Date().toISOString().slice(0,10);
+  const sec=(t,ty)=>{const r=S.reqs.filter(x=>x.type===ty);return `<h2>${t}</h2>`+(r.length?`<div class="scroll"><table class="reqtbl"><thead><tr><th>ID</th><th>内容</th><th>根拠</th></tr></thead><tbody>${r.map(x=>`<tr><td class="id">${x.id}</td><td>${esc(x.t)}</td><td class="src">${esc(x.src)}</td></tr>`).join("")}</tbody></table></div>`:`<p class="hint">未確定。ヒアリングを進めると追加されます。</p>`)};
+  $("#specView").innerHTML=`<h1>美容室のWeb予約システム 要件定義書</h1><div class="meta">${today} ・ 要件 ${S.reqs.length}件 ・ 決定 ${S.decisions.length}回</div>`+
+    sec("1. 目的","BR")+sec("2. 利用者","AC")+sec("3. 機能要件","FR")+sec("4. 非機能要件","NFR")+sec("5. 制約条件","CN")+
+    `<h2>6. UML</h2><p>UMLタブの4図（ユースケース・クラス・シーケンス・状態遷移）を、Markdown出力時にMermaid形式で同梱します。</p>`+
+    `<h2>7. 決定記録</h2><div class="dl">${S.decisions.map(d=>`<div><b>${d.r}</b>　${esc(d.phase)}：${esc(d.pick)}を採用 — ${esc(d.reason)}</div>`).join("")}</div>`;
+}
+async function copy(text){
+  try{await navigator.clipboard.writeText(text);toast("コピーしました")}
+  catch(e){const t=document.createElement("textarea");t.value=text;document.body.appendChild(t);t.select();try{document.execCommand("copy");toast("コピーしました")}catch(_){toast("コピーできませんでした")}t.remove()}
+}
+$("#copySpec").onclick=()=>copy(specMarkdown());
+
+/* ---------- boot ---------- */
+renderConfig(); renderPhases();
+addMsg("要件ナビ",`サンプルプロジェクト「美容室のWeb予約システム」です。目的整理と利用者定義は完了済み（要件5件）。続きから進めましょう。`);
+ask();
+</script>
+
+</body>
+</html>

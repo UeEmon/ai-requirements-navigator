@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>要件ナビ</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@700;900&display=swap">
+<style>
+/* Layout: 接続バー → タブ → 作業領域。apps/web/public/index.html（デモ）と同じトークン */
+:root{
+  --paper:#f3f5f7; --sheet:#ffffff; --ink:#18222d; --ink-2:#55636f; --rule:#d6dde3; --tint:#e8eef4;
+  --accent:#1f5fa8; --accent-ink:#ffffff; --accent-soft:#dde8f5;
+  --good:#2e7d4f; --warn:#a86a10; --bad:#b33a3a; --warn-soft:#f8ecd6; --bad-soft:#f7e1e1;
+  --f-display:"Zen Kaku Gothic New","Hiragino Sans","Noto Sans JP",sans-serif;
+  --f-body:"IBM Plex Sans JP","Hiragino Sans","Noto Sans JP",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace; --r:6px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --paper:#11171d; --sheet:#182029; --ink:#e3e9ef; --ink-2:#9aa8b4; --rule:#2c3844; --tint:#1f2a35;
+  --accent:#6ea6e8; --accent-ink:#0d1621; --accent-soft:#1d2f45; --good:#6cc492; --warn:#e0a54a; --bad:#e57b7b;
+  --warn-soft:#3a2d17; --bad-soft:#3a1f1f; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --paper:#11171d; --sheet:#182029; --ink:#e3e9ef; --ink-2:#9aa8b4; --rule:#2c3844; --tint:#1f2a35;
+  --accent:#6ea6e8; --accent-ink:#0d1621; --accent-soft:#1d2f45; --good:#6cc492; --warn:#e0a54a; --bad:#e57b7b;
+  --warn-soft:#3a2d17; --bad-soft:#3a1f1f; color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.65}
+.wrap{max-width:1120px;margin:0 auto;padding-inline:16px;padding-block:0 48px}
+header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px 16px;padding-block:20px 12px;border-bottom:1px solid var(--rule)}
+.brand{font-family:var(--f-display);font-weight:900;font-size:22px;margin:0}
+.brand small{display:block;font-family:var(--f-mono);font-weight:400;font-size:11px;color:var(--ink-2);letter-spacing:.08em}
+.conn{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px}
+input,select,textarea{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--rule);border-radius:var(--r);background:var(--sheet);color:var(--ink);min-width:0}
+textarea{width:100%;resize:vertical}
+label.f{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--ink-2)}
+.btn{font:inherit;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);border-radius:var(--r);padding:6px 14px;cursor:pointer;font-weight:500;font-size:14px;white-space:nowrap}
+.btn.ghost{background:none;color:var(--accent)}
+.btn.sm{padding:3px 10px;font-size:13px}
+.btn.danger{border-color:var(--bad);color:var(--bad);background:none}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+nav.tabs{display:flex;gap:4px;overflow-x:auto;padding-block:10px;position:sticky;top:env(safe-area-inset-top,0px);background:var(--paper);z-index:5}
+nav.tabs button{font:inherit;font-size:14px;border:1px solid transparent;background:none;color:var(--ink-2);padding:6px 12px;border-radius:var(--r);cursor:pointer;white-space:nowrap}
+nav.tabs button[aria-selected="true"]{background:var(--sheet);border-color:var(--rule);color:var(--ink);font-weight:500}
+section.view{display:none}section.view.on{display:block}
+.panel{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--r);padding:16px 18px;margin-bottom:16px;min-width:0}
+h2{font-family:var(--f-display);font-size:18px;margin:0 0 10px}
+h3{font-size:14px;margin:0 0 8px}
+.lbl{font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2)}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.hint{font-size:13px;color:var(--ink-2)}
+.note{font-size:13px;padding:8px 10px;border-radius:4px;margin-top:8px}
+.note.warn{background:var(--warn-soft);color:var(--warn)}
+.note.err{background:var(--bad-soft);color:var(--bad)}
+.scroll{overflow-x:auto}
+table.t{width:100%;border-collapse:collapse;font-size:14px}
+table.t th,table.t td{text-align:left;border-bottom:1px solid var(--rule);padding:7px 8px;vertical-align:top}
+table.t th{font-family:var(--f-mono);font-weight:500;font-size:11px;color:var(--ink-2)}
+td.mono,.mono{font-family:var(--f-mono);font-size:12.5px;white-space:nowrap}
+.phases{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 12px;padding:0;list-style:none;font-size:13px;color:var(--ink-2)}
+.phases li.done{color:var(--good)}.phases li.cur{color:var(--accent);font-weight:700}
+.q{font-size:16px;font-weight:500;margin:4px 0 10px}
+.cands{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:12px}
+.cand{border:1px solid var(--rule);border-radius:var(--r);padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.cand.rec{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.cand header{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
+.cand header b{font-family:var(--f-display);font-size:16px}
+.score{font-family:var(--f-mono);font-size:20px;font-variant-numeric:tabular-nums}
+.pill{font-family:var(--f-mono);font-size:10.5px;padding:1px 6px;border-radius:3px;background:var(--accent);color:var(--accent-ink)}
+.cand ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.cand li label{display:flex;gap:6px;font-size:13px;line-height:1.5;cursor:pointer}
+.cand li input{margin-top:3px;flex:none;accent-color:var(--accent)}
+.tag{font-family:var(--f-mono);font-size:10.5px;color:var(--ink-2)}
+.cmt{font-size:12px;color:var(--ink-2);line-height:1.5}
+.verdict{margin-top:10px;padding:8px 12px;background:var(--accent-soft);border-radius:4px;font-size:13.5px}
+pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:var(--tint);padding:12px;border-radius:4px;overflow-x:auto;white-space:pre;margin:8px 0 0}
+.canvas{overflow-x:auto;text-align:center}
+.canvas svg{max-width:none;height:auto}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:8px 16px;border-radius:var(--r);font-size:13px;z-index:20}
+.chk{display:flex;flex-wrap:wrap;gap:6px}
+.chk label{display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--rule);border-radius:16px;padding:3px 10px;cursor:pointer}
+.chk label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+  <header class="top">
+    <h1 class="brand"><small>REQUIREMENTS NAVIGATOR</small>要件ナビ</h1>
+    <div class="conn" id="conn"></div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="hear" aria-selected="true" id="t-hear">ヒアリング</button>
+    <button role="tab" data-tab="reqs" aria-selected="false" id="t-reqs">要件一覧</button>
+    <button role="tab" data-tab="uml" aria-selected="false" id="t-uml">UML</button>
+    <button role="tab" data-tab="spec" aria-selected="false" id="t-spec">仕様書</button>
+    <button role="tab" data-tab="admin" aria-selected="false" id="t-admin">AI設定・プロジェクト</button>
+  </nav>
+
+  <section class="view on" id="v-hear"><div id="hear"></div></section>
+  <section class="view" id="v-reqs"><div class="panel"><div class="scroll" id="reqs"></div><h3 style="margin-top:20px">決定記録</h3><div id="decs"></div></div></section>
+  <section class="view" id="v-uml"><div class="panel"><h2>ユースケース図</h2><p class="hint">採用済みの要件から生成します。</p><div class="canvas" id="umlCanvas"></div>
+    <details><summary class="hint">Mermaid / PlantUML ソース</summary><pre class="code" id="umlMm"></pre><pre class="code" id="umlPu"></pre></details></div></section>
+  <section class="view" id="v-spec"><div class="panel"><div class="row" style="margin-bottom:12px">
+    <button class="btn sm" id="copySpec">Markdownをコピー</button><button class="btn sm ghost" id="saveSpec">版として保存</button><span class="hint" id="specMsg"></span></div>
+    <pre class="code" id="spec" style="white-space:pre-wrap"></pre></div></section>
+  <section class="view" id="v-admin"><div class="grid2">
+    <div class="panel" id="provPanel"></div>
+    <div class="panel" id="projPanel"></div>
+  </div><div class="panel" id="usagePanel" hidden></div></section>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="vendor/mermaid.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const store = { get(k){try{return localStorage.getItem("arn."+k)}catch(e){return null}}, set(k,v){try{v==null?localStorage.removeItem("arn."+k):localStorage.setItem("arn."+k,v)}catch(e){}} };
+const S = { meta:null, orgId:store.get("orgId")||"", role:store.get("role")||"admin", token:store.get("token")||"", providers:[], project:null, round:null };
+function toast(t){const el=$("#toast");el.textContent=t;el.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>el.hidden=true,2600)}
+
+async function api(path, opts={}){
+  const headers = {"content-type":"application/json", ...(opts.headers||{})};
+  if (S.meta?.auth === "dev") { headers["x-org-id"] = S.orgId; headers["x-role"] = S.role; }
+  else if (S.token) headers["authorization"] = "Bearer " + S.token;
+  const res = await fetch(path, {...opts, headers, body: opts.body && typeof opts.body !== "string" ? JSON.stringify(opts.body) : opts.body});
+  if (res.status === 204) return null;
+  const ct = res.headers.get("content-type") || "";
+  const data = ct.includes("json") ? await res.json() : await res.text();
+  if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+  return data;
+}
+
+/* ---------- 接続 ---------- */
+function renderConn(){
+  const dev = S.meta?.auth === "dev";
+  $("#conn").innerHTML = dev
+    ? `<span class="hint">開発用ログイン</span>
+       <input id="cOrg" placeholder="組織ID" value="${esc(S.orgId)}" style="width:15em">
+       <select id="cRole">${["admin","editor","reviewer","viewer"].map(r=>`<option ${r===S.role?"selected":""}>${r}</option>`).join("")}</select>
+       <button class="btn sm ghost" id="cNewOrg">組織を作成</button>`
+    : `<input id="cTok" type="password" placeholder="IDトークン（Cognito / Keycloak）" value="${esc(S.token)}" style="width:18em">
+       <button class="btn sm ghost" id="cNewOrg">組織を作成</button>`;
+  if (dev){
+    $("#cOrg").onchange = e => { S.orgId = e.target.value.trim(); store.set("orgId", S.orgId); reload(); };
+    $("#cRole").onchange = e => { S.role = e.target.value; store.set("role", S.role); reload(); };
+  } else $("#cTok").onchange = e => { S.token = e.target.value.trim(); store.set("token", S.token); reload(); };
+  $("#cNewOrg").onclick = createOrg;
+}
+async function createOrg(){
+  const panel = $("#hear");
+  panel.innerHTML = `<div class="panel"><h2>組織を作成</h2><div class="row">
+    <label class="f">組織名<input id="oName" value="サンプル組織"></label>
+    ${S.meta?.auth==="dev"?"":`<label class="f">初期セットアップ用トークン<input id="oTok" type="password"></label>`}
+    <button class="btn" id="oGo">作成</button></div><div id="oMsg"></div></div>`;
+  $("#oGo").onclick = async () => {
+    try{
+      const headers = $("#oTok") ? {"x-bootstrap-token": $("#oTok").value} : {};
+      const org = await api("/api/orgs", {method:"POST", body:{name:$("#oName").value}, headers});
+      S.orgId = org.id; store.set("orgId", org.id); toast("組織を作成しました");
+      renderConn(); reload(); switchTab("admin");
+    }catch(e){ $("#oMsg").innerHTML = `<div class="note err">${esc(e.message)}</div>` }
+  };
+}
+
+/* ---------- タブ ---------- */
+function switchTab(t){
+  document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-selected", b.dataset.tab===t));
+  document.querySelectorAll("section.view").forEach(v=>v.classList.toggle("on", v.id==="v-"+t));
+  ({reqs:loadReqs, uml:loadUml, spec:loadSpec, admin:renderAdmin}[t]||(()=>{}))();
+}
+document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
+
+/* ---------- AI設定・プロジェクト ---------- */
+const VENDORS = {anthropic:"Claude（Anthropic）", openai:"GPT（OpenAI）", gemini:"Gemini（Google）", ollama:"ローカルLLM（Ollama）", mock:"模擬AI（開発用）"};
+async function loadProviders(){ S.providers = S.orgId || S.token ? await api(`/api/orgs/${S.orgId}/providers`).catch(()=>[]) : []; }
+function renderAdmin(){
+  const isAdmin = S.role === "admin" || S.meta?.auth !== "dev";
+  $("#provPanel").innerHTML = `<h2>AIの登録（組織の管理者）</h2>
+    <p class="hint">APIキーは組織ごとに登録し、暗号化して保存します。表示は末尾4桁のみです。</p>
+    <div class="scroll"><table class="t"><thead><tr><th>名前</th><th>種類</th><th>モデル</th><th>キー</th><th></th></tr></thead><tbody>
+    ${S.providers.map(p=>`<tr><td>${esc(p.label)}</td><td>${esc(VENDORS[p.vendor]||p.vendor)}</td><td class="mono">${esc(p.model)}</td><td class="mono">${esc(p.apiKey||"―")}</td>
+      <td>${isAdmin?`<button class="btn sm danger" data-del="${p.id}">削除</button>`:""}</td></tr>`).join("") || `<tr><td colspan="5" class="hint">まだ登録されていません</td></tr>`}
+    </tbody></table></div>
+    ${isAdmin?`<h3 style="margin-top:16px">追加</h3><div class="row">
+      <label class="f">種類<select id="pV">${Object.entries(VENDORS).filter(([k])=>k!=="mock"||S.meta?.allowMock).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label>
+      <label class="f">モデル名<input id="pM" placeholder="各社の最新モデル名"></label>
+      <label class="f">表示名<input id="pL" placeholder="任意"></label>
+      <label class="f" id="pKw">APIキー<input id="pK" type="password" autocomplete="off"></label>
+      <label class="f" id="pEw" hidden>接続先<input id="pE" placeholder="http://ollama:11434"></label>
+      <button class="btn" id="pAdd">登録</button></div><div id="pMsg"></div>`:`<p class="note warn">登録・削除は admin 権限が必要です。</p>`}`;
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{ try{await api(`/api/orgs/${S.orgId}/providers/${b.dataset.del}`,{method:"DELETE"}); await loadProviders(); renderAdmin(); toast("削除しました")}catch(e){toast(e.message)} });
+  if ($("#pV")){
+    const sync=()=>{ const v=$("#pV").value; $("#pKw").hidden = v==="ollama"||v==="mock"; $("#pEw").hidden = v!=="ollama"; if(v==="mock")$("#pM").value="mock"; };
+    $("#pV").onchange=sync; sync();
+    $("#pAdd").onclick=async()=>{
+      const b={vendor:$("#pV").value, model:$("#pM").value.trim()};
+      if($("#pL").value.trim()) b.label=$("#pL").value.trim();
+      if(!$("#pKw").hidden && $("#pK").value) b.apiKey=$("#pK").value;
+      if(!$("#pEw").hidden && $("#pE").value) b.endpoint=$("#pE").value.trim();
+      try{ await api(`/api/orgs/${S.orgId}/providers`,{method:"POST",body:b}); await loadProviders(); renderAdmin(); toast("登録しました") }
+      catch(e){ $("#pMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+    };
+  }
+  const gens = S.providers.map(p=>`<label><input type="checkbox" name="g" value="${p.id}" id="g-${p.id}">${esc(p.label)}</label>`).join("");
+  $("#projPanel").innerHTML = `<h2>プロジェクト</h2>
+    ${S.project?`<p>現在: <b>${esc(S.project.name)}</b> <span class="mono">${esc(S.project.id)}</span></p>`:""}
+    <div class="row"><label class="f" style="flex:1">既存のプロジェクトIDを開く<input id="jOpen" placeholder="プロジェクトID"></label><button class="btn ghost" id="jOpenGo">開く</button></div>
+    <h3 style="margin-top:16px">新規作成</h3>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <label class="f">名称<input id="jN" placeholder="例：美容室のWeb予約システム"></label>
+      <label class="f">目的<textarea id="jP" rows="2" placeholder="何を解決したいか"></textarea></label>
+      <label class="hint"><input type="checkbox" id="jC"> 機密プロジェクト（ローカルLLMのみ使用）</label>
+      <div class="row"><label class="f">モード<select id="jMode"><option value="multi">複数AI＋評価AI</option><option value="single">単一AI</option></select></label>
+      <label class="f" id="jEvW">評価AI<select id="jEv">${S.providers.map(p=>`<option value="${p.id}">${esc(p.label)}</option>`).join("")}</select></label></div>
+      <div><div class="hint">生成AI</div><div class="chk">${gens||'<span class="hint">先にAIを登録してください</span>'}</div></div>
+      <div><button class="btn" id="jGo">作成してヒアリングを始める</button></div><div id="jMsg"></div>
+    </div>`;
+  $("#jMode").onchange=()=>{$("#jEvW").hidden=$("#jMode").value==="single"};
+  $("#jOpenGo").onclick=()=>openProject($("#jOpen").value.trim());
+  $("#jGo").onclick=async()=>{
+    const mode=$("#jMode").value; const ids=[...document.querySelectorAll('input[name=g]:checked')].map(i=>i.value);
+    const body={name:$("#jN").value.trim(), purpose:$("#jP").value.trim(), confidential:$("#jC").checked,
+      aiConfig:{mode, generatorIds:ids, evaluatorId: mode==="multi"?$("#jEv").value:null}};
+    try{ const p=await api(`/api/orgs/${S.orgId}/projects`,{method:"POST",body}); await openProject(p.id); switchTab("hear"); }
+    catch(e){ $("#jMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+  if (isAdmin) loadUsage();
+}
+async function loadUsage(){
+  try{ const u=await api(`/api/orgs/${S.orgId}/usage`); const names=Object.fromEntries(S.providers.map(p=>[p.id,p.label]));
+    $("#usagePanel").hidden=false;
+    $("#usagePanel").innerHTML=`<h2>利用量（組織全体）</h2><div class="scroll"><table class="t"><thead><tr><th>AI</th><th>呼出回数</th><th>入力トークン</th><th>出力トークン</th></tr></thead><tbody>
+      ${u.map(r=>`<tr><td>${esc(names[r.providerId]||r.providerId)}</td><td class="mono">${r.calls}</td><td class="mono">${r.inputTokens.toLocaleString()}</td><td class="mono">${r.outputTokens.toLocaleString()}</td></tr>`).join("")||'<tr><td colspan="4" class="hint">まだ利用がありません</td></tr>'}</tbody></table></div>`;
+  }catch(e){ $("#usagePanel").hidden=true }
+}
+async function openProject(id){
+  if(!id) return;
+  try{ S.project = await api(`/api/projects/${id}`); store.set("projectId", id); S.round=null; renderHear(); toast("プロジェクトを開きました") }
+  catch(e){ toast(e.message) }
+}
+
+/* ---------- ヒアリング ---------- */
+function renderHear(){
+  const el=$("#hear");
+  if(!S.project){
+    el.innerHTML=`<div class="panel"><h2>はじめに</h2><ol class="hint" style="margin:0;padding-left:1.2em">
+      <li>右上で組織を作成（またはIDを入力）</li><li>「AI設定・プロジェクト」でAIを登録（APIキーは組織ごと）</li><li>プロジェクトを作成すると、ここで質問が始まります</li></ol></div>`;
+    return;
+  }
+  const phases=S.meta.phases, cur=S.project.phaseKey, ci=phases.findIndex(p=>p.key===cur);
+  const strip=`<ol class="phases">${phases.map((p,i)=>`<li class="${cur==="done"||i<ci?"done":i===ci?"cur":""}">${i+1}. ${esc(p.name)}</li>`).join("")}</ol>`;
+  if(cur==="done"){ el.innerHTML=`<div class="panel">${strip}<h2>すべてのフェーズが完了しました</h2><p class="hint">要件一覧・UML・仕様書のタブで成果物を確認できます。</p></div>`; return; }
+  const ph=phases[ci];
+  el.innerHTML=`<div class="panel">${strip}<div class="lbl">${esc(S.project.name)} ・ ${S.project.aiConfig.mode==="multi"?"複数AI＋評価AI":"単一AI"}</div>
+    <p class="q">${esc(ph.question)}</p><p class="hint">観点：${ph.checklist.map(esc).join("、")}</p>
+    <textarea id="ans" rows="3" placeholder="思いつくままに書いてください"></textarea>
+    <div id="amb"></div>
+    <div class="row" style="margin-top:8px"><button class="btn" id="send">AIに案を作ってもらう</button><span class="hint" id="sendMsg"></span></div></div>
+    <div id="roundOut"></div>`;
+  let t; $("#ans").oninput=()=>{clearTimeout(t);t=setTimeout(checkAmb,500)};
+  $("#send").onclick=sendAnswer;
+  if(S.round) renderRound();
+}
+async function checkAmb(){
+  const text=$("#ans").value; if(!text){$("#amb").innerHTML="";return}
+  try{ const hits=await api(`/api/projects/${S.project.id}/ambiguity`,{method:"POST",body:{text}});
+    $("#amb").innerHTML=hits.length?`<div class="note warn">曖昧な表現があります：${hits.map(h=>`「${esc(h.term)}」→ ${esc(h.ask)}`).join("　")}</div>`:"";
+  }catch(e){}
+}
+async function sendAnswer(){
+  const answer=$("#ans").value.trim(); if(!answer) return;
+  $("#send").disabled=true; $("#sendMsg").textContent=`${S.project.aiConfig.generatorIds.length}つのAIで案を作成中…（最大90秒）`;
+  try{ S.round = await api(`/api/projects/${S.project.id}/rounds`,{method:"POST",body:{answer}}); renderRound(); }
+  catch(e){ $("#roundOut").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  finally{ $("#send").disabled=false; $("#sendMsg").textContent="" }
+}
+function itemsHtml(items, key, checked=true){
+  return `<ul>${items.map((it,i)=>`<li><label><input type="checkbox" data-k="${key}" data-i="${i}" ${checked?"checked":""}>
+    <span>${esc(it.title)} <span class="tag">${it.type}/${it.priority}</span>${it.description?`<br><span class="cmt">${esc(it.description)}</span>`:""}</span></label></li>`).join("")}</ul>`;
+}
+function renderRound(){
+  const r=S.round, ev=r.evaluation, out=$("#roundOut");
+  const crit=[["coverage","網羅性"],["accuracy","正確性"],["consistency","一貫性"],["feasibility","実現可能性"],["clarity","分かりやすさ"]];
+  let html=`<div class="panel"><h2>案の比較</h2>`;
+  html+=r.warnings.map(w=>`<div class="note warn">${esc(w)}</div>`).join("");
+  if(ev){
+    html+=`<div class="scroll"><table class="t"><thead><tr><th>評価基準（評価：${esc(ev.evaluator||"")}）</th>${r.candidates.map(c=>`<th>案${c.label}</th>`).join("")}</tr></thead><tbody>
+      ${crit.map(([k,n])=>`<tr><td>${n}</td>${r.candidates.map(c=>`<td class="mono">${ev.scores[c.label]?.[k]??"―"}</td>`).join("")}</tr>`).join("")}
+      <tr><td><b>総合</b></td>${r.candidates.map(c=>`<td class="mono"><b>${ev.totals[c.label]??"―"}</b></td>`).join("")}</tr></tbody></table></div>
+      <div class="verdict"><b>評価AIの所見：</b>${esc(ev.recommendation)}</div>`;
+  }
+  html+=`<div class="cands">`;
+  if(ev) html+=`<div class="cand ${ev.recommendedLabel==="merged"?"rec":""}"><header><b>統合案</b>${ev.recommendedLabel==="merged"?'<span class="pill">推奨</span>':""}<span class="score">${ev.mergedTotal}</span></header>
+    ${itemsHtml(ev.merged.items,"merged")}<div><button class="btn sm" data-pick="merged">チェックした項目を採用</button></div></div>`;
+  for(const c of r.candidates){
+    const rec=ev&&ev.recommendedLabel===c.label, cm=ev?.comments?.[c.label];
+    html+=`<div class="cand ${rec?"rec":""}"><header><b>案${c.label}</b>${rec?'<span class="pill">推奨</span>':""}${ev?`<span class="score">${ev.totals[c.label]??""}</span>`:""}</header>
+      ${cm?`<div class="cmt">${cm.strengths.map(s=>"＋"+esc(s)).join("<br>")}${cm.weaknesses.length?"<br>":""}${cm.weaknesses.map(s=>"－"+esc(s)).join("<br>")}</div>`:""}
+      ${itemsHtml(c.content.items,c.label)}${c.content.questions?.length?`<div class="cmt">確認したいこと：${c.content.questions.map(esc).join(" / ")}</div>`:""}
+      <div><button class="btn sm ghost" data-pick="${c.label}">チェックした項目を採用</button></div></div>`;
+  }
+  html+=`</div>${r.failures.length?`<div class="note warn">失敗したAI：${r.failures.map(f=>esc(f.provider)+"（"+esc(f.reason)+"）").join("、")}</div>`:""}
+    <div class="row" style="margin-top:12px"><label class="f" style="flex:1">採用理由（任意）<input id="reason" placeholder="例：抜けが少ないため"></label></div><div id="decMsg"></div></div>`;
+  out.innerHTML=html;
+  out.querySelectorAll("[data-pick]").forEach(b=>b.onclick=()=>decide(b.dataset.pick));
+}
+async function decide(pick){
+  const idx=[...document.querySelectorAll(`input[data-k="${pick}"]:checked`)].map(i=>Number(i.dataset.i));
+  if(!idx.length){toast("採用する項目を1つ以上チェックしてください");return}
+  try{
+    const res=await api(`/api/rounds/${S.round.id}/decision`,{method:"POST",body:{pick,itemIndexes:idx,reason:$("#reason").value}});
+    toast(`${res.added.length}件を要件に追加しました（${Object.entries(res.mapping).map(([l,n])=>l+"="+n).join(" / ")}）`);
+    S.round=null; S.project=await api(`/api/projects/${S.project.id}`); renderHear();
+  }catch(e){ $("#decMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+}
+
+/* ---------- 要件・UML・仕様書 ---------- */
+const TYPE={BR:"目的",AC:"利用者",FR:"機能",NFR:"非機能",CN:"制約"}, PRI={must:"必須",should:"推奨",could:"任意"};
+async function loadReqs(){
+  if(!S.project){$("#reqs").innerHTML='<p class="hint">プロジェクトを開いてください</p>';$("#decs").innerHTML="";return}
+  const [reqs,decs]=await Promise.all([api(`/api/projects/${S.project.id}/requirements`),api(`/api/projects/${S.project.id}/decisions`)]);
+  $("#reqs").innerHTML=`<table class="t"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>優先度</th><th>根拠</th></tr></thead><tbody>
+    ${reqs.map(r=>`<tr><td class="mono">${r.code}</td><td>${TYPE[r.type]}</td><td>${esc(r.title)}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}</td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td></tr>`).join("")||'<tr><td colspan="5" class="hint">まだありません</td></tr>'}</tbody></table>`;
+  $("#decs").innerHTML=decs.map(d=>`<div class="hint">${d.createdAt.slice(0,16).replace("T"," ")}　${esc(d.pick)}を採用 — ${esc(d.reason||"（理由未入力）")}　<span class="mono">${Object.entries(d.mapping).map(([l,n])=>esc(l+"="+n)).join(" / ")}</span></div>`).join("")||'<p class="hint">まだありません</p>';
+}
+let mmInit=false;
+async function loadUml(){
+  if(!S.project){$("#umlCanvas").innerHTML='<p class="hint">プロジェクトを開いてください</p>';return}
+  const u=await api(`/api/projects/${S.project.id}/uml`);
+  $("#umlMm").textContent=u.usecase.mermaid; $("#umlPu").textContent=u.usecase.plantuml;
+  if(!window.mermaid){$("#umlCanvas").innerHTML='<p class="hint">図の描画ライブラリがありません。ソースを表示してください。</p>';return}
+  const dark=document.documentElement.dataset.theme?document.documentElement.dataset.theme==="dark":matchMedia("(prefers-color-scheme: dark)").matches;
+  if(!mmInit){mermaid.initialize({startOnLoad:false,securityLevel:"strict",theme:dark?"dark":"neutral"});mmInit=true}
+  try{ const {svg}=await mermaid.render("uc"+Date.now(),u.usecase.mermaid); $("#umlCanvas").innerHTML=svg }
+  catch(e){ $("#umlCanvas").innerHTML='<p class="hint">描画できませんでした</p>' }
+}
+async function loadSpec(){
+  if(!S.project){$("#spec").textContent="プロジェクトを開いてください";return}
+  $("#spec").textContent=await api(`/api/projects/${S.project.id}/spec.md`);
+}
+$("#copySpec").onclick=async()=>{ try{await navigator.clipboard.writeText($("#spec").textContent);toast("コピーしました")}catch(e){toast("コピーできませんでした")} };
+$("#saveSpec").onclick=async()=>{ try{const r=await api(`/api/projects/${S.project.id}/exports`,{method:"POST"});$("#specMsg").textContent="保存しました："+r.key}catch(e){$("#specMsg").textContent=e.message} };
+
+/* ---------- 起動 ---------- */
+async function reload(){
+  await loadProviders();
+  const pid=store.get("projectId");
+  if(pid && (!S.project || S.project.id!==pid)) { try{ S.project=await api(`/api/projects/${pid}`) }catch(e){ S.project=null } }
+  renderHear();
+  if($("#v-admin").classList.contains("on")) renderAdmin();
+}
+(async()=>{
+  try{ S.meta=await (await fetch("/api/meta")).json() }
+  catch(e){ $("#hear").innerHTML='<div class="panel note err">APIに接続できません。サーバーが起動しているか確認してください。</div>'; return }
+  renderConn(); await reload();
+})();
+</script>
+
+</body>
+</html>

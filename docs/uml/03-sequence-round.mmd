@@ -1,0 +1,35 @@
+sequenceDiagram
+    autonumber
+    actor U as 業務担当者
+    participant FE as Web画面
+    participant API as API (Hono)
+    participant ENC as 暗号化 (KMS / マスターキー)
+    participant ORC as オーケストレータ (ai-core)
+    participant G1 as 生成AI 1
+    participant G2 as 生成AI 2
+    participant EV as 評価AI
+    participant DB as PostgreSQL
+
+    U->>FE: 質問に回答
+    FE->>API: POST /api/projects/{id}/rounds
+    API->>DB: 組織のAI登録を取得
+    API->>ENC: APIキーを復号（組織IDで検証）
+    API->>ORC: runRound(生成AI, 評価AI)
+    par 並列生成
+        ORC->>G1: 共通プロンプト
+        G1-->>ORC: 案(JSON)
+    and
+        ORC->>G2: 共通プロンプト
+        G2-->>ORC: タイムアウト / エラー
+    end
+    ORC->>ORC: スキーマ検証・匿名化(案A..)・順序ランダム化
+    ORC->>EV: 評価プロンプト（提供元は伏せる）
+    EV-->>ORC: 採点・長所短所・推奨・統合案
+    ORC->>ORC: 合計点を重みから計算
+    ORC-->>API: 結果（失敗分は警告）
+    API->>DB: Round・利用量を保存
+    API-->>FE: 案・評価（提供元は伏せたまま）
+    U->>FE: 項目を選んで採用
+    FE->>API: POST /api/rounds/{id}/decision
+    API->>DB: 要件を採番して保存・決定記録・次のフェーズへ
+    API-->>FE: 追加した要件・案と提供元の対応

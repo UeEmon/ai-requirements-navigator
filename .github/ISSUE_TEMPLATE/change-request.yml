@@ -1,0 +1,27 @@
+name: 変更要求
+description: 確定済みの要件を変更します（要件定義書の新しい版になります）
+title: "[変更] "
+labels: ["change-request"]
+body:
+  - type: input
+    id: target
+    attributes:
+      label: 対象の要件ID
+      placeholder: FR-03
+    validations:
+      required: true
+  - type: textarea
+    id: before
+    attributes:
+      label: 現在の内容
+  - type: textarea
+    id: after
+    attributes:
+      label: 変更後の内容
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影響範囲
+      description: 関連する画面・UML図・他の要件
