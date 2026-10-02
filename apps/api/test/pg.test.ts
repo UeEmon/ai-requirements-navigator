@@ -175,6 +175,22 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       expect(crU!.updatedAt).not.toBeNull();
       expect((await store.listChangeRequests(project.id)).map((x) => x.code)).toEqual(["CR-002", "CR-001"]);
       expect((await store.getChangeRequest(cr2.id))!.source).toBe("hearing");
+
+      // 資料・分析・EARS
+      const doc = await store.addDocument({ projectId: project.id, name: "議事録", kind: "minutes", format: "text", text: "本文", chars: 2, truncated: false, createdBy: "u1" });
+      expect((await store.listDocuments(project.id)).map((d) => d.name)).toEqual(["議事録"]);
+      expect((await store.getDocument(doc.id))!.text).toBe("本文");
+      const an = await store.saveAnalysis({ projectId: project.id, documentIds: [doc.id], focus: "", candidates: [], evaluation: null, failures: [], warnings: ["w"], notes: [], createdBy: "u1" });
+      expect(an.status).toBe("awaiting_decision");
+      const anA = await store.adoptAnalysis(an.id, { label: "A", proposalIds: ["P1"], requirementCodes: ["FR-09"], changeCodes: [], reason: "", by: "u1", at: new Date().toISOString() });
+      expect(anA).toMatchObject({ status: "adopted", adoption: { label: "A", requirementCodes: ["FR-09"] }, warnings: ["w"] });
+      expect((await store.listAnalyses(project.id))[0]!.id).toBe(an.id);
+      expect(await store.deleteDocument(doc.id)).toBe(true);
+      const ears = { pattern: "event" as const, trigger: "予約した", state: "", feature: "", system: "予約システム", response: "通知しなければならない" };
+      const [er] = await store.addRequirements(project.id, [{ title: "予約したとき、予約システムは、通知しなければならない。", description: "", type: "FR", priority: "must", ears, roundId: null, source: "t" }]);
+      expect(er!.ears).toEqual(ears);
+      expect((await store.updateRequirement(er!.id, { priority: "should" }, "u1", ""))!.ears).toEqual(ears);
+      expect((await store.updateRequirement(er!.id, { title: "手で変えた", ears: null }, "u1", ""))!.ears).toBeNull();
     } finally {
       await store.pool.end();
     }

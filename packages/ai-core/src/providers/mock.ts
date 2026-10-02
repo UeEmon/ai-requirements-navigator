@@ -54,6 +54,16 @@ export function defaultMockHandler(id: string): MockHandler {
       });
     }
     if (req.system.includes("インタビュアー")) return mockGuide(prompt);
+    if (req.system.includes("業務改善コンサルタント")) return mockAnalysis(prompt, id);
+    if (req.system.includes("分析レビュアー")) {
+      const labels = [...prompt.matchAll(/### 案([A-F])/g)].map((m) => m[1]!);
+      return JSON.stringify({
+        scores: Object.fromEntries(labels.map((l, i) => [l, { grounding: 85 - i * 5, insight: 75, improvement: 80 - i * 10, feasibility: 70, requirements: 78 }])),
+        comments: Object.fromEntries(labels.map((l) => [l, { strengths: ["資料に基づいている"], weaknesses: ["効果の見積りがない"] }])),
+        recommendedLabel: labels[0] ?? "A",
+        recommendation: `案${labels[0] ?? "A"}は業務の見直しに踏み込んでいます。`,
+      });
+    }
     if (req.system.includes("テックリード")) return mockTaskPlan(prompt);
     if (req.system.includes("画面設計者")) return mockScreens(prompt);
     if (req.system.includes("変更管理の担当者")) return mockImpact(prompt);
@@ -81,9 +91,9 @@ export function defaultMockHandler(id: string): MockHandler {
         recommendation: `各案に独自の項目があるため、統合案を推奨します。最も網羅的なのは案${best}です。`,
         merged: {
           items: [
-            { title: `「${answer}」を満たす基本機能を提供する`, type, priority: "must" },
-            { title: "例外時の扱い（取消・やり直し）を定める", type, priority: "should" },
-            { title: "結果を管理者が確認できる", type, priority: "should" },
+            withMockEars({ title: `「${answer}」を満たす基本機能を提供する`, type, priority: "must" }),
+            withMockEars({ title: "例外時の扱い（取消・やり直し）を定める", type, priority: "should" }),
+            withMockEars({ title: "結果を管理者が確認できる", type, priority: "should" }),
           ],
           questions: [],
           notes: "模擬AIによる統合案",
@@ -101,9 +111,11 @@ export function defaultMockHandler(id: string): MockHandler {
     return JSON.stringify({
       items: [
         { title: `「${answer}」を満たす基本機能を提供する`, type, priority: "must" },
-        { title: extras[s % extras.length], type, priority: "should" },
-        { title: extras[(s >>> 4) % extras.length], type, priority: "could" },
-      ].filter((v, i, a) => a.findIndex((x) => x.title === v.title) === i),
+        { title: extras[s % extras.length]!, type, priority: "should" },
+        { title: extras[(s >>> 4) % extras.length]!, type, priority: "could" },
+      ]
+        .filter((v, i, a) => a.findIndex((x) => x.title === v.title) === i)
+        .map(withMockEars),
       questions: [],
       notes: "模擬AIによる案",
     });
@@ -283,5 +295,65 @@ function mockImpact(prompt: string): string {
     effort: "m",
     risks: ["登録済みのデータの移行が必要になる可能性があります", "関連する機能のテストのやり直しが必要です"],
     alternative: { title: "運用で対応する", description: "当面は管理者が手作業で対応し、次の段階で機能として追加します。" },
+  });
+}
+
+/** 模擬AIの要件に EARS の構造を付ける（機能要件・非機能要件のみ） */
+const MOCK_EARS: Record<string, { pattern: string; trigger?: string; response: string }> = {
+  "例外時の扱い（取消・やり直し）を定める": { pattern: "unwanted", trigger: "利用者が操作を取り消した", response: "取消前の状態に戻さなければならない" },
+  "結果を管理者が確認できる": { pattern: "event", trigger: "処理が完了した", response: "結果を管理者の画面に表示しなければならない" },
+  "処理完了を利用者に通知する": { pattern: "event", trigger: "処理が完了した", response: "利用者に完了を通知しなければならない" },
+  "操作の履歴を記録する": { pattern: "ubiquitous", response: "操作の履歴を記録しなければならない" },
+};
+function withMockEars<T extends { title: string; type: string }>(it: T): T & { ears?: object } {
+  if (it.type !== "FR" && it.type !== "NFR") return it;
+  const e = MOCK_EARS[it.title] ?? { pattern: "ubiquitous", response: it.title.replace(/提供する$/, "提供しなければならない") };
+  return { ...it, ears: { system: "本システム", trigger: "", state: "", feature: "", ...e } };
+}
+
+/** 資料の行をそのまま根拠に使い、現状 → 課題 → 見直し → 要件（EARS）を返す */
+function mockAnalysis(prompt: string, id: string): string {
+  const docs = [...prompt.matchAll(/<<<資料 (D\d+)「[^」]*」（[^）]*）\n([\s\S]*?)\n>>>/g)].map((m) => ({ key: m[1]!, lines: m[2]!.split("\n").map((l) => l.trim()).filter((l) => l.length >= 6 && !l.startsWith("（以下省略")) }));
+  const lines = docs.flatMap((d) => d.lines.map((l) => ({ doc: d.key, line: l })));
+  const pain = lines.filter((x) => /手作業|転記|紙|待ち|Excel|エクセル|電話|二重|ミス|遅|確認/.test(x.line));
+  const src = (pain.length ? pain : lines).slice(0, 3);
+  const steps = lines.slice(0, 4);
+  const issues = src.map((x, i) => ({
+    id: `I${i + 1}`,
+    title: `課題: ${x.line.slice(0, 30)}`,
+    category: i === 0 ? "duplicate" : "manual",
+    impact: "担当者の作業時間が増え、ミスが起きる",
+    rootCause: "情報が1か所にまとまっていない",
+    evidence: [{ document: x.doc, quote: x.line }],
+  }));
+  const withCombine = seed(id) % 2 === 0;
+  const proposals = [
+    { id: "P1", title: "紙の受付票をやめ、入力を1回にする", approach: "eliminate", description: "受付票を廃止し、予約時に利用者が入力した内容をそのまま使う", issueIds: ["I1"], effect: "転記がなくなる", tradeoff: "紙に慣れた担当者の教育が必要" },
+    ...(withCombine ? [{ id: "P2", title: "確認作業を予約時の1回にまとめる", approach: "combine", description: "前日の電話確認と当日の確認をまとめる", issueIds: issues.slice(1).map((x) => x.id), effect: "確認の手間が半分になる", tradeoff: "" }] : []),
+    { id: "P3", title: "空き状況を利用者が自分で確認できるようにする", approach: "self_service", description: "空き枠を公開する", issueIds: issues.slice(-1).map((x) => x.id), effect: "問い合わせが減る", tradeoff: "" },
+  ];
+  const asIs = steps.map((x, i) => ({ id: `A${i + 1}`, actor: i % 2 ? "店長" : "受付担当", action: x.line.slice(0, 40), tool: i === 0 ? "紙の受付票" : "Excel", issueIds: issues[i] ? [issues[i]!.id] : [] }));
+  const toBe = [
+    { id: "B1", actor: "利用者", action: "空き枠を見て予約する", change: "new", fromAsIs: asIs.slice(0, 1).map((s) => s.id), proposalIds: ["P3"] },
+    { id: "B2", actor: "受付担当", action: "予約一覧を確認する", change: "changed", fromAsIs: asIs.slice(1, 2).map((s) => s.id), proposalIds: ["P1"] },
+    ...(asIs.length > 3 ? [{ id: "B3", actor: "店長", action: asIs[3]!.action, change: "same", fromAsIs: [asIs[3]!.id], proposalIds: [] }] : []),
+  ];
+  const removed = asIs.length > 2 ? [{ asIsId: asIs[2]!.id, reason: "入力を1回にするため不要", proposalIds: ["P1"] }] : [];
+  const ears = (pattern: string, response: string, trigger = "") => ({ pattern, trigger, state: "", feature: "", system: "予約システム", response });
+  return JSON.stringify({
+    summary: `資料${docs.length}件から、転記と確認の重複が主な課題と分かりました。`,
+    asIs,
+    issues,
+    proposals,
+    toBe,
+    removed,
+    notCarriedOver: [{ item: "紙の受付票の印刷機能", reason: "受付票そのものをやめるため" }],
+    requirements: [
+      { type: "FR", priority: "must", ears: ears("event", "空き枠と予約内容を確認画面に表示しなければならない", "利用者が予約日時を選んだ"), proposalIds: ["P3"], issueIds: issues.slice(-1).map((x) => x.id), rationale: "利用者が自分で空きを確認するため" },
+      { type: "FR", priority: "must", ears: ears("ubiquitous", "予約時に入力された内容を受付担当の予約一覧に反映しなければならない"), proposalIds: ["P1"], issueIds: ["I1"], rationale: "転記をなくすため" },
+      { type: "NFR", priority: "should", ears: ears("event", "空き枠を3秒以内に表示しなければならない", "利用者が予約画面を開いた"), proposalIds: ["P3"], issueIds: [], rationale: "待たずに確認できるように" },
+      { type: "BR", priority: "must", title: "電話での予約受付を半分に減らす", proposalIds: ["P3"], issueIds: [], rationale: "目的" },
+    ],
+    questions: ["当日のキャンセルはどのように扱っていますか"],
   });
 }

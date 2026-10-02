@@ -31,6 +31,10 @@ export type AuditAction =
   | "change.create"
   | "ai.impact"
   | "change.decide"
+  | "document.create"
+  | "document.delete"
+  | "ai.analysis"
+  | "analysis.adopt"
   | "auth.login";
 
 export interface AuditInput {

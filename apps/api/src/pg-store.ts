@@ -4,8 +4,10 @@ import type { RequirementItem } from "@arn/ai-core";
 import type { Guide, UmlModel } from "@arn/ai-core";
 import type {
   AuditEntry,
+  AnalysisRecord,
   Baseline,
   ChangeRequest,
+  ProjectDocument,
   ChangeRequestPatch,
   ScreenFeedback,
   ScreenRecord,
@@ -85,6 +87,7 @@ const toReq = (r: any): Requirement => ({
   createdAt: iso(r.created_at),
   updatedAt: r.updated_at ? iso(r.updated_at) : null,
   deletedAt: r.deleted_at ? iso(r.deleted_at) : null,
+  ears: r.ears ?? null,
 });
 const toVersion = (r: any): RequirementVersion => ({
   requirementId: r.requirement_id,
@@ -232,6 +235,34 @@ const toChange = (r: any): ChangeRequest => ({
   updatedAt: r.updated_at ? iso(r.updated_at) : null,
 });
 
+const toDocument = (r: any): ProjectDocument => ({
+  id: r.id,
+  projectId: r.project_id,
+  name: r.name,
+  kind: r.kind,
+  format: r.format,
+  text: r.text,
+  chars: r.chars,
+  truncated: r.truncated,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+});
+const toAnalysis = (r: any): AnalysisRecord => ({
+  id: r.id,
+  projectId: r.project_id,
+  documentIds: r.document_ids,
+  focus: r.focus,
+  candidates: r.candidates,
+  evaluation: r.evaluation,
+  failures: r.failures,
+  warnings: r.warnings,
+  notes: r.notes,
+  status: r.status,
+  adoption: r.adoption,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+});
+
 /** PostgreSQL（ローカルDockerの postgres / AWS RDS）に保存する */
 export class PgStore implements Store {
   constructor(readonly pool: pg.Pool) {}
@@ -350,9 +381,9 @@ export class PgStore implements Store {
         );
         const code = `${it.type}-${String((c[0]?.n ?? 0) + 1).padStart(2, "0")}`;
         const { rows } = await client.query(
-          `INSERT INTO requirements(project_id, code, type, title, description, priority, round_id, source, phase_key)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-          [projectId, code, it.type, it.title, it.description, it.priority, it.roundId, it.source, it.phaseKey ?? null],
+          `INSERT INTO requirements(project_id, code, type, title, description, priority, round_id, source, phase_key, ears)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+          [projectId, code, it.type, it.title, it.description, it.priority, it.roundId, it.source, it.phaseKey ?? null, it.ears ? JSON.stringify(it.ears) : null],
         );
         out.push(toReq(rows[0]));
       }
@@ -392,9 +423,15 @@ export class PgStore implements Store {
         [id, r.version, r.title, r.description, r.priority, actor, reason],
       );
       const { rows } = await client.query(
-        `UPDATE requirements SET title = $2, description = $3, priority = $4, version = version + 1, updated_at = now()
+        `UPDATE requirements SET title = $2, description = $3, priority = $4, ears = $5, version = version + 1, updated_at = now()
          WHERE id = $1 RETURNING *`,
-        [id, patch.title ?? r.title, patch.description ?? r.description, patch.priority ?? r.priority],
+        [
+          id,
+          patch.title ?? r.title,
+          patch.description ?? r.description,
+          patch.priority ?? r.priority,
+          patch.ears === undefined ? (r.ears === null || r.ears === undefined ? null : JSON.stringify(r.ears)) : patch.ears ? JSON.stringify(patch.ears) : null,
+        ],
       );
       await client.query("COMMIT");
       return toReq(rows[0]);
@@ -672,6 +709,56 @@ export class PgStore implements Store {
     sets.push("updated_at = now()");
     const { rows } = await this.pool.query(`UPDATE change_requests SET ${sets.join(", ")} WHERE id = $1 RETURNING *`, vals);
     return rows[0] ? toChange(rows[0]) : null;
+  }
+
+  async addDocument(d: Omit<ProjectDocument, "id" | "createdAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO documents(project_id, name, kind, format, text, chars, truncated, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [d.projectId, d.name, d.kind, d.format, d.text, d.chars, d.truncated, d.createdBy],
+    );
+    return toDocument(rows[0]);
+  }
+  async listDocuments(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM documents WHERE project_id = $1 ORDER BY created_at, id", [projectId]);
+    return rows.map(toDocument);
+  }
+  async getDocument(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM documents WHERE id = $1", [id]);
+    return rows[0] ? toDocument(rows[0]) : null;
+  }
+  async deleteDocument(id: string) {
+    const r = await this.pool.query("DELETE FROM documents WHERE id = $1", [id]);
+    return (r.rowCount ?? 0) > 0;
+  }
+  async saveAnalysis(a: Omit<AnalysisRecord, "id" | "createdAt" | "status" | "adoption">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO analyses(project_id, document_ids, focus, candidates, evaluation, failures, warnings, notes, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [
+        a.projectId,
+        JSON.stringify(a.documentIds),
+        a.focus,
+        JSON.stringify(a.candidates),
+        a.evaluation ? JSON.stringify(a.evaluation) : null,
+        JSON.stringify(a.failures),
+        JSON.stringify(a.warnings),
+        JSON.stringify(a.notes),
+        a.createdBy,
+      ],
+    );
+    return toAnalysis(rows[0]);
+  }
+  async getAnalysis(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM analyses WHERE id = $1", [id]);
+    return rows[0] ? toAnalysis(rows[0]) : null;
+  }
+  async listAnalyses(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM analyses WHERE project_id = $1 ORDER BY created_at DESC, id", [projectId]);
+    return rows.map(toAnalysis);
+  }
+  async adoptAnalysis(id: string, adoption: NonNullable<AnalysisRecord["adoption"]>) {
+    const { rows } = await this.pool.query("UPDATE analyses SET status = 'adopted', adoption = $2 WHERE id = $1 RETURNING *", [id, JSON.stringify(adoption)]);
+    return rows[0] ? toAnalysis(rows[0]) : null;
   }
 
   async addUsage(u: Omit<UsageRecord, "at">) {

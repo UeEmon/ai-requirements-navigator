@@ -1,3 +1,4 @@
+import { EARS_INSTRUCTIONS, EARS_SHAPE } from "./ears.js";
 import type { Phase } from "./phases.js";
 import type { CandidateContent, RequirementItem } from "./schema.js";
 
@@ -11,7 +12,7 @@ export interface PromptContext {
 
 const CANDIDATE_SHAPE = `{
   "items": [
-    { "title": "要件を1文で", "description": "補足（任意）", "type": "BR|AC|FR|NFR|CN", "priority": "must|should|could" }
+    { "title": "要件を1文で", "description": "補足（任意）", "type": "BR|AC|FR|NFR|CN", "priority": "must|should|could", ${EARS_SHAPE} }
   ],
   "questions": ["利用者に追加で確認したいこと（任意）"],
   "notes": "前提や注意点（任意）"
@@ -21,6 +22,7 @@ export const GENERATOR_SYSTEM = `あなたは要件定義の専門家です。�
 - 利用者の言葉を尊重し、推測で機能を広げすぎない
 - 1項目は1文で、検証できる書き方にする（「速い」ではなく「3秒以内」など。数値が不明なら questions で確認する）
 - 既存の要件と重複・矛盾する項目は出さない
+${EARS_INSTRUCTIONS}
 - 出力は次の形のJSONのみ。説明文やコードフェンスは付けない
 ${CANDIDATE_SHAPE}`;
 
@@ -55,7 +57,8 @@ export const EVALUATOR_SYSTEM = `あなたは要件定義のレビュアーで�
 - consistency（一貫性）: 確定済みの要件と矛盾しないか
 - feasibility（実現可能性）: 実装できる粒度・内容か
 - clarity（分かりやすさ）: 専門家でない利用者が理解できるか
-さらに、各案の良い項目を重複なく組み合わせた統合案（merged）を作ってください。
+さらに、各案の良い項目を重複なく組み合わせた統合案（merged）を作ってください。統合案の書き方は次のとおり。
+${EARS_INSTRUCTIONS}
 出力は次の形のJSONのみ。説明文やコードフェンスは付けない:
 {
   "scores": { "A": { "coverage": 0, "accuracy": 0, "consistency": 0, "feasibility": 0, "clarity": 0 } },

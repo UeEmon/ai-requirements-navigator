@@ -25,6 +25,9 @@ import {
   type ChangeProposal,
   type Diagram,
   type ImpactContext,
+  Ears,
+  EARS_TYPES,
+  renderEars,
 } from "@arn/ai-core";
 import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -52,6 +55,8 @@ const ChangeInput = z.object({
   description: z.string().max(2000).optional(),
   priority: PrioritySchema.optional(),
   type: TypeSchema.optional(),
+  /** 機能要件・非機能要件の EARS の構造（あれば内容はここから組み立てる） */
+  ears: Ears.optional(),
   reason: z.string().max(2000).default(""),
 });
 const DecideInput = z.object({
@@ -407,9 +412,11 @@ export function designAndChange(ctx: ImplementationContext) {
         if (!target || target.deletedAt || target.projectId !== p.id) throw new HTTPException(400, { message: "変更する要件を選んでください" });
       }
       let proposal: ChangeRequest["proposal"] = null;
+      const earsOk = (type: string) => input.ears && EARS_TYPES.includes(type);
       if (input.kind === "modify") {
         proposal = {
-          title: input.title ?? target!.title,
+          title: earsOk(target!.type) ? renderEars(input.ears!) : (input.title ?? target!.title),
+          ...(earsOk(target!.type) ? { ears: input.ears } : {}),
           description: input.description ?? target!.description,
           priority: input.priority ?? target!.priority,
           type: target!.type,
@@ -418,8 +425,15 @@ export function designAndChange(ctx: ImplementationContext) {
           throw new HTTPException(400, { message: "変更する内容がありません" });
         }
       } else if (input.kind === "add") {
-        if (!input.title || !input.type) throw new HTTPException(400, { message: "追加する要件の内容と区分を入力してください" });
-        proposal = { title: input.title, description: input.description ?? "", priority: input.priority ?? "should", type: input.type };
+        const title = input.type && earsOk(input.type) ? renderEars(input.ears!) : input.title;
+        if (!title || !input.type) throw new HTTPException(400, { message: "追加する要件の内容と区分を入力してください" });
+        proposal = {
+          title,
+          description: input.description ?? "",
+          priority: input.priority ?? "should",
+          type: input.type,
+          ...(earsOk(input.type) ? { ears: input.ears } : {}),
+        };
       }
       const cr = await store.addChangeRequest({
         projectId: p.id,
@@ -476,19 +490,30 @@ export function designAndChange(ctx: ImplementationContext) {
           if (cr.kind === "delete") throw new HTTPException(400, { message: "削除の変更要求には代替案を使えません" });
           const alt = cr.impact!.alternatives[input.alternativeIndex];
           if (!alt) throw new HTTPException(400, { message: "代替案がありません" });
-          after = { ...cr.proposal!, title: alt.title, description: alt.description };
+          after = { ...cr.proposal!, title: alt.title, description: alt.description, ears: null };
         }
         const label = `変更要求 ${cr.code}`;
         if (cr.kind === "add") {
           const [added] = await store.addRequirements(p.id, [
-            { title: after!.title, description: after!.description, type: after!.type, priority: after!.priority, roundId: null, source: label, phaseKey: TYPE_PHASE[after!.type] ?? null },
+            {
+              title: after!.title,
+              description: after!.description,
+              type: after!.type,
+              priority: after!.priority,
+              ears: after!.ears ?? undefined,
+              roundId: null,
+              source: label,
+              phaseKey: TYPE_PHASE[after!.type] ?? null,
+            },
           ]);
           decision.requirementCode = added!.code;
         } else {
           const r = cr.requirementId ? await store.getRequirement(cr.requirementId) : null;
           if (!r || r.deletedAt) throw new HTTPException(409, { message: "対象の要件はすでに削除されています" });
           if (cr.kind === "modify") {
-            await store.updateRequirement(r.id, { title: after!.title, description: after!.description, priority: after!.priority }, actor, `${label}: ${cr.reason || input.reason}`);
+            // EARS の構造がなく文を変えた場合は、古い構造を残さない
+            const ears = after!.ears !== undefined && after!.ears !== null ? after!.ears : after!.title !== r.title ? null : undefined;
+            await store.updateRequirement(r.id, { title: after!.title, description: after!.description, priority: after!.priority, ears }, actor, `${label}: ${cr.reason || input.reason}`);
           } else {
             await store.deleteRequirement(r.id);
           }

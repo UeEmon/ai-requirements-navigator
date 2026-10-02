@@ -12,3 +12,5 @@ export * from "./guide.js";
 export * from "./tasks.js";
 export * from "./screens.js";
 export * from "./impact.js";
+export * from "./ears.js";
+export * from "./analysis.js";

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CandidateContent, ChangeKind, Guide, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
+import type { AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
 export interface Org {
   id: string;
@@ -88,6 +88,8 @@ export interface Requirement {
   createdAt: string;
   updatedAt: string | null;
   deletedAt: string | null;
+  /** 機能要件・非機能要件の EARS の構造（title はここから組み立てた文） */
+  ears: Ears | null;
 }
 
 export interface RequirementVersion {
@@ -101,7 +103,7 @@ export interface RequirementVersion {
   createdAt: string;
 }
 
-export type RequirementPatch = Partial<Pick<Requirement, "title" | "description" | "priority">>;
+export type RequirementPatch = Partial<Pick<Requirement, "title" | "description" | "priority" | "ears">>;
 
 export interface AuditEntry {
   id: string;
@@ -114,7 +116,7 @@ export interface AuditEntry {
   at: string;
 }
 
-export type JobKind = "round" | "uml" | "tasks" | "export" | "screens" | "impact";
+export type JobKind = "round" | "uml" | "tasks" | "export" | "screens" | "impact" | "analysis";
 export type JobStatus = "queued" | "running" | "done" | "failed";
 export interface JobProgress {
   steps?: Array<{ key: string; label: string; status: "waiting" | "running" | "done" | "failed"; reason?: string }>;
@@ -282,7 +284,7 @@ export interface ChangeRequest {
   requirementId: string | null;
   requirementCode: string | null;
   /** 変更後（modify / add） */
-  proposal: { title: string; description: string; priority: RequirementItem["priority"]; type: RequirementType } | null;
+  proposal: { title: string; description: string; priority: RequirementItem["priority"]; type: RequirementType; ears?: Ears | null } | null;
   reason: string;
   status: ChangeStatus;
   impact: ImpactReport | null;
@@ -302,6 +304,47 @@ export interface ChangeRequest {
   updatedAt: string | null;
 }
 export type ChangeRequestPatch = Partial<Pick<ChangeRequest, "status" | "impact" | "decision">>;
+
+/** 取り込んだ資料（本文のテキストだけを保存する） */
+export interface ProjectDocument {
+  id: string;
+  projectId: string;
+  name: string;
+  /** minutes（議事録）/ existing（既存システムの資料）/ business（業務マニュアル・規程）/ other */
+  kind: string;
+  format: string;
+  text: string;
+  chars: number;
+  truncated: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** 資料の分析（複数AIのときは匿名で比較し、利用者が1つを採用する） */
+export interface AnalysisRecord {
+  id: string;
+  projectId: string;
+  documentIds: string[];
+  focus: string;
+  candidates: Array<{ label: string; providerId: string; analysis: AnalysisComparison["candidates"][number]["analysis"] }>;
+  evaluation: Omit<NonNullable<AnalysisComparison["evaluation"]>, "usage"> | null;
+  failures: AnalysisComparison["failures"];
+  warnings: string[];
+  notes: string[];
+  status: "awaiting_decision" | "adopted";
+  adoption: {
+    label: string;
+    proposalIds: string[];
+    /** 追加した要件のコード（確定後は変更要求のコード） */
+    requirementCodes: string[];
+    changeCodes: string[];
+    reason: string;
+    by: string;
+    at: string;
+  } | null;
+  createdBy: string;
+  createdAt: string;
+}
 
 export interface Store {
   createOrg(name: string): Promise<Org>;
@@ -393,6 +436,18 @@ export interface Store {
   listChangeRequests(projectId: string): Promise<ChangeRequest[]>;
   updateChangeRequest(id: string, patch: ChangeRequestPatch): Promise<ChangeRequest | null>;
 
+  addDocument(d: Omit<ProjectDocument, "id" | "createdAt">): Promise<ProjectDocument>;
+  /** 古い順 */
+  listDocuments(projectId: string): Promise<ProjectDocument[]>;
+  getDocument(id: string): Promise<ProjectDocument | null>;
+  deleteDocument(id: string): Promise<boolean>;
+
+  saveAnalysis(a: Omit<AnalysisRecord, "id" | "createdAt" | "status" | "adoption">): Promise<AnalysisRecord>;
+  getAnalysis(id: string): Promise<AnalysisRecord | null>;
+  /** 新しい順 */
+  listAnalyses(projectId: string): Promise<AnalysisRecord[]>;
+  adoptAnalysis(id: string, adoption: NonNullable<AnalysisRecord["adoption"]>): Promise<AnalysisRecord | null>;
+
   addUsage(u: Omit<UsageRecord, "at">): Promise<void>;
   /** since 以降（省略時は全期間）の利用量をAIごとに集計する */
   usageSummary(orgId: string, since?: Date): Promise<UsageRow[]>;
@@ -426,6 +481,8 @@ export class MemoryStore implements Store {
   private feedback: ScreenFeedback[] = [];
   private baselines: Baseline[] = [];
   private changes: ChangeRequest[] = [];
+  private documents: ProjectDocument[] = [];
+  private analyses: AnalysisRecord[] = [];
   private seq = 0;
 
   async createOrg(name: string) {
@@ -505,6 +562,7 @@ export class MemoryStore implements Store {
         createdAt: now(),
         updatedAt: null,
         deletedAt: null,
+        ears: it.ears ?? null,
       };
       this.reqs.push(r);
       out.push(r);
@@ -727,6 +785,40 @@ export class MemoryStore implements Store {
     if (!x) return null;
     Object.assign(x, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)), { updatedAt: now() });
     return { ...x };
+  }
+  async addDocument(d: Omit<ProjectDocument, "id" | "createdAt">) {
+    const x: ProjectDocument = { ...d, id: randomUUID(), createdAt: now() };
+    this.documents.push(x);
+    return x;
+  }
+  async listDocuments(projectId: string) {
+    return this.documents.filter((d) => d.projectId === projectId);
+  }
+  async getDocument(id: string) {
+    return this.documents.find((d) => d.id === id) ?? null;
+  }
+  async deleteDocument(id: string) {
+    const n = this.documents.length;
+    this.documents = this.documents.filter((d) => d.id !== id);
+    return this.documents.length < n;
+  }
+  async saveAnalysis(a: Omit<AnalysisRecord, "id" | "createdAt" | "status" | "adoption">) {
+    const x: AnalysisRecord = { ...a, id: randomUUID(), status: "awaiting_decision", adoption: null, createdAt: now() };
+    this.analyses.push(x);
+    return x;
+  }
+  async getAnalysis(id: string) {
+    return this.analyses.find((a) => a.id === id) ?? null;
+  }
+  async listAnalyses(projectId: string) {
+    return this.analyses.filter((a) => a.projectId === projectId).reverse();
+  }
+  async adoptAnalysis(id: string, adoption: NonNullable<AnalysisRecord["adoption"]>) {
+    const a = this.analyses.find((x) => x.id === id);
+    if (!a) return null;
+    a.status = "adopted";
+    a.adoption = adoption;
+    return a;
   }
   async addUsage(u: Omit<UsageRecord, "at">) {
     this.usage.push({ ...u, at: now() });

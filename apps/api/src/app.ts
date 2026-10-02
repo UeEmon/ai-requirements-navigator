@@ -1,6 +1,10 @@
 import {
   buildDiagrams,
   compareUmlModels,
+  Ears,
+  EARS_TYPES,
+  lintEars,
+  renderEars,
   screenFlowDiagram,
   createProvider,
   defaultGuide,
@@ -27,6 +31,7 @@ import { audit, clip } from "./audit.js";
 import { hasRole, type Authenticator, type OidcClient, type Principal, type Role, type TokenSet } from "./auth.js";
 import { maskKey, type KeyEncryptor } from "./crypto.js";
 import { designAndChange } from "./design-change.js";
+import { discovery } from "./discovery.js";
 import { implementation, type ImplementationContext } from "./implementation.js";
 import { JobError, JobRunner, type JobRunnerOptions } from "./jobs.js";
 import { buildSpec, CONTENT_TYPE, PdfFontMissingError, renderDocx, renderMarkdown, renderPdf, type SpecFormat, type SpecImage } from "./spec.js";
@@ -120,6 +125,8 @@ const RequirementPatchInput = z
     title: z.string().min(1).max(500).optional(),
     description: z.string().max(2000).optional(),
     priority: z.enum(["must", "should", "could"]).optional(),
+    /** 機能要件・非機能要件の EARS の構造。指定すると内容（title）はここから組み立てる。null で構造を外す */
+    ears: Ears.nullable().optional(),
     reason: z.string().max(500).default(""),
   })
   .strict();
@@ -619,7 +626,7 @@ export function createApp(deps: AppDeps) {
         phase,
         projectName: project.name,
         projectPurpose: project.purpose,
-        existingRequirements: existing.map((r) => ({ ...r, code: r.code })),
+        existingRequirements: existing.map((r) => ({ ...r, code: r.code, ears: r.ears ?? undefined })),
         userAnswer: input.answer,
       },
       {
@@ -707,6 +714,7 @@ export function createApp(deps: AppDeps) {
     const screens = await store.latestScreens(p.id);
     const diagrams = buildDiagrams(p.name, reqs, rec?.model);
     if (screens) diagrams.push(screenFlowDiagram(screens.model));
+    diagrams.push(...(await disc.specMore(p)).diagrams);
     return { diagrams, rec, reqs };
   };
   const umlStats = (m: UmlModel) => ({
@@ -855,6 +863,7 @@ export function createApp(deps: AppDeps) {
   };
   const impl = implementation(moduleCtx);
   const dc = designAndChange(moduleCtx);
+  const disc = discovery(moduleCtx);
 
   const asJobError = (e: unknown): never => {
     if (e instanceof HTTPException) throw new JobError(e.message, e.status);
@@ -890,6 +899,11 @@ export function createApp(deps: AppDeps) {
         return dc.jobHandlers.screens(p, job.input, job.createdBy, report).catch(asJobError);
       },
       impact: async ({ job, report }) => dc.jobHandlers.impact(job.input, job.createdBy, report).catch(asJobError),
+      analysis: async ({ job, report }) => {
+        const p = await store.getProject(job.projectId!);
+        if (!p) throw new JobError("プロジェクトが見つかりません", 404);
+        return disc.jobHandler(p, job.input, job.createdBy, report).catch(asJobError);
+      },
     },
     deps.jobs,
   );
@@ -903,6 +917,14 @@ export function createApp(deps: AppDeps) {
   const wantsAsync = (c: Context) => c.req.query("async") === "1" || c.req.query("async") === "true";
   impl.routes(app, { wantsAsync, enqueue });
   dc.routes(app, { wantsAsync, enqueue });
+  disc.routes(app, { wantsAsync, enqueue });
+
+  /** EARS の構造から文を組み立て、検査結果を返す（画面の入力中の確認用） */
+  app.post("/api/ears/preview", async (c) => {
+    const { ears, type } = await body(c, z.object({ ears: Ears, type: z.string().default("FR") }));
+    const text = renderEars(ears);
+    return c.json({ text, lint: lintEars(text, type) });
+  });
 
   /** 確定後は要件を直接変えられない（変更要求で行う） */
   const assertNotBaselined = async (p: Project) => {
@@ -1083,7 +1105,8 @@ export function createApp(deps: AppDeps) {
 
   app.get("/api/projects/:id/requirements", async (c) => {
     const p = await loadProject(c, c.req.param("id"), "viewer");
-    return c.json(await store.listRequirements(p.id));
+    // 機能要件・非機能要件は EARS の文型と表現を検査した結果を付ける
+    return c.json((await store.listRequirements(p.id)).map((r) => ({ ...r, lint: lintEars(r.title, r.type) })));
   });
 
   /** 要件の手直し。変更前の内容は版として残る */
@@ -1093,6 +1116,9 @@ export function createApp(deps: AppDeps) {
     const input = await body(c, RequirementPatchInput);
     const { reason, ...patch } = input;
     if (!Object.values(patch).some((v) => v !== undefined)) throw new HTTPException(400, { message: "変更する項目がありません" });
+    if (patch.ears && EARS_TYPES.includes(r.type)) patch.title = renderEars(patch.ears);
+    else if (patch.ears) patch.ears = undefined; // 目的・利用者・制約は EARS の対象外
+    else if (patch.title !== undefined && patch.title !== r.title && patch.ears === undefined) patch.ears = null; // 文を手で変えたら構造は外す
     const updated = await store.updateRequirement(r.id, patch, actorOf(c), reason);
     if (!updated) throw new HTTPException(404, { message: "要件が見つかりません" });
     await audit(store, {
@@ -1159,7 +1185,11 @@ export function createApp(deps: AppDeps) {
   const renderSpec = async (p: Project, format: SpecFormat, images: SpecImage[]) => {
     const { diagrams } = await diagramsOf(p);
     const more = await dc.specMore(p);
-    const spec = buildSpec(p, await store.listRequirements(p.id), await store.listDecisions(p.id), diagrams, new Date(), { baseline: more.baseline, extras: more.extras });
+    const found = await disc.specMore(p);
+    const spec = buildSpec(p, await store.listRequirements(p.id), await store.listDecisions(p.id), diagrams, new Date(), {
+      baseline: more.baseline,
+      extras: [...more.extras, ...found.extras],
+    });
     try {
       if (format === "docx") return await renderDocx(spec, images);
       if (format === "pdf") return await renderPdf(spec, images);
