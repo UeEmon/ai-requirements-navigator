@@ -81,3 +81,34 @@ classDiagram
     Round "1" --> "0..1" Decision
     Decision "1" --> "*" Requirement : creates
     Project "1" *-- "*" Requirement
+    class Integration {
+        +id
+        +kind : github|jira|backlog
+        +config
+        +encryptedSecret
+        +secretLast4
+    }
+    class TaskPlan {
+        +id
+        +epics[]
+        +uncovered[]
+        +basis[] : 要件コードと版
+    }
+    class Story {
+        +key : E1-S2
+        +acceptanceCriteria[]
+        +estimate : S|M|L
+        +requirementCodes[]
+        +tasks[]
+    }
+    class TaskExport {
+        +id
+        +target
+        +items[] : key→課題URL
+    }
+    Organization "1" *-- "*" Integration
+    Project "1" *-- "*" TaskPlan
+    TaskPlan "1" *-- "*" Story
+    Story "*" --> "*" Requirement : traces
+    TaskPlan "1" --> "*" TaskExport
+    TaskExport "*" --> "1" Integration

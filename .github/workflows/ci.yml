@@ -84,6 +84,16 @@ jobs:
           RQ=$(curl -fs localhost:8787/api/projects/$PJ/requirements "${H[@]}" | jq -r '.[0].id')
           curl -fs -X PATCH localhost:8787/api/requirements/$RQ "${H[@]}" -d '{"title":"編集した要件","reason":"CI"}' | jq -c '{code, version}'
           curl -fs "localhost:8787/api/orgs/$ORG/audit?limit=5" "${H[@]}" | jq -c '[.entries[].action]'
+          # 実装工程への連携: 機能要件を確定 → タスク分解（非同期）→ CSV → トレーサビリティ → 連携先の登録（外部へは接続しない）
+          R2=$(curl -fs -X POST localhost:8787/api/projects/$PJ/rounds "${H[@]}" -d '{"answer":"ネットで予約したい","phaseKey":"functions"}' | jq -r .id)
+          curl -fs -X POST localhost:8787/api/rounds/$R2/decision "${H[@]}" -d '{"pick":"merged","advancePhase":false}' | jq -c '[.added[].code]'
+          TJ=$(curl -fs -X POST "localhost:8787/api/projects/$PJ/tasks/generate?async=1" "${H[@]}" | jq -r .jobId)
+          for i in $(seq 1 30); do S=$(curl -fs localhost:8787/api/jobs/$TJ "${H[@]}" | jq -r .status); [ "$S" = done ] && break; [ "$S" = failed ] && exit 1; sleep 1; done
+          STORIES=$(curl -fs localhost:8787/api/projects/$PJ/tasks "${H[@]}" | jq -r .stats.stories)
+          [ "$STORIES" -ge 1 ] && echo "::notice::タスク分解OK（ストーリー $STORIES 件）"
+          curl -fs localhost:8787/api/projects/$PJ/tasks/file/jira.csv "${H[@]}" | head -2
+          curl -fs localhost:8787/api/projects/$PJ/trace "${H[@]}" | jq -ce '.summary | select(.covered == .targets)'
+          curl -fs -X POST localhost:8787/api/orgs/$ORG/integrations "${H[@]}" -d '{"kind":"github","config":{"owner":"acme","repo":"app"},"token":"ghp_dummy1234"}' | jq -ce 'select(.token == "••••1234") | {target, token}'
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"docx"}' -o spec.docx && file spec.docx
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"pdf"}' -o spec.pdf && head -c 5 spec.pdf | grep -q '%PDF-'
           grep -a -q 'NotoSansCJK' spec.pdf && echo "::notice::PDFに日本語フォント(Noto Sans CJK)が埋め込まれています ($(stat -c%s spec.pdf) bytes)"

@@ -8,6 +8,7 @@
 - **AWS とローカルDocker のどちらでも** 同じコンテナイメージで動きます
 - AIが **観点の抜け漏れを確認しながら質問** し、回答の候補と用語の説明を添えます
 - 成果物は **UML 5種**（ユースケース・クラス・シーケンス・状態遷移・アクティビティ）と **要件定義書（Word / PDF / Markdown）**
+- 確定した要件を **実装タスクに分解** し、**GitHub Issues・Jira・Backlog に登録** できます。要件 → ストーリー → 課題のつながりを一覧で確認できます
 - 使用するOSSは **再配布可能・著作権表示で利用できるライセンスのみ** です（CIで自動検査）
 
 ## すぐに試す（ローカルDocker）
@@ -26,6 +27,7 @@ http://localhost:8787 を開き、次の順に操作します。
 4. 案を比較して採用 →「要件一覧」で確認
 5. 「UML」で「AIで設計図を作る」（複数AIモードでは、各AIの設計を匿名で比較して選びます）→ 図ごとに SVG / PNG で保存、Mermaid / PlantUML のソースをコピー
 6. 「仕様書」で Word / PDF / Markdown を出力（図は画像として埋め込まれます）
+7. 「実装連携」で「AIでタスクに分解する」→ CSV で出力するか、管理者が登録した GitHub・Jira・Backlog に課題として登録（[連携の設定](docs/integrations.md)）
 
 APIキーなしで画面の流れだけを見たい場合は http://localhost:8787/demo.html を開いてください（応答はすべて模擬）。
 
@@ -55,7 +57,7 @@ apps/
   api/           API（Hono）。認証・権限、AIの登録と暗号化、生成ラウンド、要件・仕様書
   web/public/    画面。index.html（本番画面）、demo.html（模擬応答のデモ）
 packages/
-  ai-core/       AI連携の中核。各社アダプタ、並列生成→匿名化→評価、プロンプト、UML生成
+  ai-core/       AI連携の中核。各社アダプタ、並列生成→匿名化→評価、プロンプト、UML生成、タスク分解
 db/migrations/   PostgreSQL のスキーマ（起動時に自動適用）
 deploy/aws/      AWS CDK
 docs/            要件定義書、UML（Mermaid）、設計判断（ADR）、OSS方針
@@ -102,6 +104,7 @@ npm run init:project -- --name "顧客管理システム" --slug crm-system
 ## ドキュメント
 
 - [ログインの設定（Cognito / Keycloak）](docs/auth.md)
+- [実装工程への連携（GitHub / Jira / Backlog）](docs/integrations.md)
 - [要件定義書（ベースライン・実装状況）](docs/requirements.md)
 - [UML](docs/uml/)
 - [設計判断（ADR）](docs/adr/)

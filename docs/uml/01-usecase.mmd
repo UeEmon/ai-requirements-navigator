@@ -20,7 +20,11 @@ flowchart LR
         UC11((レビュー・承認する))
         UC12((タスクへ分解する))
         UC13((AIとAPIキーを登録する<br/>利用量を確認する))
+        UC14((課題管理ツールに登録する))
+        UC15((トレーサビリティを確認する))
+        UC16((連携先を登録する))
     end
+    ITS[[GitHub / Jira / Backlog]]
 
     PM --- UC1
     PM --- UC2
@@ -31,6 +35,12 @@ flowchart LR
     RV --- UC11
     RV --- UC12
     AD --- UC13
+    AD --- UC16
+    PM --- UC12
+    PM --- UC14
+    RV --- UC15
+    UC14 -.include.-> UC12
+    UC14 --- ITS
     UC3 -.include.-> UC5
     UC4 -.extend.-> UC3
     UC5 -.include.-> UC6

@@ -57,7 +57,7 @@
 | F4-5 | 決定記録 | 必須 | 済 | `decisions` テーブル |
 | F5-1 | 要件リポジトリ（ID採番） | 必須 | 済 | `requirements` テーブル |
 | F5-2 | 要件の編集・削除と版の履歴 | 必須 | 済（差分表示は今後） | `PATCH/DELETE /api/requirements/:id`、`GET .../versions` |
-| F5-3 | トレーサビリティ | 推奨 | 一部（要件→ラウンド） | `requirements.round_id` |
+| F5-3 | トレーサビリティ（要件 → 案・決定 → ストーリー → 課題） | 推奨 | 済 | `requirements.round_id`、`GET /api/projects/:id/trace` |
 | F5-4 | レビュー・承認 | 推奨 | 未 | ― |
 | F6-1 | UML生成（ユースケース・クラス・シーケンス・状態遷移・アクティビティ） | 必須 | 済 | `ai-core/src/uml.ts`、`POST /api/projects/:id/uml/generate` |
 | F6-2 | 仕様書生成 | 必須 | 済（Markdown / Word / PDF） | `apps/api/src/spec.ts` |
@@ -69,8 +69,8 @@
 | F8-5 | ログイン画面（OIDC 認可コード＋PKCE、Cognito / Keycloak） | 推奨 | 済 | `apps/api/src/auth.ts`、[auth.md](./auth.md) |
 | F8-6 | AI処理の非同期実行と進み具合の表示 | 推奨 | 済 | `apps/api/src/jobs.ts`、`GET /api/jobs/:id` |
 | F6-4 | UML生成の複数AI比較（匿名評価して選択） | 推奨 | 済 | `compareUmlModels`、`POST /api/uml-rounds/:id/adopt` |
-| F7-1 | タスク分解 | 推奨 | 未 | ― |
-| F7-2 | GitHub / Jira / Backlog 連携 | 任意 | 一部（GitHub Issueテンプレート） | `.github/ISSUE_TEMPLATE` |
+| F7-1 | タスク分解（エピック・ストーリー・作業タスク、受け入れ条件、見積り、未対応要件の検出） | 推奨 | 済 | `ai-core/src/tasks.ts`、`POST /api/projects/:id/tasks/generate` |
+| F7-2 | GitHub / Jira / Backlog 連携（直接登録・CSV出力・再実行で続きから） | 任意 | 済 | `apps/api/src/integrations.ts`、[integrations.md](./integrations.md) |
 
 ## 4. 非機能要件
 
