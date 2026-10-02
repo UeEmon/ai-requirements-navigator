@@ -93,6 +93,3 @@ jobs:
           ec=$?
           if [ $ec -ne 0 ]; then tail -40 /tmp/synth.log | while IFS= read -r l; do echo "::error::$l"; done; fi
           exit $ec
-        env:
-          CDK_DEFAULT_ACCOUNT: "123456789012"
-          CDK_DEFAULT_REGION: ap-northeast-1

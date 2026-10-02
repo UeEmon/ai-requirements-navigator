@@ -88,7 +88,7 @@ export function defaultMockHandler(id: string): MockHandler {
         { title: extras[(s >>> 4) % extras.length], type, priority: "could" },
       ].filter((v, i, a) => a.findIndex((x) => x.title === v.title) === i),
       questions: [],
-      notes: `模擬AI ${id} の案`,
+      notes: "模擬AIによる案",
     });
   };
 }

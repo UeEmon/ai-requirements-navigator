@@ -104,6 +104,8 @@ export class ArnStack extends Stack {
     const service = new patterns.ApplicationLoadBalancedFargateService(this, "App", {
       cluster,
       desiredCount: props.desiredCount,
+      minHealthyPercent: 100,
+      circuitBreaker: { rollback: true },
       cpu: 512,
       memoryLimitMiB: 1024,
       publicLoadBalancer: true,
