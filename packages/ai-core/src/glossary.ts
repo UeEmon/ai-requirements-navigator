@@ -30,6 +30,13 @@ export const GLOSSARY: readonly GlossaryEntry[] = [
 /** 文章に出てくる用語の解説を集める（長い用語を優先、重複なし） */
 export function findGlossary(texts: string[], extra: GlossaryEntry[] = []): GlossaryEntry[] {
   const all = [...extra, ...GLOSSARY].filter((e, i, a) => a.findIndex((x) => x.term === e.term) === i);
-  const joined = texts.join("\n");
-  return all.filter((e) => e.term && joined.includes(e.term)).sort((a, b) => b.term.length - a.term.length);
+  // 長い用語から順に照合し、照合した部分は消す（「非機能要件」の中の「機能要件」を拾わない）
+  let rest = texts.join("\n");
+  const out: GlossaryEntry[] = [];
+  for (const e of all.filter((x) => x.term).sort((a, b) => b.term.length - a.term.length)) {
+    if (!rest.includes(e.term)) continue;
+    out.push(e);
+    rest = rest.split(e.term).join("\u0000");
+  }
+  return out;
 }
