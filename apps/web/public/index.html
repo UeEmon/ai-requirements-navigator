@@ -158,11 +158,14 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
     <div class="panel"><h2 style="margin:0">システムの性格</h2>
       <p class="hint" style="margin:4px 0 10px">答えに応じて、項目ごとの推奨水準が決まります（IPA「非機能要求グレード」の考え方を参考にしています）。</p>
       <div id="nfrProfile"></div></div>
+    <div class="panel"><h2 style="margin:0">似たシステムの事例と比べる</h2>
+      <p class="hint" style="margin:4px 0 0">非機能要件は「念のため」で高くなりがちです。規模・目的・予算が似たシステムがどの水準にしているかと比べて、過大にならないようにします。</p>
+      <div id="nfrCases"></div></div>
     <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
       <div><h2 style="margin:0">非機能要件の検討状況</h2><p class="hint" style="margin:4px 0 0">速さ・止まらなさ・情報の守り方など、機能以外の要件です。後から問題になりやすいため、すべての項目を「決定・対象外・保留」のどれかにしてから要件定義を確定します。</p></div></div>
       <div id="nfrSummary"></div><div id="nfrMsg"></div></div>
     <div class="panel"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">項目</h2>
-      <label class="f">表示<select id="nfrFilter"><option value="all">すべて</option><option value="undecided">未検討だけ</option><option value="issues">要対応・確認があるもの</option><option value="split">AIの意見が分かれたもの</option></select></label></div>
+      <label class="f">表示<select id="nfrFilter"><option value="all">すべて</option><option value="undecided">未検討だけ</option><option value="issues">要対応・確認があるもの</option><option value="split">AIの意見が分かれたもの</option><option value="over">過大の可能性があるもの</option></select></label></div>
       <div id="nfrItems"></div></div>
   </section>
   <section class="view" id="v-screens">
@@ -1064,9 +1067,17 @@ const dots=n=>`<span class="tag" title="費用・手間への影響">${"●".rep
 function renderNfr(){
   const v=nfrState.v, ed=canEdit(), ev=v.evaluation;
   $("#nfrProfile").innerHTML=Object.entries(v.profileQuestions).map(([k,q])=>`<div style="margin:6px 0"><b class="cmt">${esc(q.question)}</b><div class="chips" style="margin:4px 0">${q.options.map((o,i)=>`<label style="display:inline-flex;gap:4px;align-items:center;margin-right:10px;font-size:13px"><input type="radio" name="pf-${k}" value="${i}" ${v.profile[k]===i?"checked":""} ${ed?"":"disabled"}>${esc(o)}</label>`).join("")}</div></div>`).join("")
-    +`<div class="row" style="align-items:center;margin-top:6px">${ed?'<button class="btn sm" id="pfSave">保存して推奨水準を更新</button>':""}<span>重要度：<b>${esc(v.grade.label)}</b>${v.profileAnswered<4?' <span class="hint">（未回答の質問は「中」とみなしています）</span>':""}</span></div>`;
+    +`<div class="row" style="align-items:center;margin-top:6px">${ed?'<button class="btn sm" id="pfSave">保存して推奨水準を更新</button>':""}<span>重要度：<b>${esc(v.grade.label)}</b>${v.profileAnswered<Object.keys(v.profileQuestions).length?' <span class="hint">（未回答の質問は「中」とみなしています）</span>':""}</span></div>`;
   const cats=Object.entries(v.categories);
   const split=v.items.filter(i=>i.suggestion?.split).length;
+  const sz=v.sizing||{ready:false,similar:[]};
+  const lvLabel=(i,id)=>(i.levels.find(l=>l.id===id)||{}).label||id;
+  $("#nfrCases").innerHTML=!sz.ready?'<p class="hint" style="margin-top:8px">「システムの性格」を3つ以上答えると、似た事例と比べられます。</p>'
+    :!sz.similar.length?'<p class="hint" style="margin-top:8px">似た事例が見つかりませんでした。</p>'
+    :`<div class="scroll" style="margin-top:8px"><table class="t"><thead><tr><th>事例</th><th>概要</th><th>似ている度合い</th><th>費用・手間の目安</th></tr></thead><tbody>
+      ${sz.similar.map(c=>`<tr><td>${esc(c.name)}<br><span class="tag">${c.source==="org"?"社内の過去事例":"参考類型"}</span></td><td class="cmt">${esc(c.description)}</td><td class="mono">${Math.round(c.similarity*100)}%</td><td class="mono">${c.cost}</td></tr>`).join("")}
+      <tr><td><b>このシステム</b></td><td class="cmt">今の決定（未検討は推奨の水準で計算）</td><td></td><td class="mono"><b style="color:${sz.typicalCost&&ev.cost.chosen>sz.typicalCost*1.2?"var(--bad)":"inherit"}">${ev.cost.chosen}</b>${sz.typicalCost?` <span class="hint">（事例の平均 ${sz.typicalCost}）</span>`:""}</td></tr></tbody></table></div>
+      <p class="hint">参考類型は、よくあるシステムの一般的な水準の目安で、特定の実在システムのデータではありません。社内の過去事例は、同じ組織の他のプロジェクトで決めた水準です。項目ごとの事例の水準は、下の各項目に表示します。</p>`;
   $("#nfrSummary").innerHTML=`<div class="row" style="gap:18px;margin:10px 0;align-items:center"><span>検討済み <b class="mono">${Math.round(ev.coverage*100)}%</b>（決定 ${ev.counts.decided}・対象外 ${ev.counts.na}・保留 ${ev.counts.deferred}・未検討 ${ev.counts.undecided}）</span>
       <span>費用・手間の目安 <b class="mono">${ev.cost.chosen}</b> <span class="hint">（推奨どおりなら ${ev.cost.recommended}）</span></span>${v.suggestionsAt?`<span class="hint">AIの提案：${v.suggestionsAt.slice(0,16).replace("T"," ")}${split?`・意見が分かれた項目 ${split}件`:""}</span>`:""}</div>
     <table class="t" style="max-width:720px"><tbody>${cats.map(([k,n])=>{const c=ev.byCategory[k], r=c.total?c.considered/c.total:1; return `<tr><td style="font-size:13px">${esc(n)}</td><td style="width:40%"><div style="height:8px;border-radius:4px;background:var(--rule);overflow:hidden"><i style="display:block;height:100%;width:${(r*100).toFixed(0)}%;background:${r>=1?"var(--good)":"var(--accent)"}"></i></div></td><td class="mono hint" style="white-space:nowrap">${c.considered}/${c.total}</td></tr>`}).join("")}</tbody></table>
@@ -1074,21 +1085,29 @@ function renderNfr(){
     ${(v.suggestionFailures||[]).map(f=>`<div class="note warn">${esc(f.provider)}：${esc(f.reason)}</div>`).join("")}
     ${ed?`<div class="row" style="margin-top:10px;align-items:flex-end"><button class="btn" id="nfrSuggest">AIに推奨水準を提案してもらう</button>
       <button class="btn ghost" id="nfrApply" ${v.suggestionsAt?"":"disabled"}>AIの意見が一致した提案を、未検討の項目にまとめて採用</button>
+      <button class="btn ghost" id="nfrReview">AIに過大な水準がないか見直してもらう</button>
       <label class="f">要件の主語<input id="nfrSys" value="本システム" style="width:10em"></label><button class="btn ghost" id="nfrReq">決めた水準を要件にする</button></div>
+      ${v.reviewAt?`<p class="hint">AIの見直し：${v.reviewAt.slice(0,16).replace("T"," ")}（${v.reviewAnalysts}件のAI）・下げる提案 ${v.items.filter(i=>i.review).length}項目</p>`:""}
+      ${(v.reviewFailures||[]).map(f=>`<div class="note warn">${esc(f.provider)}：${esc(f.reason)}</div>`).join("")}
       <p class="hint">AIの意見が分かれた項目は、提案の理由を見比べて人が決めてください。推奨より低い水準を選ぶときは理由を記録します。</p>`:""}`;
   const f=nfrState.filter, issueKeys=new Set(ev.findings.flatMap(x=>x.items));
-  const shown=v.items.filter(i=>f==="all"||(f==="undecided"&&i.decision.status==="undecided")||(f==="issues"&&issueKeys.has(i.key))||(f==="split"&&i.suggestion?.split));
+  const overKeys=new Set([...ev.findings.filter(x=>/過大|似た事例|推奨より(大きく)?高い|高め|求めています|見込んで/.test(x.message)).flatMap(x=>x.items), ...v.items.filter(i=>i.review).map(i=>i.key)]);
+  const shown=v.items.filter(i=>f==="all"||(f==="undecided"&&i.decision.status==="undecided")||(f==="issues"&&issueKeys.has(i.key))||(f==="split"&&i.suggestion?.split)||(f==="over"&&overKeys.has(i.key)));
   $("#nfrItems").innerHTML=cats.map(([ck,cn])=>{const its=shown.filter(i=>i.category===ck); if(!its.length) return ""; return `<h3 style="margin:16px 0 6px">${esc(cn)}</h3>`+its.map(i=>{
     const d=i.decision, [sl,sc]=NFR_ST[d.status], sg=i.suggestion;
     const aiAt=lid=>sg?sg.proposals.filter(p=>p.level===lid).map(p=>esc(p.provider)):[];
+    const caseAt=lid=>(i.cases?.levels||[]).filter(x=>x.level===lid).map(x=>esc(x.name));
+    const rv=i.review;
     const custom=!d.level&&d.value;
     return `<div class="cand" style="padding:10px 12px;margin-bottom:10px" id="nfr-${esc(i.key)}">
       <div class="row" style="justify-content:space-between;align-items:baseline"><b>${esc(i.name)}</b><span><span class="st ${sc}">${sl}</span>${i.requirement?` <span class="tag" title="${esc(i.requirement.title)}">→ ${esc(i.requirement.code)}</span>`:""}${i.organizational?' <span class="tag">体制・計画の取り決め</span>':""}</span></div>
       <div style="margin:4px 0">${esc(i.question)}</div><div class="cmt">${esc(i.why)}</div>
       ${sg?.split?`<div class="note warn" style="margin-top:6px">AIの意見が分かれています。${sg.proposals.map(p=>`<div>${esc(p.provider)}：${esc(p.level?(i.levels.find(l=>l.id===p.level)||{}).label||p.level:p.value)} — ${esc(p.rationale)}</div>`).join("")}</div>`:""}
       ${sg?sg.proposals.filter(p=>p.question).map(p=>`<div class="cmt">💬 ${esc(p.provider)}からの確認：${esc(p.question)}</div>`).join(""):""}
+      ${rv&&d.level&&rv.level!==d.level?`<div class="note warn" style="margin-top:6px"><b>AI ${rv.votes}/${rv.analysts} が「${esc(lvLabel(i,rv.level))}」への見直しを提案</b>${rv.reasons.map(r=>`<div>${esc(r.provider)}：${esc(r.reason)}${r.risk?`（下げた場合：${esc(r.risk)}）`:""}</div>`).join("")}
+        ${ed?`<button class="btn sm" style="margin-top:6px" data-nlower="${esc(i.key)}" data-lv="${esc(rv.level)}">この水準にする</button>`:""}</div>`:""}
       <div style="margin:8px 0;display:flex;flex-direction:column;gap:3px">${i.levels.map(l=>`<label style="display:flex;gap:6px;align-items:baseline;font-size:13.5px"><input type="radio" name="lv-${esc(i.key)}" value="${l.id}" ${d.level===l.id?"checked":""} ${ed?"":"disabled"}>
-        <span>${esc(l.label)} ${dots(l.cost)}${l.id===i.recommended?' <span class="pill">推奨</span>':""}${aiAt(l.id).length?` <span class="tag">AI：${aiAt(l.id).join("、")}</span>`:""}${l.makesRequirement?"":' <span class="tag">要件は作らない</span>'}</span></label>`).join("")}
+        <span>${esc(l.label)} ${dots(l.cost)}${l.id===i.recommended?' <span class="pill">推奨</span>':""}${caseAt(l.id).length?` <span class="tag" style="color:var(--good)">事例：${caseAt(l.id).join("、")}</span>`:""}${aiAt(l.id).length?` <span class="tag">AI：${aiAt(l.id).join("、")}</span>`:""}${l.makesRequirement?"":' <span class="tag">要件は作らない</span>'}</span></label>`).join("")}
         <label style="display:flex;gap:6px;align-items:center;font-size:13.5px"><input type="radio" name="lv-${esc(i.key)}" value="" ${custom?"checked":""} ${ed?"":"disabled"}>その他：<input id="nv-${esc(i.key)}" value="${esc(d.value)}" placeholder="具体的な値" style="width:16em" ${ed?"":"disabled"}></label></div>
       ${ed?`<div class="row" style="align-items:flex-end"><label class="f" style="flex:1">理由（推奨より低い・対象外のときは必須）<input id="nr-${esc(i.key)}" value="${esc(d.rationale)}"></label>
         <label class="f">保留のとき、決める人<input id="no-${esc(i.key)}" value="${esc(d.owner)}" style="width:10em"></label></div>
@@ -1106,6 +1125,16 @@ function renderNfr(){
     try{ nfrState.v=await api(`/api/projects/${S.project.id}/nfr/items/${k}`,{method:"PATCH",body}); renderNfr() }
     catch(e){ const m=document.getElementById("nm-"+k); if(m) m.innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   });
+  document.querySelectorAll("[data-nlower]").forEach(b=>b.onclick=async()=>{
+    const k=b.dataset.nlower, it=v.items.find(x=>x.key===k), rv=it.review;
+    try{ nfrState.v=await api(`/api/projects/${S.project.id}/nfr/items/${k}`,{method:"PATCH",body:{status:"decided",level:b.dataset.lv,rationale:`AIの見直し（${rv.votes}/${rv.analysts}）により適正化：${rv.reasons[0]?.reason||""}`}}); renderNfr(); toast("水準を見直しました") }
+    catch(e){ toast(e.message) }
+  });
+  if($("#nfrReview")) $("#nfrReview").onclick=async()=>{
+    const b=$("#nfrReview"); b.disabled=true; $("#nfrMsg").innerHTML='<p class="hint">AIが、規模・目的・予算と似た事例に照らして過大な水準を探しています…</p><div id="nfrProg"></div>';
+    try{ nfrState.v=await runJob(`/api/projects/${S.project.id}/nfr/review`, {}, p=>{const el=$("#nfrProg"); if(el) el.innerHTML=stepsHtml(p)}); nfrState.filter="over"; $("#nfrFilter").value="over"; $("#nfrMsg").innerHTML=""; renderNfr() }
+    catch(e){ $("#nfrMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` } finally{ if($("#nfrReview")) $("#nfrReview").disabled=false }
+  };
   if($("#nfrSuggest")) $("#nfrSuggest").onclick=async()=>{
     const b=$("#nfrSuggest"); b.disabled=true; $("#nfrMsg").innerHTML='<p class="hint">AIが未検討の項目の水準を検討しています…</p><div id="nfrProg"></div>';
     try{ nfrState.v=await runJob(`/api/projects/${S.project.id}/nfr/suggest`, {onlyUndecided:true}, p=>{const el=$("#nfrProg"); if(el) el.innerHTML=stepsHtml(p)}); $("#nfrMsg").innerHTML=""; renderNfr() }

@@ -62,6 +62,7 @@
 | F5-4 | レビュー・承認 | 推奨 | 未 | ― |
 | F5-7 | EARS 記法による要件文（機能要件・非機能要件。構造で保存し、文型と表現を検査） | 推奨 | 済 | `ai-core/src/ears.ts`、`POST /api/ears/preview` |
 | F5-8 | 非機能要件シート（システムの性格からの推奨水準、26項目の検討、矛盾の検出、複数AIの提案、EARS要件化、確定前の確認） | 推奨 | 済 | `ai-core/src/nfr.ts`、`apps/api/src/nfr-sheet.ts`、[nfr.md](./nfr.md) |
+| F5-9 | 非機能要件の適正化（規模・目的・予算、似た事例（参考類型・社内の過去事例）との比較、過大の検出、AIによる見直し） | 推奨 | 済 | `ai-core/src/nfr-cases.ts`、`POST /api/projects/:id/nfr/review` |
 | F5-5 | 要件定義の確定（確定版の保存。確定後は要件を直接編集できない） | 推奨 | 済 | `POST /api/projects/:id/baseline` |
 | F5-6 | 確定後の変更要求と影響分析（トレース＋複数AI）、変更する／代替案／保留／変更しないの選択 | 推奨 | 済 | `ai-core/src/impact.ts`、`POST /api/changes/:id/analyze`・`/decide` |
 | F6-1 | UML生成（ユースケース・クラス・シーケンス・状態遷移・アクティビティ） | 必須 | 済 | `ai-core/src/uml.ts`、`POST /api/projects/:id/uml/generate` |
