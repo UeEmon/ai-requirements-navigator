@@ -109,8 +109,7 @@ jobs:
           curl -fs -X POST localhost:8787/api/projects/$PJ/nfr/apply-suggestions "${H[@]}" -d '{}' | jq -c '{applied: (.applied | length), coverage: .sheet.evaluation.coverage}'
           NADD=$(curl -fs -X POST localhost:8787/api/projects/$PJ/nfr/requirements "${H[@]}" -d '{"systemName":"予約システム"}' | jq '.added | length')
           [ "$NADD" -gt 5 ] && echo "::notice::非機能要件シートOK（EARSの非機能要件 $NADD 件）"
-          GATE=$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8787/api/projects/$PJ/baseline "${H[@]}" -d '{}')
-          echo "確定前の確認: HTTP $GATE"
+          curl -fs localhost:8787/api/projects/$PJ/nfr "${H[@]}" | jq -c '.evaluation | {coverage, findings: [.findings[].severity]}'
  → 変更要求の影響分析（非同期）→ 変更
           SC=$(curl -fs -X POST localhost:8787/api/projects/$PJ/screens/generate "${H[@]}" -d '{}' | jq -r .screens.revision)
           [ "$SC" = 1 ] && echo "::notice::画面イメージOK"
