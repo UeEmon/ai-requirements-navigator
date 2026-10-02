@@ -45,10 +45,23 @@ function readJson(p) {
   return JSON.parse(readFileSync(p, "utf8"));
 }
 
-function licenseOf(pkg) {
+function licenseOf(pkg, dir) {
   if (typeof pkg.license === "string") return pkg.license;
   if (pkg.license?.type) return pkg.license.type;
   if (Array.isArray(pkg.licenses)) return pkg.licenses.map((l) => l.type ?? l).join(" OR ");
+  return licenseFromFile(dir);
+}
+
+/** package.json に記載がない場合、LICENSE ファイルの本文から判定する */
+function licenseFromFile(dir) {
+  const f = readdirSync(dir).find((x) => /^licen[cs]e(\.|$)/i.test(x));
+  if (!f) return "UNKNOWN";
+  const t = readFileSync(join(dir, f), "utf8").replace(/\s+/g, " ");
+  if (/Permission is hereby granted, free of charge/i.test(t) && /WITHOUT WARRANTY OF ANY KIND/i.test(t)) return "MIT";
+  if (/Apache License,? Version 2\.0/i.test(t)) return "Apache-2.0";
+  if (/Permission to use, copy, modify, and\/or distribute this software for any purpose/i.test(t)) return "ISC";
+  if (/Redistribution and use in source and binary forms/i.test(t))
+    return /Neither the name/i.test(t) ? "BSD-3-Clause" : "BSD-2-Clause";
   return "UNKNOWN";
 }
 
@@ -102,7 +115,7 @@ function walk(dir, includeDev, isWorkspace) {
       walk(real, includeDev, true);
       continue;
     }
-    found.set(real, { name: p.name, version: p.version, license: licenseOf(p), dir: real });
+    found.set(real, { name: p.name, version: p.version, license: licenseOf(p, real), dir: real });
     walk(real, false, false);
   }
 }
