@@ -175,7 +175,7 @@ describe("資料の分析・業務の見直し・EARS", () => {
     await post(`/api/projects/${p.id}/documents`, { name: "議事録", kind: "minutes", text: MINUTES });
     const rnd = await (await post(`/api/projects/${p.id}/rounds`, { answer: "電話を減らしたい", phaseKey: "purpose" })).json();
     await post(`/api/rounds/${rnd.id}/decision`, { pick: "A", advancePhase: false });
-    await post(`/api/projects/${p.id}/baseline`);
+    await post(`/api/projects/${p.id}/baseline`, { reason: "テスト", force: true });
 
     const { jobId } = await (await post(`/api/projects/${p.id}/analyses?async=1`, {})).json();
     await t.app.jobs.drain();

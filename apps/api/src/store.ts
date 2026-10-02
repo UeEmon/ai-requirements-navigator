@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
+import type { AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, NfrDecision, NfrProfile, NfrSuggestion, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
 export interface Org {
   id: string;
@@ -116,7 +116,7 @@ export interface AuditEntry {
   at: string;
 }
 
-export type JobKind = "round" | "uml" | "tasks" | "export" | "screens" | "impact" | "analysis";
+export type JobKind = "round" | "uml" | "tasks" | "export" | "screens" | "impact" | "analysis" | "nfr";
 export type JobStatus = "queued" | "running" | "done" | "failed";
 export interface JobProgress {
   steps?: Array<{ key: string; label: string; status: "waiting" | "running" | "done" | "failed"; reason?: string }>;
@@ -346,6 +346,16 @@ export interface AnalysisRecord {
   createdAt: string;
 }
 
+/** 非機能要件シート（プロジェクトに1つ） */
+export interface NfrSheet {
+  projectId: string;
+  profile: NfrProfile;
+  decisions: Record<string, NfrDecision>;
+  /** 最新のAIの提案（AIの名前は表示名で保存） */
+  suggestions: { items: Array<NfrSuggestion & { proposals: Array<NfrSuggestion["proposals"][number] & { provider: string }> }>; at: string; failures: Array<{ provider: string; reason: string }> } | null;
+  updatedAt: string | null;
+}
+
 export interface Store {
   createOrg(name: string): Promise<Org>;
   getOrg(id: string): Promise<Org | null>;
@@ -448,6 +458,10 @@ export interface Store {
   listAnalyses(projectId: string): Promise<AnalysisRecord[]>;
   adoptAnalysis(id: string, adoption: NonNullable<AnalysisRecord["adoption"]>): Promise<AnalysisRecord | null>;
 
+  /** なければ null */
+  getNfrSheet(projectId: string): Promise<NfrSheet | null>;
+  saveNfrSheet(sheet: Omit<NfrSheet, "updatedAt">): Promise<NfrSheet>;
+
   addUsage(u: Omit<UsageRecord, "at">): Promise<void>;
   /** since 以降（省略時は全期間）の利用量をAIごとに集計する */
   usageSummary(orgId: string, since?: Date): Promise<UsageRow[]>;
@@ -483,6 +497,7 @@ export class MemoryStore implements Store {
   private changes: ChangeRequest[] = [];
   private documents: ProjectDocument[] = [];
   private analyses: AnalysisRecord[] = [];
+  private nfr = new Map<string, NfrSheet>();
   private seq = 0;
 
   async createOrg(name: string) {
@@ -819,6 +834,15 @@ export class MemoryStore implements Store {
     a.status = "adopted";
     a.adoption = adoption;
     return a;
+  }
+  async getNfrSheet(projectId: string) {
+    const s = this.nfr.get(projectId);
+    return s ? (JSON.parse(JSON.stringify(s)) as NfrSheet) : null;
+  }
+  async saveNfrSheet(sheet: Omit<NfrSheet, "updatedAt">) {
+    const s: NfrSheet = JSON.parse(JSON.stringify({ ...sheet, updatedAt: now() }));
+    this.nfr.set(sheet.projectId, s);
+    return s;
   }
   async addUsage(u: Omit<UsageRecord, "at">) {
     this.usage.push({ ...u, at: now() });

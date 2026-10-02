@@ -129,10 +129,15 @@ describe("画面設計・要件定義の確定・変更管理", () => {
     // 確定前は変更要求を作れない（直接編集できる）
     expect((await post(`/api/projects/${p.id}/changes`, { kind: "modify", requirementId: fr1.id, title: "x" })).status).toBe(400);
 
-    const b1 = await post(`/api/projects/${p.id}/baseline`, { reason: "初版" });
+    // 非機能要件が未検討なので、そのままでは確定できない
+    const blocked = await post(`/api/projects/${p.id}/baseline`, { reason: "初版" });
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toMatchObject({ code: "nfr_incomplete", undecided: expect.arrayContaining(["稼働率（止まってよい時間）"]) });
+    expect((await post(`/api/projects/${p.id}/baseline`, { force: true })).status).toBe(400); // 理由が必要
+    const b1 = await post(`/api/projects/${p.id}/baseline`, { reason: "初版（非機能要件は次の打合せで決める）", force: true });
     expect(b1.status).toBe(201);
     expect((await b1.json()).version).toBe(1);
-    expect((await post(`/api/projects/${p.id}/baseline`)).status).toBe(409);
+    expect((await post(`/api/projects/${p.id}/baseline`, { reason: "x", force: true })).status).toBe(409);
     expect((await post(`/api/projects/${p.id}/baseline`, {}, "viewer")).status).toBe(403);
 
     // 直接の編集・削除はできない
@@ -186,7 +191,7 @@ describe("画面設計・要件定義の確定・変更管理", () => {
 
   it("確定後のヒアリングで採用した項目は変更要求になり、代替案・保留・変更しない・削除を選べる", async () => {
     const p = await ready();
-    await post(`/api/projects/${p.id}/baseline`);
+    await post(`/api/projects/${p.id}/baseline`, { reason: "テスト", force: true });
     const before = (await (await req(`/api/projects/${p.id}/requirements`, as("viewer"))).json()).length;
 
     // ヒアリング → 要件には加えず、追加の変更要求にする

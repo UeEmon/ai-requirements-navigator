@@ -35,6 +35,10 @@ export type AuditAction =
   | "document.delete"
   | "ai.analysis"
   | "analysis.adopt"
+  | "nfr.profile"
+  | "nfr.item"
+  | "ai.nfr"
+  | "nfr.requirements"
   | "auth.login";
 
 export interface AuditInput {

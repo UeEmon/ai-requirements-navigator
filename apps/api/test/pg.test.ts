@@ -191,6 +191,18 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       expect(er!.ears).toEqual(ears);
       expect((await store.updateRequirement(er!.id, { priority: "should" }, "u1", ""))!.ears).toEqual(ears);
       expect((await store.updateRequirement(er!.id, { title: "手で変えた", ears: null }, "u1", ""))!.ears).toBeNull();
+
+      // 非機能要件シート（なければ null、保存は上書き）
+      expect(await store.getNfrSheet(project.id)).toBeNull();
+      await store.saveNfrSheet({ projectId: project.id, profile: { impact: 1 }, decisions: {}, suggestions: null });
+      const ns = await store.saveNfrSheet({
+        projectId: project.id,
+        profile: { impact: 2 },
+        decisions: { "av.rate": { status: "decided", level: "L3", value: "", rationale: "r", owner: "" } },
+        suggestions: { items: [], at: "2026-10-02T00:00:00Z", failures: [] },
+      });
+      expect(ns.updatedAt).not.toBeNull();
+      expect(await store.getNfrSheet(project.id)).toMatchObject({ profile: { impact: 2 }, decisions: { "av.rate": { level: "L3" } }, suggestions: { items: [] } });
     } finally {
       await store.pool.end();
     }

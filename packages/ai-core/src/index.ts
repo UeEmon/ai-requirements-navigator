@@ -14,3 +14,4 @@ export * from "./screens.js";
 export * from "./impact.js";
 export * from "./ears.js";
 export * from "./analysis.js";
+export * from "./nfr.js";

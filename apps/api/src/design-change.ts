@@ -45,7 +45,14 @@ const FeedbackInput = z.object({
   screenKey: z.string().max(10).nullable().default(null),
   text: z.string().min(1).max(1000),
 });
-const BaselineInput = z.object({ reason: z.string().max(1000).default("") });
+const BaselineInput = z.object({
+  reason: z.string().max(1000).default(""),
+  /** 非機能要件の検討が終わっていなくても確定する（reason が必要） */
+  force: z.boolean().default(false),
+});
+
+/** 確定前の確認（非機能要件シート） */
+export type BaselineGate = (p: Project) => Promise<{ ok: boolean; undecided: string[]; errors: string[]; coverage: number }>;
 const TypeSchema = z.enum(["BR", "AC", "FR", "NFR", "CN"]);
 const PrioritySchema = z.enum(["must", "should", "could"]);
 const ChangeInput = z.object({
@@ -70,7 +77,7 @@ const TYPE_PHASE: Record<string, string> = { BR: "purpose", AC: "actors", FR: "f
 const snapshotOf = (rs: Requirement[]): Baseline["snapshot"] =>
   rs.map((r) => ({ code: r.code, type: r.type, title: r.title, description: r.description, priority: r.priority, version: r.version }));
 
-export function designAndChange(ctx: ImplementationContext) {
+export function designAndChange(ctx: ImplementationContext, opts: { gate?: BaselineGate } = {}) {
   const { store } = ctx;
 
   /** 確定済みなら確定版を返す */
@@ -382,6 +389,23 @@ export function designAndChange(ctx: ImplementationContext) {
       if (await baselineOf(p.id)) throw new HTTPException(409, { message: "要件定義は確定済みです。変更は変更要求で行ってください" });
       const reqs = await store.listRequirements(p.id);
       if (!reqs.length) throw new HTTPException(400, { message: "要件がまだありません" });
+      // 非機能要件の検討が終わっているか（未検討の項目・要対応の矛盾）
+      const g = opts.gate ? await opts.gate(p) : null;
+      if (g && !g.ok) {
+        if (!input.force) {
+          return c.json(
+            {
+              error: `非機能要件の検討が終わっていません（未検討 ${g.undecided.length}項目、要対応 ${g.errors.length}件）。「非機能要件」で検討するか、理由を書いて確定してください`,
+              code: "nfr_incomplete",
+              undecided: g.undecided,
+              errors: g.errors,
+              coverage: g.coverage,
+            },
+            409,
+          );
+        }
+        if (!input.reason.trim()) throw new HTTPException(400, { message: "非機能要件の検討を残したまま確定する理由を書いてください" });
+      }
       const b = await store.addBaseline({ projectId: p.id, snapshot: snapshotOf(reqs), reason: input.reason || "要件定義の確定", createdBy: ctx.actorOf(c) });
       await audit(store, {
         orgId: p.orgId,
@@ -389,7 +413,12 @@ export function designAndChange(ctx: ImplementationContext) {
         action: "baseline.create",
         targetType: "project",
         targetId: p.id,
-        detail: { version: b.version, requirements: reqs.length, reason: b.reason },
+        detail: {
+          version: b.version,
+          requirements: reqs.length,
+          reason: b.reason,
+          nfr: g ? { coverage: g.coverage, undecided: g.undecided.length, errors: g.errors.length, override: !g.ok } : null,
+        },
       });
       return c.json(b, 201);
     });

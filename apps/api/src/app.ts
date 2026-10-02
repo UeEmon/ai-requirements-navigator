@@ -32,6 +32,7 @@ import { hasRole, type Authenticator, type OidcClient, type Principal, type Role
 import { maskKey, type KeyEncryptor } from "./crypto.js";
 import { designAndChange } from "./design-change.js";
 import { discovery } from "./discovery.js";
+import { nfrSheet } from "./nfr-sheet.js";
 import { implementation, type ImplementationContext } from "./implementation.js";
 import { JobError, JobRunner, type JobRunnerOptions } from "./jobs.js";
 import { buildSpec, CONTENT_TYPE, PdfFontMissingError, renderDocx, renderMarkdown, renderPdf, type SpecFormat, type SpecImage } from "./spec.js";
@@ -862,7 +863,8 @@ export function createApp(deps: AppDeps) {
     labelsOf,
   };
   const impl = implementation(moduleCtx);
-  const dc = designAndChange(moduleCtx);
+  const nfr = nfrSheet(moduleCtx);
+  const dc = designAndChange(moduleCtx, { gate: nfr.gate });
   const disc = discovery(moduleCtx);
 
   const asJobError = (e: unknown): never => {
@@ -899,6 +901,11 @@ export function createApp(deps: AppDeps) {
         return dc.jobHandlers.screens(p, job.input, job.createdBy, report).catch(asJobError);
       },
       impact: async ({ job, report }) => dc.jobHandlers.impact(job.input, job.createdBy, report).catch(asJobError),
+      nfr: async ({ job, report }) => {
+        const p = await store.getProject(job.projectId!);
+        if (!p) throw new JobError("プロジェクトが見つかりません", 404);
+        return nfr.jobHandler(p, job.input, job.createdBy, report).catch(asJobError);
+      },
       analysis: async ({ job, report }) => {
         const p = await store.getProject(job.projectId!);
         if (!p) throw new JobError("プロジェクトが見つかりません", 404);
@@ -918,6 +925,7 @@ export function createApp(deps: AppDeps) {
   impl.routes(app, { wantsAsync, enqueue });
   dc.routes(app, { wantsAsync, enqueue });
   disc.routes(app, { wantsAsync, enqueue });
+  nfr.routes(app, { wantsAsync, enqueue });
 
   /** EARS の構造から文を組み立て、検査結果を返す（画面の入力中の確認用） */
   app.post("/api/ears/preview", async (c) => {
@@ -1188,7 +1196,7 @@ export function createApp(deps: AppDeps) {
     const found = await disc.specMore(p);
     const spec = buildSpec(p, await store.listRequirements(p.id), await store.listDecisions(p.id), diagrams, new Date(), {
       baseline: more.baseline,
-      extras: [...more.extras, ...found.extras],
+      extras: [...more.extras, ...found.extras, ...(await nfr.specMore(p))],
     });
     try {
       if (format === "docx") return await renderDocx(spec, images);

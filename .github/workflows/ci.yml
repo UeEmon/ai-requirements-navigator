@@ -107,7 +107,7 @@ jobs:
           [ "$SC" = 1 ] && echo "::notice::画面イメージOK"
           curl -fs localhost:8787/api/projects/$PJ/screens/prototype.html "${H[@]}" | grep -q 'ワイヤーフレーム'
           curl -fs -X POST localhost:8787/api/projects/$PJ/screens/feedback "${H[@]}" -d '{"text":"ボタンの色を青にしてほしい"}' | jq -ce 'select(.feedback.level == "detail") | .guidance'
-          curl -fs -X POST localhost:8787/api/projects/$PJ/baseline "${H[@]}" -d '{"reason":"CI"}' | jq -c '{version}'
+          curl -fs -X POST localhost:8787/api/projects/$PJ/baseline "${H[@]}" -d '{"reason":"CI（非機能要件は別途確認）","force":true}' | jq -c '{version}'
           RQ1=$(curl -fs localhost:8787/api/projects/$PJ/requirements "${H[@]}" | jq -r '[.[] | select(.type == "FR")][0].id')
           CR=$(curl -fs -X POST localhost:8787/api/projects/$PJ/changes "${H[@]}" -d "{\"kind\":\"modify\",\"requirementId\":\"$RQ1\",\"title\":\"変更後の要件\",\"reason\":\"CI\"}" | jq -r .id)
           IJ=$(curl -fs -X POST "localhost:8787/api/changes/$CR/analyze?async=1" "${H[@]}" | jq -r .jobId)

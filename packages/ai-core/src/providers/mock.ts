@@ -54,6 +54,7 @@ export function defaultMockHandler(id: string): MockHandler {
       });
     }
     if (req.system.includes("インタビュアー")) return mockGuide(prompt);
+    if (req.system.includes("非機能要件の専門家")) return mockNfr(prompt, id);
     if (req.system.includes("業務改善コンサルタント")) return mockAnalysis(prompt, id);
     if (req.system.includes("分析レビュアー")) {
       const labels = [...prompt.matchAll(/### 案([A-F])/g)].map((m) => m[1]!);
@@ -356,4 +357,14 @@ function mockAnalysis(prompt: string, id: string): string {
     ],
     questions: ["当日のキャンセルはどのように扱っていますか"],
   });
+}
+
+/** 目安の水準をそのまま提案する。AIによって稼働率だけ1段上を提案し、意見が分かれる例を作る */
+function mockNfr(prompt: string, id: string): string {
+  const items = [...prompt.matchAll(/^## (\S+) .+\n[\s\S]*?^目安: (L\d)$/gm)].map((m) => {
+    let level = m[2]!;
+    if (m[1] === "av.rate" && seed(id) % 2 === 1) level = `L${Math.min(4, Number(level.slice(1)) + 1)}`;
+    return { key: m[1]!, level, value: "", rationale: "業務への影響と費用のバランスから選びました", question: m[1] === "pf.peak" ? "月末に利用が増えますか？" : "" };
+  });
+  return JSON.stringify({ items });
 }

@@ -6,6 +6,7 @@ import type {
   AuditEntry,
   AnalysisRecord,
   Baseline,
+  NfrSheet,
   ChangeRequest,
   ProjectDocument,
   ChangeRequestPatch,
@@ -759,6 +760,22 @@ export class PgStore implements Store {
   async adoptAnalysis(id: string, adoption: NonNullable<AnalysisRecord["adoption"]>) {
     const { rows } = await this.pool.query("UPDATE analyses SET status = 'adopted', adoption = $2 WHERE id = $1 RETURNING *", [id, JSON.stringify(adoption)]);
     return rows[0] ? toAnalysis(rows[0]) : null;
+  }
+
+  async getNfrSheet(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM nfr_sheets WHERE project_id = $1", [projectId]);
+    const r = rows[0];
+    return r ? { projectId: r.project_id, profile: r.profile, decisions: r.decisions, suggestions: r.suggestions, updatedAt: r.updated_at ? iso(r.updated_at) : null } : null;
+  }
+  async saveNfrSheet(sheet: Omit<NfrSheet, "updatedAt">): Promise<NfrSheet> {
+    const { rows } = await this.pool.query(
+      `INSERT INTO nfr_sheets(project_id, profile, decisions, suggestions, updated_at) VALUES ($1,$2,$3,$4, now())
+       ON CONFLICT (project_id) DO UPDATE SET profile = EXCLUDED.profile, decisions = EXCLUDED.decisions, suggestions = EXCLUDED.suggestions, updated_at = now()
+       RETURNING *`,
+      [sheet.projectId, JSON.stringify(sheet.profile), JSON.stringify(sheet.decisions), sheet.suggestions ? JSON.stringify(sheet.suggestions) : null],
+    );
+    const r = rows[0];
+    return { projectId: r.project_id, profile: r.profile, decisions: r.decisions, suggestions: r.suggestions, updatedAt: iso(r.updated_at) };
   }
 
   async addUsage(u: Omit<UsageRecord, "at">) {
