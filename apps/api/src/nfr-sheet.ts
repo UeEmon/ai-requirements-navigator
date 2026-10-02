@@ -200,6 +200,8 @@ export function nfrSheet(ctx: ImplementationContext) {
         updatedAt: new Date().toISOString(),
       };
       if (next.level && !item.levels.some((l) => l.id === next.level)) throw new HTTPException(400, { message: `水準がありません: ${next.level}` });
+      // AIの提案の理由は、別の水準を選んだときの理由にはならない
+      if ((next.level !== before.level || next.value !== before.value) && next.rationale === before.rationale && before.rationale.startsWith("AIの提案")) next.rationale = "";
       if (next.status === "decided" && !next.level && !next.value.trim()) throw new HTTPException(400, { message: "水準を選ぶか、値を入力してください" });
       if (next.status === "decided" && next.level) next.value = "";
       s.decisions[item.key] = next;

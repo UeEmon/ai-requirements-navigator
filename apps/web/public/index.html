@@ -116,6 +116,7 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
     <button role="tab" data-tab="hear" aria-selected="true" id="t-hear">ヒアリング</button>
     <button role="tab" data-tab="discover" aria-selected="false" id="t-discover">資料分析</button>
     <button role="tab" data-tab="reqs" aria-selected="false" id="t-reqs">要件一覧</button>
+    <button role="tab" data-tab="nfr" aria-selected="false" id="t-nfr">非機能要件</button>
     <button role="tab" data-tab="uml" aria-selected="false" id="t-uml">UML</button>
     <button role="tab" data-tab="screens" aria-selected="false" id="t-screens">画面</button>
     <button role="tab" data-tab="spec" aria-selected="false" id="t-spec">仕様書</button>
@@ -152,6 +153,17 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
       <div><h2 style="margin:0">現状の分析と業務の見直し</h2><p class="hint" id="anInfo" style="margin:4px 0 0">今のシステムをそのまま作り直すのではなく、課題の根本原因から業務そのものを見直し、見直し後の業務に必要な要件を作ります。</p></div></div>
       <div class="row" style="margin-top:10px;align-items:flex-end"><label class="f" style="flex:1">特に見てほしい点（任意）<input id="anFocus" placeholder="例：受付の電話対応の負担、月末の集計作業"></label><button class="btn" id="anGo">AIで分析する</button></div>
       <div id="anMsg"></div><div id="anBody"></div></div>
+  </section>
+  <section class="view" id="v-nfr">
+    <div class="panel"><h2 style="margin:0">システムの性格</h2>
+      <p class="hint" style="margin:4px 0 10px">答えに応じて、項目ごとの推奨水準が決まります（IPA「非機能要求グレード」の考え方を参考にしています）。</p>
+      <div id="nfrProfile"></div></div>
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div><h2 style="margin:0">非機能要件の検討状況</h2><p class="hint" style="margin:4px 0 0">速さ・止まらなさ・情報の守り方など、機能以外の要件です。後から問題になりやすいため、すべての項目を「決定・対象外・保留」のどれかにしてから要件定義を確定します。</p></div></div>
+      <div id="nfrSummary"></div><div id="nfrMsg"></div></div>
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">項目</h2>
+      <label class="f">表示<select id="nfrFilter"><option value="all">すべて</option><option value="undecided">未検討だけ</option><option value="issues">要対応・確認があるもの</option><option value="split">AIの意見が分かれたもの</option></select></label></div>
+      <div id="nfrItems"></div></div>
   </section>
   <section class="view" id="v-screens">
     <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
@@ -352,7 +364,7 @@ async function createOrg(){
 function switchTab(t){
   document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-selected", b.dataset.tab===t));
   document.querySelectorAll("section.view").forEach(v=>v.classList.toggle("on", v.id==="v-"+t));
-  ({discover:loadDiscover, reqs:loadReqs, uml:loadUml, screens:loadScreens, spec:loadSpec, impl:loadImpl, change:loadChange, admin:renderAdmin}[t]||(()=>{}))();
+  ({discover:loadDiscover, nfr:loadNfr, reqs:loadReqs, uml:loadUml, screens:loadScreens, spec:loadSpec, impl:loadImpl, change:loadChange, admin:renderAdmin}[t]||(()=>{}))();
 }
 document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 
@@ -534,10 +546,11 @@ function renderHear(){
     bindPhaseStrip(); return;
   }
   const ph=phases[ci], g=S.guide && S.guide.phaseKey===ph.key ? S.guide : null;
+  const nfrNote = ph.key==="quality" ? `<div class="note" style="background:var(--accent-soft);margin:0 0 10px">非機能要件は、ここでの会話に加えて「非機能要件」タブの<b>26項目のシート</b>で漏れなく検討できます。<button class="btn sm ghost" id="goNfr" style="margin-left:6px">シートを開く</button></div>` : "";
   const q = g?.question || ph.question, hint = g?.hint ?? ph.hint, options = g?.options?.length ? g.options : (ph.defaultOptions||[]), glossary = g?.glossary || [];
   const covered = new Set(g?.covered||[]), pct = Math.round((g?.coverage||0)*100);
   const baseNote = S.baseline ? `<div class="note warn" style="margin:0 0 10px">要件定義は確定済みです（確定版 v${S.baseline.version}）。ここで採用した案は要件に直接加えず、「変更管理」で影響を確認する変更要求になります。</div>` : "";
-  el.innerHTML=`<div class="panel">${baseNote}${strip}<div class="lbl">${esc(S.project.name)} ・ ${S.project.aiConfig.mode==="multi"?"複数AI＋評価AI":"単一AI"} ・ ${esc(ph.name)}</div>
+  el.innerHTML=`<div class="panel">${baseNote}${nfrNote}${strip}<div class="lbl">${esc(S.project.name)} ・ ${S.project.aiConfig.mode==="multi"?"複数AI＋評価AI":"単一AI"} ・ ${esc(ph.name)}</div>
     <p class="q" id="q">${gloss(q, glossary)}</p>${hint?`<p class="hint" style="margin-top:-6px">${gloss(hint, glossary)}</p>`:""}
     <div class="chips" id="opts">${options.map(o=>`<button type="button">${esc(o)}</button>`).join("")}</div>
     <textarea id="ans" rows="3" placeholder="思いつくままに書いてください。上の候補を押すと入力できます"></textarea>
@@ -567,6 +580,7 @@ function renderHear(){
   if(S.round) renderRound();
 }
 const nextKey = k => { const ps=S.meta.phases, i=ps.findIndex(p=>p.key===k); return ps[i+1]?.key || "done"; };
+document.addEventListener("click", e=>{ if(e.target && e.target.id==="goNfr") switchTab("nfr") });
 function bindPhaseStrip(){
   document.querySelectorAll("[data-phase]").forEach(b=>b.onclick=()=>movePhase(b.dataset.phase));
 }
@@ -1039,6 +1053,75 @@ function bindEars(pre, type){
   update();
 }
 
+/* ---------- 非機能要件シート ---------- */
+const nfrState={v:null, filter:"all"};
+const NFR_ST={undecided:["未検討","bad"],decided:["決定","good"],na:["対象外",""],deferred:["保留","warn"]};
+async function loadNfr(){
+  if(!S.project){ $("#nfrProfile").innerHTML='<p class="hint">プロジェクトを開いてください</p>'; $("#nfrSummary").innerHTML=""; $("#nfrItems").innerHTML=""; return }
+  try{ nfrState.v=await api(`/api/projects/${S.project.id}/nfr`); renderNfr() }catch(e){ $("#nfrMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+}
+const dots=n=>`<span class="tag" title="費用・手間への影響">${"●".repeat(n)}${"○".repeat(4-n)}</span>`;
+function renderNfr(){
+  const v=nfrState.v, ed=canEdit(), ev=v.evaluation;
+  $("#nfrProfile").innerHTML=Object.entries(v.profileQuestions).map(([k,q])=>`<div style="margin:6px 0"><b class="cmt">${esc(q.question)}</b><div class="chips" style="margin:4px 0">${q.options.map((o,i)=>`<label style="display:inline-flex;gap:4px;align-items:center;margin-right:10px;font-size:13px"><input type="radio" name="pf-${k}" value="${i}" ${v.profile[k]===i?"checked":""} ${ed?"":"disabled"}>${esc(o)}</label>`).join("")}</div></div>`).join("")
+    +`<div class="row" style="align-items:center;margin-top:6px">${ed?'<button class="btn sm" id="pfSave">保存して推奨水準を更新</button>':""}<span>重要度：<b>${esc(v.grade.label)}</b>${v.profileAnswered<4?' <span class="hint">（未回答の質問は「中」とみなしています）</span>':""}</span></div>`;
+  const cats=Object.entries(v.categories);
+  const split=v.items.filter(i=>i.suggestion?.split).length;
+  $("#nfrSummary").innerHTML=`<div class="row" style="gap:18px;margin:10px 0;align-items:center"><span>検討済み <b class="mono">${Math.round(ev.coverage*100)}%</b>（決定 ${ev.counts.decided}・対象外 ${ev.counts.na}・保留 ${ev.counts.deferred}・未検討 ${ev.counts.undecided}）</span>
+      <span>費用・手間の目安 <b class="mono">${ev.cost.chosen}</b> <span class="hint">（推奨どおりなら ${ev.cost.recommended}）</span></span>${v.suggestionsAt?`<span class="hint">AIの提案：${v.suggestionsAt.slice(0,16).replace("T"," ")}${split?`・意見が分かれた項目 ${split}件`:""}</span>`:""}</div>
+    <table class="t" style="max-width:720px"><tbody>${cats.map(([k,n])=>{const c=ev.byCategory[k], r=c.total?c.considered/c.total:1; return `<tr><td style="font-size:13px">${esc(n)}</td><td style="width:40%"><div style="height:8px;border-radius:4px;background:var(--rule);overflow:hidden"><i style="display:block;height:100%;width:${(r*100).toFixed(0)}%;background:${r>=1?"var(--good)":"var(--accent)"}"></i></div></td><td class="mono hint" style="white-space:nowrap">${c.considered}/${c.total}</td></tr>`}).join("")}</tbody></table>
+    ${ev.findings.map(f=>`<div class="note ${f.severity==="error"?"err":"warn"}">${f.severity==="error"?"【要対応】":"【確認】"}${esc(f.message)}</div>`).join("")}
+    ${(v.suggestionFailures||[]).map(f=>`<div class="note warn">${esc(f.provider)}：${esc(f.reason)}</div>`).join("")}
+    ${ed?`<div class="row" style="margin-top:10px;align-items:flex-end"><button class="btn" id="nfrSuggest">AIに推奨水準を提案してもらう</button>
+      <button class="btn ghost" id="nfrApply" ${v.suggestionsAt?"":"disabled"}>AIの意見が一致した提案を、未検討の項目にまとめて採用</button>
+      <label class="f">要件の主語<input id="nfrSys" value="本システム" style="width:10em"></label><button class="btn ghost" id="nfrReq">決めた水準を要件にする</button></div>
+      <p class="hint">AIの意見が分かれた項目は、提案の理由を見比べて人が決めてください。推奨より低い水準を選ぶときは理由を記録します。</p>`:""}`;
+  const f=nfrState.filter, issueKeys=new Set(ev.findings.flatMap(x=>x.items));
+  const shown=v.items.filter(i=>f==="all"||(f==="undecided"&&i.decision.status==="undecided")||(f==="issues"&&issueKeys.has(i.key))||(f==="split"&&i.suggestion?.split));
+  $("#nfrItems").innerHTML=cats.map(([ck,cn])=>{const its=shown.filter(i=>i.category===ck); if(!its.length) return ""; return `<h3 style="margin:16px 0 6px">${esc(cn)}</h3>`+its.map(i=>{
+    const d=i.decision, [sl,sc]=NFR_ST[d.status], sg=i.suggestion;
+    const aiAt=lid=>sg?sg.proposals.filter(p=>p.level===lid).map(p=>esc(p.provider)):[];
+    const custom=!d.level&&d.value;
+    return `<div class="cand" style="padding:10px 12px;margin-bottom:10px" id="nfr-${esc(i.key)}">
+      <div class="row" style="justify-content:space-between;align-items:baseline"><b>${esc(i.name)}</b><span><span class="st ${sc}">${sl}</span>${i.requirement?` <span class="tag" title="${esc(i.requirement.title)}">→ ${esc(i.requirement.code)}</span>`:""}${i.organizational?' <span class="tag">体制・計画の取り決め</span>':""}</span></div>
+      <div style="margin:4px 0">${esc(i.question)}</div><div class="cmt">${esc(i.why)}</div>
+      ${sg?.split?`<div class="note warn" style="margin-top:6px">AIの意見が分かれています。${sg.proposals.map(p=>`<div>${esc(p.provider)}：${esc(p.level?(i.levels.find(l=>l.id===p.level)||{}).label||p.level:p.value)} — ${esc(p.rationale)}</div>`).join("")}</div>`:""}
+      ${sg?sg.proposals.filter(p=>p.question).map(p=>`<div class="cmt">💬 ${esc(p.provider)}からの確認：${esc(p.question)}</div>`).join(""):""}
+      <div style="margin:8px 0;display:flex;flex-direction:column;gap:3px">${i.levels.map(l=>`<label style="display:flex;gap:6px;align-items:baseline;font-size:13.5px"><input type="radio" name="lv-${esc(i.key)}" value="${l.id}" ${d.level===l.id?"checked":""} ${ed?"":"disabled"}>
+        <span>${esc(l.label)} ${dots(l.cost)}${l.id===i.recommended?' <span class="pill">推奨</span>':""}${aiAt(l.id).length?` <span class="tag">AI：${aiAt(l.id).join("、")}</span>`:""}${l.makesRequirement?"":' <span class="tag">要件は作らない</span>'}</span></label>`).join("")}
+        <label style="display:flex;gap:6px;align-items:center;font-size:13.5px"><input type="radio" name="lv-${esc(i.key)}" value="" ${custom?"checked":""} ${ed?"":"disabled"}>その他：<input id="nv-${esc(i.key)}" value="${esc(d.value)}" placeholder="具体的な値" style="width:16em" ${ed?"":"disabled"}></label></div>
+      ${ed?`<div class="row" style="align-items:flex-end"><label class="f" style="flex:1">理由（推奨より低い・対象外のときは必須）<input id="nr-${esc(i.key)}" value="${esc(d.rationale)}"></label>
+        <label class="f">保留のとき、決める人<input id="no-${esc(i.key)}" value="${esc(d.owner)}" style="width:10em"></label></div>
+        <div class="row" style="margin-top:6px"><button class="btn sm" data-nset="decided" data-k="${esc(i.key)}">この水準に決める</button><button class="btn sm ghost" data-nset="na" data-k="${esc(i.key)}">対象外にする</button><button class="btn sm ghost" data-nset="deferred" data-k="${esc(i.key)}">保留にする</button>${d.status!=="undecided"?`<button class="btn sm ghost" data-nset="undecided" data-k="${esc(i.key)}">未検討に戻す</button>`:""}</div><div id="nm-${esc(i.key)}"></div>`
+        :(d.rationale?`<div class="cmt">理由：${esc(d.rationale)}</div>`:"")}
+    </div>`}).join("")}).join("")||'<p class="hint">該当する項目はありません</p>';
+  if($("#pfSave")) $("#pfSave").onclick=async()=>{
+    const body={}; for(const k of Object.keys(v.profileQuestions)){ const c=document.querySelector(`input[name=pf-${k}]:checked`); if(c) body[k]=Number(c.value) }
+    try{ nfrState.v=await api(`/api/projects/${S.project.id}/nfr/profile`,{method:"PUT",body}); renderNfr(); toast("推奨水準を更新しました") }catch(e){ toast(e.message) }
+  };
+  document.querySelectorAll("[data-nset]").forEach(b=>b.onclick=async()=>{
+    const k=b.dataset.k, st=b.dataset.nset, c=document.querySelector(`input[name="lv-${k}"]:checked`);
+    const body={status:st, rationale:document.getElementById("nr-"+k).value.trim(), owner:document.getElementById("no-"+k).value.trim()};
+    if(st==="decided"){ if(!c){ toast("水準を選んでください"); return } if(c.value){ body.level=c.value } else { body.level=null; body.value=document.getElementById("nv-"+k).value.trim() } }
+    try{ nfrState.v=await api(`/api/projects/${S.project.id}/nfr/items/${k}`,{method:"PATCH",body}); renderNfr() }
+    catch(e){ const m=document.getElementById("nm-"+k); if(m) m.innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  });
+  if($("#nfrSuggest")) $("#nfrSuggest").onclick=async()=>{
+    const b=$("#nfrSuggest"); b.disabled=true; $("#nfrMsg").innerHTML='<p class="hint">AIが未検討の項目の水準を検討しています…</p><div id="nfrProg"></div>';
+    try{ nfrState.v=await runJob(`/api/projects/${S.project.id}/nfr/suggest`, {onlyUndecided:true}, p=>{const el=$("#nfrProg"); if(el) el.innerHTML=stepsHtml(p)}); $("#nfrMsg").innerHTML=""; renderNfr() }
+    catch(e){ $("#nfrMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` } finally{ if($("#nfrSuggest")) $("#nfrSuggest").disabled=false }
+  };
+  if($("#nfrApply")) $("#nfrApply").onclick=async()=>{
+    try{ const r=await api(`/api/projects/${S.project.id}/nfr/apply-suggestions`,{method:"POST",body:{}}); nfrState.v=r.sheet; renderNfr(); toast(`${r.applied.length}項目に採用しました。意見が分かれた項目は個別に決めてください`) }catch(e){ toast(e.message) }
+  };
+  if($("#nfrReq")) $("#nfrReq").onclick=async()=>{
+    try{ const r=await api(`/api/projects/${S.project.id}/nfr/requirements`,{method:"POST",body:{systemName:$("#nfrSys").value.trim()||"本システム"}}); nfrState.v=r.sheet; renderNfr();
+      $("#nfrMsg").innerHTML=`<div class="note" style="background:var(--accent-soft)">${r.added.length?`追加：${esc(r.added.join(", "))}　`:""}${r.updated.length?`更新：${esc(r.updated.join(", "))}　`:""}${r.changeRequests.length?`変更要求：${esc(r.changeRequests.join(", "))}（確定済みのため「変更管理」で判断してください）`:""}${!r.added.length&&!r.updated.length&&!r.changeRequests.length?"新しく作る要件はありません":""}</div>${r.skipped.map(x=>`<div class="note warn">${esc(x)}</div>`).join("")}`;
+    }catch(e){ $("#nfrMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+}
+$("#nfrFilter").onchange=e=>{ nfrState.filter=e.target.value; if(nfrState.v) renderNfr() };
+
 /* ---------- 資料分析 ---------- */
 const DOC_KIND={minutes:"議事録",existing:"既存システムの資料",business:"業務マニュアル・規程",other:"その他"};
 const ISSUE_CAT={manual:"手作業・紙",duplicate:"二重入力・転記",waiting:"待ち時間・滞留",dependency:"属人化",silo:"情報の分断",error:"ミス・手戻り",system:"現行システムの制約",control:"確認・統制の不足",other:"その他"};
@@ -1274,8 +1357,7 @@ function renderBaseline(){
     ${canEdit()?`<div class="row" style="align-items:flex-end"><label class="f" style="flex:1">確定の理由・メモ（任意）<input id="bReason" placeholder="例：関係者の確認が完了"></label><button class="btn" id="bGo">要件定義を確定する</button></div><div id="bMsg"></div>`:""}`);
   if($("#bGo")) $("#bGo").onclick=async()=>{
     if(!confirm("要件定義を確定します。以後、要件の変更・追加・削除は変更要求として行います。よろしいですか？")) return;
-    try{ await api(`/api/projects/${S.project.id}/baseline`,{method:"POST",body:{reason:$("#bReason").value.trim()}}); toast("要件定義を確定しました"); await loadChange(); renderHear() }
-    catch(e){ $("#bMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+    await confirmBaseline(false);
   };
 }
 function renderCrForm(){
@@ -1314,6 +1396,25 @@ function renderCrForm(){
     try{ const cr=await api(`/api/projects/${S.project.id}/changes`,{method:"POST",body}); changeState.selected=cr.id; await loadChange(); analyzeChange(cr.id) }
     catch(e){ $("#crMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   };
+}
+/** 確定する。非機能要件の検討が残っていれば、内容を示して「検討する／理由を書いて確定する」を選ばせる */
+async function confirmBaseline(force){
+  const reason=$("#bReason").value.trim();
+  try{
+    const res=await fetch(`/api/projects/${S.project.id}/baseline`,{method:"POST",headers:{"content-type":"application/json",...authHeaders()},body:JSON.stringify({reason,force})});
+    const d=await res.json().catch(()=>({}));
+    if(res.status===409 && d.code==="nfr_incomplete"){
+      $("#bMsg").innerHTML=`<div class="note warn"><b>非機能要件の検討が終わっていません</b>（検討済み ${Math.round((d.coverage||0)*100)}%）
+        ${d.undecided.length?`<div style="margin-top:4px">未検討 ${d.undecided.length}項目：${d.undecided.slice(0,8).map(esc).join("、")}${d.undecided.length>8?" ほか":""}</div>`:""}
+        ${d.errors.length?`<ul style="margin:4px 0 0;padding-left:1.2em">${d.errors.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}
+        <div class="row" style="margin-top:8px"><button class="btn sm" id="bToNfr">非機能要件を検討する</button><button class="btn sm ghost" id="bForce">上の「確定の理由・メモ」を書いて、このまま確定する</button></div></div>`;
+      $("#bToNfr").onclick=()=>switchTab("nfr");
+      $("#bForce").onclick=()=>{ if(!$("#bReason").value.trim()){ toast("確定の理由・メモを書いてください"); $("#bReason").focus(); return } confirmBaseline(true) };
+      return;
+    }
+    if(!res.ok) throw new Error(d.error||`HTTP ${res.status}`);
+    toast("要件定義を確定しました"); await loadChange(); renderHear();
+  }catch(e){ $("#bMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
 function crTarget(x){ return `${x.requirementCode?`<span class="mono">${esc(x.requirementCode)}</span> `:""}${x.proposal?esc(x.proposal.title):""}` }
 function renderCrList(){

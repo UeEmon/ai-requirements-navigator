@@ -89,6 +89,11 @@ describe("非機能要件シート", () => {
     expect(ap.applied).toHaveLength(26 - split.length);
     expect(ap.sheet.evaluation.counts.decided).toBe(26 - split.length);
     expect(ap.sheet.items.find((i: { key: string }) => i.key === "pf.response").decision.rationale).toContain("AIの提案（2件が一致）");
+    // 別の水準に変えると、AIの提案の理由は引き継がない（推奨より低ければ理由を求める）
+    const low = await (await patch(`/api/projects/${p.id}/nfr/items/sc.auth`, { status: "decided", level: "L1", rationale: "AIの提案（2件が一致）：業務への影響と費用のバランスから選びました" })).json();
+    expect(low.items.find((i: { key: string }) => i.key === "sc.auth").decision.rationale).toBe("");
+    expect(low.evaluation.findings.some((f: { items: string[] }) => f.items.includes("sc.auth"))).toBe(true);
+    await patch(`/api/projects/${p.id}/nfr/items/sc.auth`, { status: "decided", level: "L2", rationale: "社内のみで使うため" });
 
     const r = await (await post(`/api/projects/${p.id}/nfr/requirements`, { systemName: "予約システム" })).json();
     expect(r.added.length).toBeGreaterThan(5);
