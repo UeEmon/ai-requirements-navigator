@@ -48,10 +48,10 @@ export function defaultMockHandler(id: string): MockHandler {
         const s = seed(id + l + prompt.length);
         scores[l] = {
           coverage: 60 + (s % 35),
-          accuracy: 70 + ((s >> 3) % 25),
-          consistency: 70 + ((s >> 5) % 25),
-          feasibility: 65 + ((s >> 7) % 30),
-          clarity: 70 + ((s >> 9) % 25),
+          accuracy: 70 + ((s >>> 3) % 25),
+          consistency: 70 + ((s >>> 5) % 25),
+          feasibility: 65 + ((s >>> 7) % 30),
+          clarity: 70 + ((s >>> 9) % 25),
         };
       }
       const best = labels.reduce((a, b) => (scores[a]!.coverage >= scores[b]!.coverage ? a : b), labels[0] ?? "A");
@@ -85,7 +85,7 @@ export function defaultMockHandler(id: string): MockHandler {
       items: [
         { title: `「${answer}」を満たす基本機能を提供する`, type, priority: "must" },
         { title: extras[s % extras.length], type, priority: "should" },
-        { title: extras[(s >> 4) % extras.length], type, priority: "could" },
+        { title: extras[(s >>> 4) % extras.length], type, priority: "could" },
       ].filter((v, i, a) => a.findIndex((x) => x.title === v.title) === i),
       questions: [],
       notes: `模擬AI ${id} の案`,

@@ -69,7 +69,8 @@ jobs:
           curl -fs localhost:8787/THIRD_PARTY_NOTICES.txt | head -3
       - name: Logs on failure
         if: failure()
-        run: docker logs app || true
+        shell: bash
+        run: docker logs app 2>&1 | tail -40 | while IFS= read -r l; do echo "::error::$l"; done
 
   cdk:
     runs-on: ubuntu-latest
@@ -85,7 +86,13 @@ jobs:
       - name: Type check CDK app
         run: npx tsc -p tsconfig.json
       - name: Synthesize (no AWS credentials needed)
-        run: npx cdk synth --quiet
+        shell: bash
+        run: |
+          set +e
+          npx cdk synth --quiet > /tmp/synth.log 2>&1
+          ec=$?
+          if [ $ec -ne 0 ]; then tail -40 /tmp/synth.log | while IFS= read -r l; do echo "::error::$l"; done; fi
+          exit $ec
         env:
           CDK_DEFAULT_ACCOUNT: "123456789012"
           CDK_DEFAULT_REGION: ap-northeast-1
