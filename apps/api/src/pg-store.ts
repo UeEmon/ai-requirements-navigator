@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import type { RequirementItem } from "@arn/ai-core";
-import type { Decision, Org, Project, ProviderCredential, Requirement, Round, Store, UsageRecord } from "./store.js";
+import type { UmlModel } from "@arn/ai-core";
+import type { Decision, Org, Project, ProviderCredential, Requirement, Round, Store, UmlModelRecord, UsageRecord } from "./store.js";
 
 const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
 
@@ -60,6 +61,14 @@ const toDecision = (r: any): Decision => ({
   pick: r.pick,
   reason: r.reason,
   mapping: r.mapping,
+  createdAt: iso(r.created_at),
+});
+
+const toUml = (r: any): UmlModelRecord => ({
+  id: r.id,
+  projectId: r.project_id,
+  model: r.model,
+  providerId: r.provider_id,
   createdAt: iso(r.created_at),
 });
 
@@ -183,6 +192,21 @@ export class PgStore implements Store {
   async listDecisions(projectId: string) {
     const { rows } = await this.pool.query("SELECT * FROM decisions WHERE project_id = $1 ORDER BY created_at", [projectId]);
     return rows.map(toDecision);
+  }
+
+  async saveUmlModel(projectId: string, model: UmlModel, providerId: string): Promise<UmlModelRecord> {
+    const { rows } = await this.pool.query(
+      "INSERT INTO uml_models(project_id, model, provider_id) VALUES ($1,$2,$3) RETURNING *",
+      [projectId, JSON.stringify(model), providerId],
+    );
+    return toUml(rows[0]);
+  }
+  async latestUmlModel(projectId: string): Promise<UmlModelRecord | null> {
+    const { rows } = await this.pool.query(
+      "SELECT * FROM uml_models WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1",
+      [projectId],
+    );
+    return rows[0] ? toUml(rows[0]) : null;
   }
 
   async addUsage(u: Omit<UsageRecord, "at">) {

@@ -6,4 +6,4 @@ export * from "./orchestrator.js";
 export * from "./providers/index.js";
 export { extractJson } from "./json.js";
 export { detectAmbiguity, type AmbiguityHit } from "./ambiguity.js";
-export { toMermaidUseCase, toPlantUmlUseCase } from "./uml.js";
+export * from "./uml.js";

@@ -13,6 +13,7 @@
 | PostgreSQL License | 著作権表示 | PostgreSQL |
 | MPL-2.0 | 変更したファイルのみソース公開（ファイル単位） | DOMPurify（Apache-2.0とのデュアル） |
 | BlueOak-1.0.0 / CC0-1.0 / Unlicense / Zlib / Python-2.0 | 表示のみ、または義務なし | ― |
+| SIL Open Font License 1.1（フォント） | フォント単体での販売禁止・名称変更時の規定 | Noto Sans CJK（PDFの日本語表示） |
 
 開発時だけ使うツール（配布物に入らないもの）に限り、CC-BY-4.0 などのデータライセンスも許可します。
 
@@ -20,7 +21,7 @@
 
 | ライセンス | 理由 | 代わりに使うもの |
 | --- | --- | --- |
-| GPL / LGPL | 結合した配布物にソース公開義務が及ぶ | Pandoc（GPL）→ docx・pdfmake（MIT） |
+| GPL / LGPL | 結合した配布物にソース公開義務が及ぶ | Pandoc（GPL）→ docx・pdfmake（MIT）で Word / PDF を生成 |
 | AGPL | ネットワーク越しの提供でもソース公開義務 | MinIO → S3 / ローカルボリューム |
 | SSPL / RSAL / BUSL | 利用条件に制限がある | Redis 7.4以降 → PostgreSQL上のキュー（pg-boss, MIT） |
 | 商用・独自ライセンス | 再配布不可 | ― |

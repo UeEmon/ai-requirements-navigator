@@ -15,6 +15,8 @@ RUN npm run build \
  && npm prune --omit=dev
 
 FROM node:22-alpine
+# PDF の日本語表示用フォント（Noto Sans CJK、SIL Open Font License 1.1）
+RUN apk add --no-cache font-noto-cjk
 ENV NODE_ENV=production \
     PORT=8787 \
     WEB_DIR=/app/apps/web/public \

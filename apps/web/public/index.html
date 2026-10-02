@@ -102,10 +102,23 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
 
   <section class="view on" id="v-hear"><div id="hear"></div></section>
   <section class="view" id="v-reqs"><div class="panel"><div class="scroll" id="reqs"></div><h3 style="margin-top:20px">決定記録</h3><div id="decs"></div></div></section>
-  <section class="view" id="v-uml"><div class="panel"><h2>ユースケース図</h2><p class="hint">採用済みの要件から生成します。</p><div class="canvas" id="umlCanvas"></div>
-    <details><summary class="hint">Mermaid / PlantUML ソース</summary><pre class="code" id="umlMm"></pre><pre class="code" id="umlPu"></pre></details></div></section>
-  <section class="view" id="v-spec"><div class="panel"><div class="row" style="margin-bottom:12px">
-    <button class="btn sm" id="copySpec">Markdownをコピー</button><button class="btn sm ghost" id="saveSpec">版として保存</button><span class="hint" id="specMsg"></span></div>
+  <section class="view" id="v-uml">
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:center">
+      <div><h2 style="margin:0">UML</h2><p class="hint" id="umlInfo" style="margin:4px 0 0"></p></div>
+      <div class="row"><button class="btn" id="umlGen">AIで設計図を作る</button></div></div>
+      <p class="hint" style="margin:10px 0 0">ユースケース図は要件から自動で作ります。クラス図・シーケンス図・状態遷移図・アクティビティ図は、AIが確定済みの要件から設計モデルを作り、それを図にします。要件を追加したら作り直してください。</p>
+      <div id="umlMsg"></div></div>
+    <div id="umlList"></div>
+  </section>
+  <section class="view" id="v-spec"><div class="panel">
+    <h2>要件定義書の出力</h2>
+    <p class="hint">Word・PDF には、UMLタブと同じ図を画像として埋め込みます。出力した版は保存先（ローカルのボリューム、またはS3）にも残ります。</p>
+    <div class="row" style="margin-bottom:12px">
+      <button class="btn" data-fmt="docx">Word（.docx）</button>
+      <button class="btn" data-fmt="pdf">PDF</button>
+      <button class="btn ghost" data-fmt="md">Markdown</button>
+      <button class="btn sm ghost" id="copySpec">Markdownをコピー</button>
+      <span class="hint" id="specMsg"></span></div>
     <pre class="code" id="spec" style="white-space:pre-wrap"></pre></div></section>
   <section class="view" id="v-admin"><div class="grid2">
     <div class="panel" id="provPanel"></div>
@@ -122,10 +135,14 @@ const store = { get(k){try{return localStorage.getItem("arn."+k)}catch(e){return
 const S = { meta:null, orgId:store.get("orgId")||"", role:store.get("role")||"admin", token:store.get("token")||"", providers:[], project:null, round:null };
 function toast(t){const el=$("#toast");el.textContent=t;el.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>el.hidden=true,2600)}
 
+function authHeaders(){
+  const h = {};
+  if (S.meta?.auth === "dev") { h["x-org-id"] = S.orgId; h["x-role"] = S.role; }
+  else if (S.token) h["authorization"] = "Bearer " + S.token;
+  return h;
+}
 async function api(path, opts={}){
-  const headers = {"content-type":"application/json", ...(opts.headers||{})};
-  if (S.meta?.auth === "dev") { headers["x-org-id"] = S.orgId; headers["x-role"] = S.role; }
-  else if (S.token) headers["authorization"] = "Bearer " + S.token;
+  const headers = {"content-type":"application/json", ...authHeaders(), ...(opts.headers||{})};
   const res = await fetch(path, {...opts, headers, body: opts.body && typeof opts.body !== "string" ? JSON.stringify(opts.body) : opts.body});
   if (res.status === 204) return null;
   const ct = res.headers.get("content-type") || "";
@@ -327,23 +344,119 @@ async function loadReqs(){
     ${reqs.map(r=>`<tr><td class="mono">${r.code}</td><td>${TYPE[r.type]}</td><td>${esc(r.title)}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}</td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td></tr>`).join("")||'<tr><td colspan="5" class="hint">まだありません</td></tr>'}</tbody></table>`;
   $("#decs").innerHTML=decs.map(d=>`<div class="hint">${d.createdAt.slice(0,16).replace("T"," ")}　${esc(d.pick)}を採用 — ${esc(d.reason||"（理由未入力）")}　<span class="mono">${Object.entries(d.mapping).map(([l,n])=>esc(l+"="+n)).join(" / ")}</span></div>`).join("")||'<p class="hint">まだありません</p>';
 }
-let mmInit=false;
-async function loadUml(){
-  if(!S.project){$("#umlCanvas").innerHTML='<p class="hint">プロジェクトを開いてください</p>';return}
-  const u=await api(`/api/projects/${S.project.id}/uml`);
-  $("#umlMm").textContent=u.usecase.mermaid; $("#umlPu").textContent=u.usecase.plantuml;
-  if(!window.mermaid){$("#umlCanvas").innerHTML='<p class="hint">図の描画ライブラリがありません。ソースを表示してください。</p>';return}
-  const dark=document.documentElement.dataset.theme?document.documentElement.dataset.theme==="dark":matchMedia("(prefers-color-scheme: dark)").matches;
-  if(!mmInit){mermaid.initialize({startOnLoad:false,securityLevel:"strict",theme:dark?"dark":"neutral"});mmInit=true}
-  try{ const {svg}=await mermaid.render("uc"+Date.now(),u.usecase.mermaid); $("#umlCanvas").innerHTML=svg }
-  catch(e){ $("#umlCanvas").innerHTML='<p class="hint">描画できませんでした</p>' }
+/* ---------- UML ---------- */
+let mmReady=false, umlCache=null;
+const KIND={usecase:"ユースケース",class:"クラス",sequence:"シーケンス",state:"状態遷移",activity:"アクティビティ"};
+function isDark(){const t=document.documentElement.dataset.theme;return t?t==="dark":matchMedia("(prefers-color-scheme: dark)").matches}
+function initMermaid(){
+  if(mmReady||!window.mermaid) return !!window.mermaid;
+  // htmlLabels:false … SVGにHTMLを埋め込まない（PNGへ変換できるようにするため）
+  mermaid.initialize({startOnLoad:false,securityLevel:"strict",theme:isDark()?"dark":"neutral",htmlLabels:false,
+    flowchart:{htmlLabels:false},class:{htmlLabels:false},state:{htmlLabels:false},fontFamily:"IBM Plex Sans JP, Hiragino Sans, Noto Sans JP, sans-serif"});
+  mmReady=true; return true;
 }
+let mmSeq=0;
+async function renderSvg(src, light=false){
+  // 出力用は画面のテーマに関係なく明るい配色で描く
+  const code = light ? `%%{init: {"theme": "neutral"}}%%\n${src}` : src;
+  const {svg} = await mermaid.render("mm"+(++mmSeq), code);
+  return svg;
+}
+function svgSize(svg){
+  const doc=new DOMParser().parseFromString(svg,"image/svg+xml").documentElement;
+  const vb=(doc.getAttribute("viewBox")||"").split(/[\s,]+/).map(Number);
+  const w=vb[2]||parseFloat(doc.getAttribute("width"))||800, h=vb[3]||parseFloat(doc.getAttribute("height"))||600;
+  return {w:Math.ceil(w), h:Math.ceil(h)};
+}
+async function svgToPng(svg, scale=2){
+  const {w,h}=svgSize(svg);
+  // 幅・高さを明示しないとブラウザによっては描画サイズが0になる
+  const fixed=svg.replace(/<svg([^>]*?)>/, (m,attrs)=>`<svg${attrs.replace(/\s(width|height|style)="[^"]*"/g,"")} width="${w}" height="${h}">`);
+  const url=URL.createObjectURL(new Blob([fixed],{type:"image/svg+xml;charset=utf-8"}));
+  try{
+    const img=await new Promise((ok,ng)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=()=>ng(new Error("画像に変換できません"));i.src=url});
+    const c=document.createElement("canvas"); c.width=w*scale; c.height=h*scale;
+    const g=c.getContext("2d"); g.fillStyle="#ffffff"; g.fillRect(0,0,c.width,c.height); g.scale(scale,scale); g.drawImage(img,0,0,w,h);
+    const dataUrl=c.toDataURL("image/png");
+    return {png:dataUrl.split(",")[1], width:c.width, height:c.height, dataUrl};
+  } finally { URL.revokeObjectURL(url) }
+}
+function saveBlob(blob, name){
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name;
+  document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
+}
+const fileSafe=s=>s.replace(/[\\/:*?"<>|\s]+/g,"_");
+async function copyText(t){ try{await navigator.clipboard.writeText(t);toast("コピーしました")}catch(e){toast("コピーできませんでした")} }
+
+function renderUmlInfo(u){
+  $("#umlInfo").textContent = u.model
+    ? `設計モデル：${u.model.createdAt.slice(0,16).replace("T"," ")} 作成`
+    : "設計モデルはまだありません（ユースケース図と、要件順のアクティビティ図のみ）";
+}
+async function loadUml(){
+  if(!S.project){$("#umlList").innerHTML='<div class="panel hint">プロジェクトを開いてください</div>';$("#umlInfo").textContent="";return}
+  umlCache=await api(`/api/projects/${S.project.id}/uml`);
+  renderUmlInfo(umlCache); await drawUml(umlCache.diagrams);
+}
+async function drawUml(diagrams){
+  const list=$("#umlList");
+  list.innerHTML=diagrams.map((d,i)=>`<div class="panel"><div class="row" style="justify-content:space-between;align-items:baseline">
+      <h3 style="margin:0;font-size:16px">${esc(d.title)}</h3><span class="tag">${d.source==="ai"?"AIの設計モデルから作成":"要件から自動作成"}</span></div>
+    <div class="canvas" id="uml-${i}" style="margin-top:10px"><span class="hint">描画中…</span></div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn sm ghost" data-svg="${i}">SVGで保存</button><button class="btn sm ghost" data-png="${i}">PNGで保存</button>
+      <button class="btn sm ghost" data-mm="${i}">Mermaidをコピー</button><button class="btn sm ghost" data-pu="${i}">PlantUMLをコピー</button></div>
+    <details><summary class="hint">ソースを表示</summary><pre class="code">${esc(d.mermaid)}</pre><pre class="code">${esc(d.plantuml)}</pre></details></div>`).join("");
+  list.querySelectorAll("[data-mm]").forEach(b=>b.onclick=()=>copyText(diagrams[b.dataset.mm].mermaid));
+  list.querySelectorAll("[data-pu]").forEach(b=>b.onclick=()=>copyText(diagrams[b.dataset.pu].plantuml));
+  list.querySelectorAll("[data-svg]").forEach(b=>b.onclick=async()=>{const d=diagrams[b.dataset.svg]; try{saveBlob(new Blob([await renderSvg(d.mermaid,true)],{type:"image/svg+xml"}),fileSafe(d.title)+".svg")}catch(e){toast(e.message)}});
+  list.querySelectorAll("[data-png]").forEach(b=>b.onclick=async()=>{const d=diagrams[b.dataset.png]; try{const r=await svgToPng(await renderSvg(d.mermaid,true)); saveBlob(await (await fetch(r.dataUrl)).blob(),fileSafe(d.title)+".png")}catch(e){toast(e.message)}});
+  if(!initMermaid()){diagrams.forEach((_,i)=>$("#uml-"+i).innerHTML='<p class="hint">図の描画ライブラリがありません。ソースを表示してください。</p>');return}
+  for(let i=0;i<diagrams.length;i++){
+    try{ $("#uml-"+i).innerHTML=await renderSvg(diagrams[i].mermaid) }
+    catch(e){ $("#uml-"+i).innerHTML='<p class="hint">この図は描画できませんでした。ソースを確認してください。</p>' }
+  }
+}
+$("#umlGen").onclick=async()=>{
+  if(!S.project) return;
+  const b=$("#umlGen"); b.disabled=true; $("#umlMsg").innerHTML='<p class="hint">AIが設計モデルを作成しています…（最大90秒）</p>';
+  try{
+    const r=await api(`/api/projects/${S.project.id}/uml/generate`,{method:"POST"});
+    umlCache={diagrams:r.diagrams, model:r.model}; renderUmlInfo(umlCache);
+    $("#umlMsg").innerHTML=`<div class="note" style="background:var(--accent-soft)">${esc(r.model.provider)} が作成しました。${r.dropped?`整合しない参照 ${r.dropped}件は取り除きました。`:""}${r.failures.length?`（失敗：${r.failures.map(f=>esc(f.reason)).join("、")}）`:""}</div>`;
+    await drawUml(r.diagrams);
+  }catch(e){ $("#umlMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  finally{ b.disabled=false }
+};
+
+/* ---------- 仕様書 ---------- */
 async function loadSpec(){
   if(!S.project){$("#spec").textContent="プロジェクトを開いてください";return}
   $("#spec").textContent=await api(`/api/projects/${S.project.id}/spec.md`);
 }
-$("#copySpec").onclick=async()=>{ try{await navigator.clipboard.writeText($("#spec").textContent);toast("コピーしました")}catch(e){toast("コピーできませんでした")} };
-$("#saveSpec").onclick=async()=>{ try{const r=await api(`/api/projects/${S.project.id}/exports`,{method:"POST"});$("#specMsg").textContent="保存しました："+r.key}catch(e){$("#specMsg").textContent=e.message} };
+$("#copySpec").onclick=()=>copyText($("#spec").textContent);
+document.querySelectorAll("[data-fmt]").forEach(b=>b.onclick=async()=>{
+  if(!S.project) return;
+  const fmt=b.dataset.fmt, msg=$("#specMsg");
+  document.querySelectorAll("[data-fmt]").forEach(x=>x.disabled=true);
+  try{
+    const images=[];
+    if(fmt!=="md" && initMermaid()){
+      msg.textContent="図を画像にしています…";
+      const u=umlCache||await api(`/api/projects/${S.project.id}/uml`);
+      for(const d of u.diagrams){
+        try{ const r=await svgToPng(await renderSvg(d.mermaid,true)); images.push({title:d.title,png:r.png,width:r.width,height:r.height}) }
+        catch(e){ /* 画像にできない図はソースで載せる */ }
+      }
+    }
+    msg.textContent="作成しています…";
+    const res=await fetch(`/api/projects/${S.project.id}/exports`,{method:"POST",headers:{"content-type":"application/json",...authHeaders()},body:JSON.stringify({format:fmt,images})});
+    if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.error||`HTTP ${res.status}`) }
+    saveBlob(await res.blob(), `${fileSafe(S.project.name)}_要件定義書.${fmt}`);
+    msg.textContent=`出力しました（図 ${images.length}件を埋め込み）。保存先：${res.headers.get("x-artifact-key")||"―"}`;
+  }catch(e){ msg.textContent=e.message }
+  finally{ document.querySelectorAll("[data-fmt]").forEach(x=>x.disabled=false) }
+});
 
 /* ---------- 起動 ---------- */
 async function reload(){

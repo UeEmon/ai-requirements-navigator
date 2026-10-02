@@ -41,6 +41,8 @@ export function defaultMockHandler(id: string): MockHandler {
     const type = (typeMatch?.[1] ?? "FR") as "BR" | "AC" | "FR" | "NFR" | "CN";
     const answer = prompt.split("# 利用者の回答")[1]?.split("\n").find((l) => l.trim())?.trim() ?? "回答";
 
+    if (req.system.includes("ソフトウェア設計者")) return JSON.stringify(MOCK_UML);
+
     if (req.system.includes("レビュアー")) {
       const labels = [...prompt.matchAll(/### 案([A-D])/g)].map((m) => m[1]!);
       const scores: Record<string, { coverage: number; accuracy: number; consistency: number; feasibility: number; clarity: number }> = {};
@@ -92,3 +94,67 @@ export function defaultMockHandler(id: string): MockHandler {
     });
   };
 }
+
+/** 模擬AIが返すUMLモデル（予約システムの例） */
+const MOCK_UML = {
+  classes: [
+    { name: "Customer", label: "顧客", attributes: [{ name: "氏名", type: "string" }, { name: "電話番号", type: "string" }], operations: [] },
+    { name: "Reservation", label: "予約", attributes: [{ name: "日時", type: "datetime" }, { name: "状態", type: "enum" }], operations: ["確定する", "キャンセルする"] },
+    { name: "Staff", label: "スタッフ", attributes: [{ name: "氏名", type: "string" }], operations: [] },
+    { name: "Menu", label: "メニュー", attributes: [{ name: "所要時間", type: "int" }, { name: "料金", type: "int" }], operations: [] },
+  ],
+  relations: [
+    { from: "Customer", to: "Reservation", kind: "association", fromMultiplicity: "1", toMultiplicity: "*", label: "予約する" },
+    { from: "Staff", to: "Reservation", kind: "association", fromMultiplicity: "1", toMultiplicity: "*", label: "担当" },
+    { from: "Reservation", to: "Menu", kind: "aggregation", fromMultiplicity: "*", toMultiplicity: "1..*" },
+    { from: "Reservation", to: "Unknown", kind: "association" },
+  ],
+  sequences: [
+    {
+      title: "予約登録",
+      participants: [
+        { id: "customer", label: "顧客", actor: true },
+        { id: "web", label: "予約画面" },
+        { id: "server", label: "予約サーバ" },
+      ],
+      messages: [
+        { from: "customer", to: "web", text: "日時とメニューを選ぶ" },
+        { from: "web", to: "server", text: "空き枠を確認" },
+        { from: "server", to: "web", text: "予約完了", reply: true },
+        { from: "web", to: "customer", text: "確認メール", reply: true },
+      ],
+    },
+  ],
+  stateMachines: [
+    {
+      entity: "予約",
+      states: ["仮予約", "確定", "キャンセル", "来店済み"],
+      initial: "仮予約",
+      finals: ["キャンセル", "来店済み"],
+      transitions: [
+        { from: "仮予約", to: "確定", event: "登録成功" },
+        { from: "確定", to: "キャンセル", event: "取消" },
+        { from: "確定", to: "来店済み", event: "受付" },
+      ],
+    },
+  ],
+  activities: [
+    {
+      title: "予約から来店まで",
+      steps: [
+        { id: "s1", label: "予約を受け付ける" },
+        { id: "s2", label: "空き枠がある", kind: "decision" },
+        { id: "s3", label: "予約を確定する" },
+        { id: "s4", label: "別の日時を提案する" },
+        { id: "s5", label: "前日にリマインドする" },
+      ],
+      edges: [
+        { from: "s1", to: "s2" },
+        { from: "s2", to: "s3", label: "はい" },
+        { from: "s2", to: "s4", label: "いいえ" },
+        { from: "s4", to: "s1" },
+        { from: "s3", to: "s5" },
+      ],
+    },
+  ],
+};

@@ -28,6 +28,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install Japanese font for PDF tests
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
       - name: Install
         run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - name: Type check
@@ -64,6 +66,11 @@ jobs:
           R=$(curl -fs -X POST localhost:8787/api/projects/$PJ/rounds "${H[@]}" -d '{"answer":"電話予約を減らしたい"}' | jq -r .id)
           curl -fs -X POST localhost:8787/api/rounds/$R/decision "${H[@]}" -d '{"pick":"merged"}' | jq .nextPhase
           curl -fs localhost:8787/api/projects/$PJ/spec.md "${H[@]}" | head -20
+          curl -fs -X POST localhost:8787/api/projects/$PJ/uml/generate "${H[@]}" | jq -c '[.diagrams[].kind]'
+          curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"docx"}' -o spec.docx && file spec.docx
+          curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"pdf"}' -o spec.pdf && head -c 5 spec.pdf | grep -q '%PDF-'
+          pdffonts spec.pdf 2>/dev/null || true
+          ls -la spec.docx spec.pdf
           curl -fs localhost:8787/ | grep -q '要件ナビ'
           curl -fs localhost:8787/vendor/mermaid.min.js > /dev/null
           curl -fs localhost:8787/THIRD_PARTY_NOTICES.txt | head -3

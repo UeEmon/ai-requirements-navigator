@@ -15,7 +15,7 @@
 | --- | --- |
 | 対象工程 | 企画整理 → 要求分析 → 要件定義（機能・非機能）→ 概要設計の入口（UML） |
 | 対応AI | Claude、GPT（OpenAI）、Gemini、ローカルLLM（Ollama） |
-| 出力形式 | UML（Mermaid / PlantUML テキスト）、仕様書（Markdown。Word / PDF は今後） |
+| 出力形式 | UML（Mermaid / PlantUML テキスト、SVG / PNG 画像）、仕様書（Markdown / Word / PDF） |
 | 動作環境 | AWS またはローカルDocker（同じコンテナイメージ） |
 
 ## 2. 要求一覧
@@ -59,9 +59,9 @@
 | F5-2 | バージョン管理・差分 | 必須 | 一部（version列のみ） | ― |
 | F5-3 | トレーサビリティ | 推奨 | 一部（要件→ラウンド） | `requirements.round_id` |
 | F5-4 | レビュー・承認 | 推奨 | 未 | ― |
-| F6-1 | UML生成 | 必須 | 一部（ユースケース図） | `ai-core/src/uml.ts` |
-| F6-2 | 仕様書生成 | 必須 | 済（Markdown） | `apps/api/src/spec.ts` |
-| F6-3 | エクスポート・版の保存 | 必須 | 一部（Markdown、S3/ローカル保存） | `POST /api/projects/:id/exports` |
+| F6-1 | UML生成（ユースケース・クラス・シーケンス・状態遷移・アクティビティ） | 必須 | 済 | `ai-core/src/uml.ts`、`POST /api/projects/:id/uml/generate` |
+| F6-2 | 仕様書生成 | 必須 | 済（Markdown / Word / PDF） | `apps/api/src/spec.ts` |
+| F6-3 | エクスポート（Markdown / Word / PDF、図の画像埋め込み）・版の保存 | 必須 | 済 | `apps/api/src/spec.ts`、`POST /api/projects/:id/exports` |
 | F7-1 | タスク分解 | 推奨 | 未 | ― |
 | F7-2 | GitHub / Jira / Backlog 連携 | 任意 | 一部（GitHub Issueテンプレート） | `.github/ISSUE_TEMPLATE` |
 

@@ -32,6 +32,7 @@ export const ALLOWED = new Set([
   "Python-2.0",
   "Zlib",
   "MPL-2.0",
+  "OFL-1.1",
 ]);
 /** 開発時のみ使うツールで追加で許可するもの（配布物には入らない） */
 const ALLOWED_DEV_ONLY = new Set(["CC-BY-4.0", "CC-BY-3.0"]);

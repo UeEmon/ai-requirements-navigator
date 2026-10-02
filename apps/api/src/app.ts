@@ -5,8 +5,8 @@ import {
   PHASES,
   RoundError,
   runRound,
-  toMermaidUseCase,
-  toPlantUmlUseCase,
+  buildDiagrams,
+  generateUmlModel,
   type AIProvider,
   type FetchLike,
   type RequirementItem,
@@ -16,7 +16,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { hasRole, type Authenticator, type Principal, type Role } from "./auth.js";
 import { maskKey, type KeyEncryptor } from "./crypto.js";
-import { buildSpecMarkdown } from "./spec.js";
+import { buildSpec, CONTENT_TYPE, PdfFontMissingError, renderDocx, renderMarkdown, renderPdf, type SpecFormat, type SpecImage } from "./spec.js";
 import type { ArtifactStorage } from "./storage.js";
 import { usageOf, type Project, type ProviderCredential, type Store } from "./store.js";
 
@@ -134,6 +134,22 @@ export function createApp(deps: AppDeps) {
     if (!p) throw new HTTPException(404, { message: "プロジェクトが見つかりません" });
     need(c, p.orgId, role);
     return p;
+  };
+
+  /** 組織に登録されたAIを復号してプロバイダにする */
+  const providersOf = async (project: Project, ids: string[]): Promise<AIProvider[]> => {
+    const creds = new Map((await store.listCredentials(project.orgId)).map((x) => [x.id, x]));
+    return Promise.all(
+      ids.map(async (id) => {
+        const cr = creds.get(id);
+        if (!cr) throw new HTTPException(400, { message: `AIの登録が削除されています: ${id}` });
+        const apiKey = cr.encryptedKey ? await deps.encryptor.decrypt(cr.encryptedKey, { orgId: project.orgId }) : undefined;
+        return createProvider(
+          { id: cr.id, vendor: cr.vendor, model: cr.model, label: cr.label, apiKey, endpoint: cr.endpoint ?? undefined },
+          { fetchImpl: deps.fetchImpl, allowMock: deps.allowMock },
+        );
+      }),
+    );
   };
 
   /* ---------- AIの接続情報（組織の管理者が登録） ---------- */
@@ -342,25 +358,118 @@ export function createApp(deps: AppDeps) {
     return c.json(await store.listDecisions(p.id));
   });
 
+  /* ---------- UML ---------- */
+  const diagramsOf = async (p: Project) => {
+    const reqs = (await store.listRequirements(p.id)).map((r) => ({ code: r.code, type: r.type, title: r.title }));
+    const rec = await store.latestUmlModel(p.id);
+    return { diagrams: buildDiagrams(p.name, reqs, rec?.model), rec, reqs };
+  };
+
   app.get("/api/projects/:id/uml", async (c) => {
     const p = await loadProject(c, c.req.param("id"), "viewer");
+    const { diagrams, rec } = await diagramsOf(p);
+    return c.json({ diagrams, model: rec ? { providerId: rec.providerId, createdAt: rec.createdAt } : null });
+  });
+
+  /** AIが要件から設計モデル（クラス・シーケンス・状態・アクティビティ）を作る */
+  app.post("/api/projects/:id/uml/generate", async (c) => {
+    const p = await loadProject(c, c.req.param("id"), "editor");
     const reqs = (await store.listRequirements(p.id)).map((r) => ({ code: r.code, type: r.type, title: r.title }));
-    return c.json({ usecase: { mermaid: toMermaidUseCase(p.name, reqs), plantuml: toPlantUmlUseCase(p.name, reqs) } });
+    if (!reqs.length) throw new HTTPException(400, { message: "要件がまだありません。ヒアリングで要件を確定してから生成してください" });
+    // 生成AI → 評価AI の順に試す（評価AIは設計の確認役としても使える）
+    const ids = [...new Set([...p.aiConfig.generatorIds, ...(p.aiConfig.evaluatorId ? [p.aiConfig.evaluatorId] : [])])];
+    const providers = await providersOf(p, ids);
+    if (p.confidential && providers.some((x) => !x.isLocal)) throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを使えます" });
+    let result: Awaited<ReturnType<typeof generateUmlModel>>;
+    try {
+      result = await generateUmlModel(providers, p.name, p.purpose, reqs, deps.timeoutMs);
+    } catch (e) {
+      const failures = (e as { failures?: Array<{ providerId: string; reason: string }> }).failures ?? [];
+      return c.json({ error: (e as Error).message, failures }, 502);
+    }
+    await store.addUsage({ orgId: p.orgId, providerId: result.providerId, projectId: p.id, ...usageOf(result.usage) });
+    const rec = await store.saveUmlModel(p.id, result.model, result.providerId);
+    const label = providers.find((x) => x.id === result.providerId)?.label ?? result.providerId;
+    return c.json(
+      {
+        diagrams: buildDiagrams(p.name, reqs, rec.model),
+        model: { providerId: rec.providerId, provider: label, createdAt: rec.createdAt },
+        dropped: result.dropped,
+        failures: result.failures,
+      },
+      201,
+    );
   });
 
-  app.get("/api/projects/:id/spec.md", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "viewer");
-    const md = buildSpecMarkdown(p, await store.listRequirements(p.id), await store.listDecisions(p.id));
-    return c.body(md, 200, { "content-type": "text/markdown; charset=utf-8" });
+  /* ---------- 仕様書（Markdown / Word / PDF） ---------- */
+  const ImageInput = z.object({
+    title: z.string().min(1).max(200),
+    png: z.string().max(8_000_000), // Base64
+    width: z.number().int().min(1).max(10_000),
+    height: z.number().int().min(1).max(20_000),
+  });
+  const ExportInput = z.object({
+    format: z.enum(["md", "docx", "pdf"]).default("md"),
+    /** 画面で描画した図のPNG。省略時は図のソースを載せる */
+    images: z.array(ImageInput).max(20).default([]),
+    /** 保存先（ローカルボリューム / S3）に版として残すか */
+    save: z.boolean().default(true),
   });
 
-  /** 仕様書を保存先（ローカルボリューム / S3）に版として残す */
+  const renderSpec = async (p: Project, format: SpecFormat, images: SpecImage[]) => {
+    const { diagrams } = await diagramsOf(p);
+    const spec = buildSpec(p, await store.listRequirements(p.id), await store.listDecisions(p.id), diagrams);
+    try {
+      if (format === "docx") return await renderDocx(spec, images);
+      if (format === "pdf") return await renderPdf(spec, images);
+      return Buffer.from(renderMarkdown(spec), "utf8");
+    } catch (e) {
+      if (e instanceof PdfFontMissingError) throw new HTTPException(501, { message: e.message });
+      throw e;
+    }
+  };
+  const fileResponse = (c: Context, p: Project, format: SpecFormat, buf: Buffer, key?: string) => {
+    const ascii = `spec.${format}`;
+    const utf8 = encodeURIComponent(`${p.name}_要件定義書.${format}`);
+    const headers: Record<string, string> = {
+      "content-type": CONTENT_TYPE[format],
+      "content-disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`,
+    };
+    if (key) headers["x-artifact-key"] = key;
+    return c.body(new Uint8Array(buf), 200, headers);
+  };
+
+  for (const format of ["md", "docx", "pdf"] as const) {
+    app.get(`/api/projects/:id/spec.${format}`, async (c) => {
+      const p = await loadProject(c, c.req.param("id"), "viewer");
+      return fileResponse(c, p, format, await renderSpec(p, format, []));
+    });
+  }
+
+  /** 仕様書を出力し、保存先（ローカルボリューム / S3）に版として残す */
   app.post("/api/projects/:id/exports", async (c) => {
     const p = await loadProject(c, c.req.param("id"), "editor");
-    const md = buildSpecMarkdown(p, await store.listRequirements(p.id), await store.listDecisions(p.id));
-    const key = `${p.orgId}/${p.id}/spec-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
-    await deps.storage.put(key, md, "text/markdown; charset=utf-8");
-    return c.json({ key, bytes: Buffer.byteLength(md) }, 201);
+    const raw = await c.req.text();
+    let json: unknown = {};
+    try {
+      if (raw.trim()) json = JSON.parse(raw);
+    } catch {
+      throw new HTTPException(400, { message: "JSONの形式が正しくありません" });
+    }
+    const parsed = ExportInput.safeParse(json);
+    if (!parsed.success) throw new HTTPException(400, { message: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") });
+    const input = parsed.data;
+    const images: SpecImage[] = input.images.map((i) => ({ title: i.title, png: Buffer.from(i.png, "base64"), width: i.width, height: i.height }));
+    for (const img of images) {
+      if (img.png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new HTTPException(400, { message: `PNG画像ではありません: ${img.title}` });
+    }
+    const buf = await renderSpec(p, input.format, images);
+    let key: string | undefined;
+    if (input.save) {
+      key = `${p.orgId}/${p.id}/spec-${new Date().toISOString().replace(/[:.]/g, "-")}.${input.format}`;
+      await deps.storage.put(key, buf, CONTENT_TYPE[input.format]);
+    }
+    return fileResponse(c, p, input.format, buf, key);
   });
 
   return app;

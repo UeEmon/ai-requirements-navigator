@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CandidateContent, RequirementItem, RequirementType, ScoredEvaluation, Usage, Vendor } from "@arn/ai-core";
+import type { CandidateContent, RequirementItem, RequirementType, ScoredEvaluation, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
 export interface Org {
   id: string;
@@ -90,6 +90,14 @@ export interface UsageRecord {
   at: string;
 }
 
+export interface UmlModelRecord {
+  id: string;
+  projectId: string;
+  model: UmlModel;
+  providerId: string;
+  createdAt: string;
+}
+
 export interface Store {
   createOrg(name: string): Promise<Org>;
   getOrg(id: string): Promise<Org | null>;
@@ -116,6 +124,9 @@ export interface Store {
   addDecision(d: Omit<Decision, "id" | "createdAt">): Promise<Decision>;
   listDecisions(projectId: string): Promise<Decision[]>;
 
+  saveUmlModel(projectId: string, model: UmlModel, providerId: string): Promise<UmlModelRecord>;
+  latestUmlModel(projectId: string): Promise<UmlModelRecord | null>;
+
   addUsage(u: Omit<UsageRecord, "at">): Promise<void>;
   usageSummary(orgId: string): Promise<Array<{ providerId: string; inputTokens: number; outputTokens: number; calls: number }>>;
 }
@@ -135,6 +146,7 @@ export class MemoryStore implements Store {
   private reqs: Requirement[] = [];
   private decisions: Decision[] = [];
   private usage: UsageRecord[] = [];
+  private umls: UmlModelRecord[] = [];
 
   async createOrg(name: string) {
     const o = { id: randomUUID(), name, createdAt: now() };
@@ -213,6 +225,14 @@ export class MemoryStore implements Store {
   }
   async listDecisions(projectId: string) {
     return this.decisions.filter((d) => d.projectId === projectId);
+  }
+  async saveUmlModel(projectId: string, model: UmlModel, providerId: string) {
+    const r = { id: randomUUID(), projectId, model, providerId, createdAt: now() };
+    this.umls.push(r);
+    return r;
+  }
+  async latestUmlModel(projectId: string) {
+    return this.umls.filter((u) => u.projectId === projectId).at(-1) ?? null;
   }
   async addUsage(u: Omit<UsageRecord, "at">) {
     this.usage.push({ ...u, at: now() });

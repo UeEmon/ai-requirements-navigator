@@ -8,4 +8,7 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 apps/web/public/THIRD_PARTY_NOTICES.txt（画面からは /THIRD_PARTY_NOTICES.txt）にあります。
 このファイルはビルド時に scripts/check-licenses.mjs が生成します。
 
+PDF出力に使う日本語フォント Noto Sans CJK は SIL Open Font License 1.1 で提供されており、
+コンテナイメージに Alpine Linux のパッケージ（font-noto-cjk）として同梱しています。
+
 利用方針は docs/oss-policy.md を参照してください。
