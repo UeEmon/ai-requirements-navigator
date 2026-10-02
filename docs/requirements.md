@@ -45,7 +45,8 @@
 | F2-3 | 用語解説（標準の用語集＋AIの解説） | 必須 | 済 | `ai-core/src/glossary.ts` |
 | F2-4 | 曖昧さ検出 | 必須 | 済 | `ai-core/src/ambiguity.ts`、`POST /api/projects/:id/ambiguity` |
 | F2-5 | 抜け漏れチェック（観点ごとの網羅状況と網羅率） | 必須 | 済 | `GET /api/projects/:id/coverage` |
-| F2-6 | 資料取込 | 推奨 | 未 | ― |
+| F2-6 | 資料取込（議事録・既存システムの資料。テキスト / Word / PDF） | 推奨 | 済 | `apps/api/src/extract.ts`、`POST /api/projects/:id/documents` |
+| F2-7 | 資料の分析（現状の業務フロー・課題と根拠の照合・業務の見直し（ECRS）・見直し後のフロー・引き継がないもの・初回の要件案） | 推奨 | 済 | `ai-core/src/analysis.ts`、`POST /api/projects/:id/analyses`・`/api/analyses/:id/adopt` |
 | F3-1 | 単一 / 複数モード選択 | 必須 | 済 | `aiConfig.mode` |
 | F3-2 | 生成AI選択（1〜4） | 必須 | 済 | `aiConfig.generatorIds` |
 | F3-3 | 評価AI選択と同一時の警告 | 必須 | 済 | `orchestrator.ts` |
@@ -59,6 +60,7 @@
 | F5-2 | 要件の編集・削除と版の履歴 | 必須 | 済（差分表示は今後） | `PATCH/DELETE /api/requirements/:id`、`GET .../versions` |
 | F5-3 | トレーサビリティ（要件 → 案・決定 → ストーリー → 課題） | 推奨 | 済 | `requirements.round_id`、`GET /api/projects/:id/trace` |
 | F5-4 | レビュー・承認 | 推奨 | 未 | ― |
+| F5-7 | EARS 記法による要件文（機能要件・非機能要件。構造で保存し、文型と表現を検査） | 推奨 | 済 | `ai-core/src/ears.ts`、`POST /api/ears/preview` |
 | F5-5 | 要件定義の確定（確定版の保存。確定後は要件を直接編集できない） | 推奨 | 済 | `POST /api/projects/:id/baseline` |
 | F5-6 | 確定後の変更要求と影響分析（トレース＋複数AI）、変更する／代替案／保留／変更しないの選択 | 推奨 | 済 | `ai-core/src/impact.ts`、`POST /api/changes/:id/analyze`・`/decide` |
 | F6-1 | UML生成（ユースケース・クラス・シーケンス・状態遷移・アクティビティ） | 必須 | 済 | `ai-core/src/uml.ts`、`POST /api/projects/:id/uml/generate` |

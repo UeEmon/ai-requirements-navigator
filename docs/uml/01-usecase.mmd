@@ -26,6 +26,8 @@ flowchart LR
         UC17((画面イメージを確認し意見を出す))
         UC18((要件定義を確定する))
         UC19((変更要求を出し影響を見て判断する))
+        UC20((資料を取り込み現状を分析する))
+        UC21((業務の見直し案と要件案を採用する))
     end
     ITS[[GitHub / Jira / Backlog]]
 
@@ -48,6 +50,10 @@ flowchart LR
     PM --- UC18
     PM --- UC19
     UC19 -.include.-> UC15
+    U --- UC20
+    PM --- UC21
+    UC20 --- GAI
+    UC21 -.include.-> UC20
     UC3 -.include.-> UC5
     UC4 -.extend.-> UC3
     UC5 -.include.-> UC6

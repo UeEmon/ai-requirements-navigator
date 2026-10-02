@@ -94,6 +94,14 @@ jobs:
           curl -fs localhost:8787/api/projects/$PJ/tasks/file/jira.csv "${H[@]}" | head -2
           curl -fs localhost:8787/api/projects/$PJ/trace "${H[@]}" | jq -ce '.summary | select(.covered == .targets)'
           curl -fs -X POST localhost:8787/api/orgs/$ORG/integrations "${H[@]}" -d '{"kind":"github","config":{"owner":"acme","repo":"app"},"token":"ghp_dummy1234"}' | jq -ce 'select(.token == "••••1234") | {target, token}'
+          # 資料の取り込み → 分析（非同期・複数AIの比較）→ 採用 → 要件が EARS の文になっているか
+          DOC=$(curl -fs -X POST localhost:8787/api/projects/$PJ/documents "${H[@]}" -d '{"name":"議事録.txt","kind":"minutes","text":"受付担当が電話で予約を受け、紙の受付票に記入している。\n店長が毎晩、受付票をExcelに転記している。"}' | jq -r .id)
+          AJ=$(curl -fs -X POST "localhost:8787/api/projects/$PJ/analyses?async=1" "${H[@]}" -d "{\"documentIds\":[\"$DOC\"]}" | jq -r .jobId)
+          for i in $(seq 1 30); do S=$(curl -fs localhost:8787/api/jobs/$AJ "${H[@]}" | jq -r .status); [ "$S" = done ] && break; [ "$S" = failed ] && exit 1; sleep 1; done
+          AN=$(curl -fs localhost:8787/api/jobs/$AJ "${H[@]}" | jq -r .result.id)
+          curl -fs -X POST localhost:8787/api/analyses/$AN/adopt "${H[@]}" -d '{"label":"A","proposalIds":["P1"],"requirementIndexes":[0,1]}' | jq -c '.requirementCodes'
+          BAD=$(curl -fs localhost:8787/api/projects/$PJ/requirements "${H[@]}" | jq '[.[] | select(.source | startswith("資料分析")) | select(.lint.ok | not)] | length')
+          [ "$BAD" = 0 ] && echo "::notice::資料分析OK（採用した要件はすべて EARS の検査を通過）"
           # 画面イメージ → 要件定義の確定 → 変更要求の影響分析（非同期）→ 変更
           SC=$(curl -fs -X POST localhost:8787/api/projects/$PJ/screens/generate "${H[@]}" -d '{}' | jq -r .screens.revision)
           [ "$SC" = 1 ] && echo "::notice::画面イメージOK"

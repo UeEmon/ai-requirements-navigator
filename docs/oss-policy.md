@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | MIT / ISC / 0BSD / MIT-0 | 著作権表示 | Hono, zod, pg, jose, Mermaid, Ollama |
 | BSD-2-Clause / BSD-3-Clause | 著作権表示 | ― |
-| Apache-2.0 | 著作権表示・NOTICE・変更点の明示 | AWS SDK, AWS CDK, Keycloak, TypeScript |
+| Apache-2.0 | 著作権表示・NOTICE・変更点の明示 | AWS SDK, AWS CDK, Keycloak, TypeScript, pdfjs-dist（PDFの文字の取り出し） |
 | PostgreSQL License | 著作権表示 | PostgreSQL |
 | MPL-2.0 | 変更したファイルのみソース公開（ファイル単位） | DOMPurify（Apache-2.0とのデュアル） |
 | BlueOak-1.0.0 / CC0-1.0 / Unlicense / Zlib / Python-2.0 | 表示のみ、または義務なし | ― |

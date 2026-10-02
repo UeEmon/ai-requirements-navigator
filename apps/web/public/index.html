@@ -32,6 +32,7 @@ header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:spac
 .conn{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px}
 input,select,textarea{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--rule);border-radius:var(--r);background:var(--sheet);color:var(--ink);min-width:0}
 textarea{width:100%;resize:vertical}
+[hidden]{display:none!important}
 label.f{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--ink-2)}
 .btn{font:inherit;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);border-radius:var(--r);padding:6px 14px;cursor:pointer;font-weight:500;font-size:14px;white-space:nowrap}
 .btn.ghost{background:none;color:var(--accent)}
@@ -113,6 +114,7 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
 
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="hear" aria-selected="true" id="t-hear">ヒアリング</button>
+    <button role="tab" data-tab="discover" aria-selected="false" id="t-discover">資料分析</button>
     <button role="tab" data-tab="reqs" aria-selected="false" id="t-reqs">要件一覧</button>
     <button role="tab" data-tab="uml" aria-selected="false" id="t-uml">UML</button>
     <button role="tab" data-tab="screens" aria-selected="false" id="t-screens">画面</button>
@@ -142,6 +144,15 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
       <button class="btn sm ghost" id="copySpec">Markdownをコピー</button>
       <span class="hint" id="specMsg"></span></div>
     <pre class="code" id="spec" style="white-space:pre-wrap"></pre></div></section>
+  <section class="view" id="v-discover">
+    <div class="panel"><h2 style="margin:0">資料の取り込み</h2>
+      <p class="hint" style="margin:4px 0 10px">議事録・既存システムの資料・業務マニュアルを取り込むと、AIが現状の課題を分析し、業務の見直しを含めた初回の要件案を作ります。テキスト（.txt / .md / .csv）、Word（.docx）、PDF（文字を選択できるもの）に対応しています。本文のテキストだけを保存します。</p>
+      <div id="docForm"></div><div id="docList"></div></div>
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div><h2 style="margin:0">現状の分析と業務の見直し</h2><p class="hint" id="anInfo" style="margin:4px 0 0">今のシステムをそのまま作り直すのではなく、課題の根本原因から業務そのものを見直し、見直し後の業務に必要な要件を作ります。</p></div></div>
+      <div class="row" style="margin-top:10px;align-items:flex-end"><label class="f" style="flex:1">特に見てほしい点（任意）<input id="anFocus" placeholder="例：受付の電話対応の負担、月末の集計作業"></label><button class="btn" id="anGo">AIで分析する</button></div>
+      <div id="anMsg"></div><div id="anBody"></div></div>
+  </section>
   <section class="view" id="v-screens">
     <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
       <div><h2 style="margin:0">画面イメージ</h2><p class="hint" id="scrInfo" style="margin:4px 0 0"></p></div>
@@ -341,7 +352,7 @@ async function createOrg(){
 function switchTab(t){
   document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-selected", b.dataset.tab===t));
   document.querySelectorAll("section.view").forEach(v=>v.classList.toggle("on", v.id==="v-"+t));
-  ({reqs:loadReqs, uml:loadUml, screens:loadScreens, spec:loadSpec, impl:loadImpl, change:loadChange, admin:renderAdmin}[t]||(()=>{}))();
+  ({discover:loadDiscover, reqs:loadReqs, uml:loadUml, screens:loadScreens, spec:loadSpec, impl:loadImpl, change:loadChange, admin:renderAdmin}[t]||(()=>{}))();
 }
 document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 
@@ -648,23 +659,28 @@ async function loadReqs(){
   const [reqs,decs]=await Promise.all([api(`/api/projects/${S.project.id}/requirements`),api(`/api/projects/${S.project.id}/decisions`)]);
   const ed=canEdit(), locked=!!S.baseline;
   $("#reqs").innerHTML=(locked?`<div class="note warn" style="margin:0 0 10px">要件定義は確定済みです（確定版 v${S.baseline.version}）。変更・削除は「変更要求」から行い、後の工程への影響を確認してから決めます。</div>`:"")+`<table class="t"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>優先度</th><th>根拠</th>${ed?"<th></th>":""}</tr></thead><tbody>
-    ${reqs.map(r=>`<tr id="rq-${r.id}"><td class="mono">${r.code}${r.version>1?`<br><span class="tag">v${r.version}</span>`:""}</td><td>${TYPE[r.type]}</td>
-      <td>${esc(r.title)}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}<div id="rh-${r.id}"></div></td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td>
+    ${reqs.map(r=>`<tr id="rq-${r.id}"><td class="mono">${r.code}${r.version>1?`<br><span class="tag">v${r.version}</span>`:""}</td><td>${TYPE[r.type]}${EARS_TYPES.includes(r.type)&&(r.ears||r.lint?.pattern)?`<br><span class="tag">EARS:${EARS_SHORT[(r.ears||{}).pattern||r.lint.pattern]}</span>`:""}</td>
+      <td>${esc(r.title)}${r.lint&&!r.lint.ok?`<div class="cmt" style="color:var(--warn)">⚠ ${r.lint.issues.map(esc).join("／")}</div>`:""}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}<div id="rh-${r.id}"></div></td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td>
       ${ed?`<td style="white-space:nowrap">${locked?`<button class="btn sm ghost" data-rcr="${r.id}">変更要求</button>`:`<button class="btn sm ghost" data-redit="${r.id}">編集</button>`} <button class="btn sm ghost" data-rhist="${r.id}">履歴</button> ${locked?"":`<button class="btn sm danger" data-rdel="${r.id}">削除</button>`}</td>`:""}</tr>
       ${ed?`<tr id="re-${r.id}" hidden><td colspan="6"><div style="display:flex;flex-direction:column;gap:8px">
-        <label class="f">内容<textarea id="reT-${r.id}" rows="2">${esc(r.title)}</textarea></label>
+        ${EARS_TYPES.includes(r.type)?`${earsEditor("ee-"+r.id, r.ears||{pattern:r.lint?.pattern||"ubiquitous",trigger:"",state:"",feature:"",system:"システム",response:r.title.replace(/。$/,"")})}
+        <details id="reTW-${r.id}"><summary class="hint">EARS の構造を使わず、文で直接書く</summary><label class="f">内容<textarea id="reT-${r.id}" rows="2">${esc(r.title)}</textarea></label></details>`
+        :`<label class="f">内容<textarea id="reT-${r.id}" rows="2">${esc(r.title)}</textarea></label>`}
         <label class="f">補足<textarea id="reD-${r.id}" rows="2">${esc(r.description)}</textarea></label>
         <div class="row"><label class="f">優先度<select id="reP-${r.id}">${Object.entries(PRI).map(([k,v])=>`<option value="${k}" ${k===r.priority?"selected":""}>${v}</option>`).join("")}</select></label>
           <label class="f" style="flex:1">変更理由（任意）<input id="reR-${r.id}" placeholder="例：数値を明確にした"></label>
           <button class="btn sm" data-rsave="${r.id}">保存</button><button class="btn sm ghost" data-rcancel="${r.id}">取消</button></div>
         <div id="reM-${r.id}"></div></div></td></tr>`:""}`).join("")||'<tr><td colspan="6" class="hint">まだありません</td></tr>'}</tbody></table>`;
   const q=k=>document.getElementById(k);
-  document.querySelectorAll("[data-redit]").forEach(b=>b.onclick=()=>{const r=q("re-"+b.dataset.redit); r.hidden=!r.hidden});
+  document.querySelectorAll("[data-redit]").forEach(b=>b.onclick=()=>{const r=q("re-"+b.dataset.redit); r.hidden=!r.hidden; const rq=reqs.find(x=>x.id===b.dataset.redit); if(!r.hidden&&EARS_TYPES.includes(rq.type)) bindEars("ee-"+rq.id, rq.type)});
   document.querySelectorAll("[data-rcr]").forEach(b=>b.onclick=()=>{ changeState.prefill={kind:"modify", requirementId:b.dataset.rcr}; switchTab("change") });
   document.querySelectorAll("[data-rcancel]").forEach(b=>b.onclick=()=>{q("re-"+b.dataset.rcancel).hidden=true});
   document.querySelectorAll("[data-rsave]").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.rsave;
-    try{ await api(`/api/requirements/${id}`,{method:"PATCH",body:{title:q("reT-"+id).value.trim(),description:q("reD-"+id).value.trim(),priority:q("reP-"+id).value,reason:q("reR-"+id).value.trim()}}); toast("要件を更新しました（変更前の内容は履歴に残ります）"); loadReqs() }
+    const useEars=q("ee-"+id+"-box") && !q("reTW-"+id).open;
+    const body={description:q("reD-"+id).value.trim(),priority:q("reP-"+id).value,reason:q("reR-"+id).value.trim()};
+    if(useEars) body.ears=readEars("ee-"+id); else body.title=q("reT-"+id).value.trim();
+    try{ await api(`/api/requirements/${id}`,{method:"PATCH",body}); toast("要件を更新しました（変更前の内容は履歴に残ります）"); loadReqs() }
     catch(e){ q("reM-"+id).innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   });
   document.querySelectorAll("[data-rdel]").forEach(b=>b.onclick=async()=>{
@@ -985,6 +1001,191 @@ async function loadIntegrations(){
   });
 }
 
+/* ---------- EARS 記法 ---------- */
+const EARS_TYPES=["FR","NFR"];
+const EARS_P={ubiquitous:"普遍（常に）",event:"イベント駆動（〜とき）",state:"状態駆動（〜の間）",unwanted:"望ましくない振る舞い（〜場合）",optional:"オプション（〜機能がある場合）",complex:"複合（状態＋きっかけ）"};
+const EARS_SHORT={ubiquitous:"普遍",event:"イベント",state:"状態",unwanted:"異常時",optional:"オプション",complex:"複合"};
+const EARS_FIELDS={ubiquitous:[],event:["trigger"],state:["state"],unwanted:["trigger"],optional:["feature"],complex:["state","trigger"]};
+function earsEditor(pre, e){
+  e=e||{pattern:"ubiquitous",trigger:"",state:"",feature:"",system:"システム",response:""};
+  const inp=(k,label,ph)=>`<label class="f" data-ef="${k}" style="flex:1;min-width:12em">${label}<input id="${pre}-${k}" value="${esc(e[k]||"")}" placeholder="${esc(ph)}"></label>`;
+  return `<div id="${pre}-box" style="border:1px dashed var(--rule);border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+    <div class="row" style="align-items:flex-end"><label class="f">EARS の文型<select id="${pre}-pattern">${Object.entries(EARS_P).map(([k,v])=>`<option value="${k}" ${k===e.pattern?"selected":""}>${v}</option>`).join("")}</select></label>
+      ${inp("state","状態（〜の間）","例：予約の受付期間中である")}${inp("trigger","きっかけ（〜とき／〜場合）","例：利用者が予約を確定した")}${inp("feature","機能（〜がある場合）","例：多言語表示の機能")}
+      ${inp("system","主語（システム名）","例：予約システム")}</div>
+    ${inp("response","応答（〜しなければならない）","例：確認メールを3分以内に送信しなければならない")}
+    <div id="${pre}-prev" class="cmt"></div></div>`;
+}
+function readEars(pre){
+  const g=k=>(document.getElementById(`${pre}-${k}`)?.value||"").trim();
+  return {pattern:g("pattern"), trigger:g("trigger"), state:g("state"), feature:g("feature"), system:g("system")||"システム", response:g("response")};
+}
+function bindEars(pre, type){
+  const box=document.getElementById(`${pre}-box`); if(!box) return;
+  let timer=null;
+  const update=()=>{
+    const p=document.getElementById(`${pre}-pattern`).value;
+    box.querySelectorAll("[data-ef]").forEach(l=>{ const k=l.dataset.ef; if(k==="system"||k==="response") return; l.hidden=!EARS_FIELDS[p].includes(k) });
+    clearTimeout(timer);
+    timer=setTimeout(async()=>{
+      const e=readEars(pre); const prev=document.getElementById(`${pre}-prev`); if(!prev) return;
+      if(!e.response){ prev.innerHTML='<span class="hint">応答を入力すると、組み立てた文と検査の結果が表示されます</span>'; return }
+      try{ const r=await api("/api/ears/preview",{method:"POST",body:{ears:e,type}});
+        prev.innerHTML=`<b>${esc(r.text)}</b>${r.lint.ok?' <span class="st good">文型OK</span>':`<div style="color:var(--warn)">⚠ ${r.lint.issues.map(esc).join("／")}</div>`}`;
+      }catch(err){ prev.textContent=err.message }
+    },300);
+  };
+  box.querySelectorAll("input,select").forEach(x=>{ x.oninput=update; x.onchange=update });
+  update();
+}
+
+/* ---------- 資料分析 ---------- */
+const DOC_KIND={minutes:"議事録",existing:"既存システムの資料",business:"業務マニュアル・規程",other:"その他"};
+const ISSUE_CAT={manual:"手作業・紙",duplicate:"二重入力・転記",waiting:"待ち時間・滞留",dependency:"属人化",silo:"情報の分断",error:"ミス・手戻り",system:"現行システムの制約",control:"確認・統制の不足",other:"その他"};
+const APPROACH={eliminate:"やめる",combine:"まとめる",rearrange:"順番・担当を変える",simplify:"簡単にする",self_service:"利用者自身で行う",automate:"自動化する",integrate:"データを連携する",standardize:"標準化する"};
+const ECRS_KEYS=["eliminate","combine","rearrange","simplify"];
+const AN_CRIT=[["grounding","根拠の確かさ"],["insight","課題の深さ"],["improvement","見直しの踏み込み"],["feasibility","実現可能性"],["requirements","要件の質（EARS）"]];
+const anState={docs:[], analysis:null, show:null, proposals:new Set(), reqs:new Set()};
+const pct=v=>`${Math.round((v||0)*100)}%`;
+async function loadDiscover(){
+  if(!S.project){ $("#docForm").innerHTML='<p class="hint">プロジェクトを開いてください</p>'; $("#docList").innerHTML=""; $("#anBody").innerHTML=""; return }
+  $("#anGo").hidden=!canEdit();
+  try{
+    const [docs, list]=await Promise.all([api(`/api/projects/${S.project.id}/documents`), api(`/api/projects/${S.project.id}/analyses`)]);
+    anState.docs=docs;
+    renderDocs();
+    if(list[0] && (!anState.analysis || anState.analysis.id!==list[0].id)) setAnalysis(await api(`/api/analyses/${list[0].id}`));
+    else renderAnalysis();
+  }catch(e){ $("#anMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+}
+function renderDocs(){
+  $("#docForm").innerHTML=canEdit()?`<div class="row" style="align-items:flex-end">
+      <label class="f">種類<select id="docKind">${Object.entries(DOC_KIND).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label>
+      <label class="f">ファイル<input type="file" id="docFile" multiple accept=".txt,.md,.csv,.tsv,.docx,.pdf"></label>
+      <button class="btn" id="docUp">取り込む</button></div>
+    <details style="margin-top:6px"><summary class="hint">文章を貼り付けて取り込む</summary>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px"><label class="f">名前<input id="docName" placeholder="例：第3回定例会議事録"></label>
+      <label class="f">本文<textarea id="docText" rows="6" placeholder="議事録などを貼り付けてください"></textarea></label><div><button class="btn sm" id="docPaste">取り込む</button></div></div></details>
+    <div id="docMsg"></div>`:"";
+  $("#docList").innerHTML=`<div class="scroll" style="margin-top:10px"><table class="t"><thead><tr><th><input type="checkbox" id="docAll" checked aria-label="すべて選ぶ"></th><th>名前</th><th>種類</th><th>文字数</th><th>冒頭</th><th></th></tr></thead><tbody>
+    ${anState.docs.map(d=>`<tr><td><input type="checkbox" name="doc" value="${esc(d.id)}" checked aria-label="${esc(d.name)}"></td><td>${esc(d.name)}<br><span class="tag">${esc(d.format)}</span></td><td>${esc(d.kindLabel)}</td>
+      <td class="mono">${d.chars.toLocaleString()}${d.truncated?'<br><span class="tag">一部のみ</span>':""}</td><td class="cmt">${esc(d.preview.slice(0,80))}…</td>
+      <td>${canEdit()?`<button class="btn sm danger" data-ddel="${esc(d.id)}">削除</button>`:""}</td></tr>`).join("")||'<tr><td colspan="6" class="hint">まだ資料がありません</td></tr>'}</tbody></table></div>`;
+  $("#docAll") && ($("#docAll").onchange=e=>document.querySelectorAll("input[name=doc]").forEach(x=>x.checked=e.target.checked));
+  document.querySelectorAll("[data-ddel]").forEach(b=>b.onclick=async()=>{ if(!confirm("この資料を削除しますか？")) return; try{ await api(`/api/documents/${b.dataset.ddel}`,{method:"DELETE"}); loadDiscover() }catch(e){ toast(e.message) } });
+  const msg=t=>{ $("#docMsg").innerHTML=t };
+  if($("#docUp")) $("#docUp").onclick=async()=>{
+    const files=[...$("#docFile").files]; if(!files.length){ toast("ファイルを選んでください"); return }
+    const out=[];
+    for(const f of files){
+      try{
+        if(f.size>10*1024*1024) throw new Error("10MBを超えています");
+        const b64=await new Promise((ok,ng)=>{ const r=new FileReader(); r.onload=()=>ok(String(r.result).split(",")[1]||""); r.onerror=()=>ng(new Error("読み込めません")); r.readAsDataURL(f) });
+        const d=await api(`/api/projects/${S.project.id}/documents`,{method:"POST",body:{name:f.name,kind:$("#docKind").value,contentBase64:b64,mime:f.type}});
+        out.push(`<div class="note" style="background:var(--accent-soft)">${esc(f.name)}：${d.chars.toLocaleString()}文字を取り込みました${d.warnings.length?`（${esc(d.warnings.join(" "))}）`:""}</div>`);
+      }catch(e){ out.push(`<div class="note err">${esc(f.name)}：${esc(e.message)}</div>`) }
+    }
+    await loadDiscover(); msg(out.join(""));
+  };
+  if($("#docPaste")) $("#docPaste").onclick=async()=>{
+    const text=$("#docText").value.trim(), name=$("#docName").value.trim()||"貼り付けた文章"; if(!text) return;
+    try{ await api(`/api/projects/${S.project.id}/documents`,{method:"POST",body:{name,kind:$("#docKind").value,text}}); await loadDiscover(); msg('<div class="note" style="background:var(--accent-soft)">取り込みました</div>') }
+    catch(e){ msg(`<div class="note err">${esc(e.message)}</div>`) }
+  };
+}
+function setAnalysis(a){
+  anState.analysis=a;
+  const ev=a.evaluation;
+  anState.show = a.adoption?.label || ev?.recommendedLabel || a.candidates[0]?.label;
+  resetSelection();
+  renderAnalysis();
+}
+function current(){ const a=anState.analysis; return a ? a.candidates.find(c=>c.label===anState.show)||a.candidates[0] : null }
+function resetSelection(){
+  const c=current(); if(!c) return;
+  const a=anState.analysis;
+  anState.proposals=new Set(a.adoption ? a.adoption.proposalIds : c.analysis.proposals.map(p=>p.id));
+  anState.reqs=new Set(c.analysis.requirements.map((_,i)=>i));
+}
+/** 採用しない見直し案だけにつながる要件案は外す */
+function syncReqsWithProposals(){
+  const c=current(); if(!c) return;
+  c.analysis.requirements.forEach((r,i)=>{ if(r.proposalIds.length && !r.proposalIds.some(id=>anState.proposals.has(id))) anState.reqs.delete(i) });
+}
+function renderAnalysis(){
+  const a=anState.analysis, el=$("#anBody");
+  if(!a){ el.innerHTML=anState.docs.length?'<p class="hint" style="margin-top:10px">資料を選んで「AIで分析する」を押してください。</p>':""; return }
+  const c=current(), an=c.analysis, ev=a.evaluation, adopted=a.status==="adopted";
+  const m=an.metrics;
+  const cmp = a.candidates.length>1 ? `<h3 style="margin:16px 0 6px">分析の比較（作成したAIは採用後に表示）</h3>
+    <div class="scroll"><table class="t"><thead><tr><th>${ev?`評価（${esc(ev.evaluator)}）`:"項目"}</th>${a.candidates.map(x=>`<th>案${x.label}${a.mapping?`<br><span class="tag">${esc(a.mapping[x.label])}</span>`:""}</th>`).join("")}</tr></thead><tbody>
+      ${ev?AN_CRIT.map(([k,n])=>`<tr><td>${n}</td>${a.candidates.map(x=>`<td class="mono">${ev.scores[x.label]?.[k]??"―"}</td>`).join("")}</tr>`).join("")+`<tr><td><b>総合</b></td>${a.candidates.map(x=>`<td class="mono"><b>${ev.totals[x.label]??"―"}</b></td>`).join("")}</tr>`:""}
+      <tr><td>見直し率</td>${a.candidates.map(x=>`<td class="mono">${pct(x.analysis.metrics.reviewRate)}</td>`).join("")}</tr>
+      <tr><td>根拠を確かめられた課題</td>${a.candidates.map(x=>`<td class="mono">${pct(x.analysis.metrics.groundedRate)}</td>`).join("")}</tr>
+      <tr><td>やめる・まとめる等の案</td>${a.candidates.map(x=>`<td class="mono">${x.analysis.metrics.ecrs}件</td>`).join("")}</tr>
+      <tr><td>EARSの検査を通った要件</td>${a.candidates.map(x=>`<td class="mono">${pct(x.analysis.metrics.earsRate)}</td>`).join("")}</tr></tbody></table></div>
+    ${ev?`<div class="verdict"><b>評価AIの所見：</b>${esc(ev.recommendation)}</div>`:""}
+    <div class="row" style="margin-top:10px;align-items:center"><span class="hint">表示中：</span>${a.candidates.map(x=>`<button class="btn sm ${x.label===c.label?"":"ghost"}" data-anshow="${x.label}" ${adopted?"disabled":""}>案${x.label}${ev?.recommendedLabel===x.label?"（推奨）":""}</button>`).join("")}</div>` : "";
+  const removed=new Set(an.removed.map(r=>r.asIsId));
+  const flowItem=(s,mark)=>`<li><span class="mono">${esc(s.id)}</span> ${s.actor?`<b>${esc(s.actor)}</b>：`:""}${esc(s.action)}${s.tool?` <span class="tag">${esc(s.tool)}</span>`:""}${mark}</li>`;
+  el.innerHTML=`${(a.warnings||[]).concat(a.notes.filter(n=>!/^D\d+ = /.test(n))).map(w=>`<div class="note warn">${esc(w)}</div>`).join("")}
+    ${(a.failures||[]).map(f=>`<div class="note warn">${esc(f.provider)}：${esc(f.reason)}</div>`).join("")}
+    <p class="hint" style="margin:8px 0 0">${a.notes.filter(n=>/^D\d+ = /.test(n)).map(esc).join("　")}</p>
+    ${cmp}
+    <h3 style="margin:16px 0 6px">案${c.label}${a.mapping?`（${esc(a.mapping[c.label])}）`:""}</h3>
+    <div class="verdict">${esc(an.summary)}</div>
+    <div class="row" style="gap:18px;margin:8px 0"><span>見直し率 <b class="mono">${pct(m.reviewRate)}</b></span><span>根拠を確かめられた課題 <b class="mono">${pct(m.groundedRate)}</b></span><span>やめる・まとめる等の案 <b class="mono">${m.ecrs}件</b></span><span>EARSの検査を通った要件 <b class="mono">${pct(m.earsRate)}</b></span></div>
+    ${an.warnings.map(w=>`<div class="note warn">${esc(w)}</div>`).join("")}
+    <div class="grid2" style="margin-top:10px">
+      <div><b class="cmt">現状の業務フロー</b><ol class="cmt" style="padding-left:1.2em">${an.asIs.map(s=>flowItem(s, removed.has(s.id)?' <span class="st bad">廃止</span>':"")).join("")}</ol></div>
+      <div><b class="cmt">見直し後の業務フロー</b><ol class="cmt" style="padding-left:1.2em">${an.toBe.map(s=>flowItem(s, s.change==="new"?' <span class="st good">新規</span>':s.change==="changed"?' <span class="st warn">変更</span>':"")).join("")}</ol></div>
+    </div>
+    <h3 style="margin:16px 0 6px">現状の課題</h3>
+    <div class="scroll"><table class="t"><thead><tr><th>ID</th><th>課題</th><th>根本原因・影響</th><th>根拠（資料の引用）</th></tr></thead><tbody>
+      ${an.issues.map(i=>`<tr><td class="mono">${esc(i.id)}</td><td>${esc(i.title)}<br><span class="tag">${esc(ISSUE_CAT[i.category]||i.category)}</span></td><td class="cmt">${esc(i.rootCause)}${i.impact?`<br>影響：${esc(i.impact)}`:""}</td>
+        <td class="cmt">${i.evidence.map(e=>`${esc(e.document)}「${esc(e.quote)}」${e.verified?' <span class="st good">資料で確認</span>':' <span class="st bad">資料に見つからない</span>'}`).join("<br>")||'<span class="st bad">根拠なし</span>'}</td></tr>`).join("")}</tbody></table></div>
+    <h3 style="margin:16px 0 6px">業務の見直し案 <span class="hint">（採用するものを選んでください。まず「やめる・まとめる・順番を変える・簡単にする」を検討しています）</span></h3>
+    <div class="grid2">${an.proposals.map(p=>`<label class="cand" style="padding:10px 12px;display:block;cursor:pointer"><input type="checkbox" data-prop="${esc(p.id)}" ${anState.proposals.has(p.id)?"checked":""} ${adopted?"disabled":""}>
+      <b>${esc(p.id)} ${esc(p.title)}</b> <span class="${ECRS_KEYS.includes(p.approach)?"pill":"tag"}">${esc(APPROACH[p.approach]||p.approach)}</span>
+      <p class="cmt" style="margin:6px 0 0">${esc(p.description)}</p>${p.effect?`<p class="cmt" style="margin:4px 0 0">効果：${esc(p.effect)}</p>`:""}${p.tradeoff?`<p class="cmt" style="margin:4px 0 0">注意：${esc(p.tradeoff)}</p>`:""}
+      <p class="tag" style="margin:4px 0 0">対応する課題：${esc(p.issueIds.join(", ")||"―")}</p></label>`).join("")}</div>
+    ${an.notCarriedOver.length?`<h3 style="margin:16px 0 6px">新しいシステムに引き継がないもの</h3><ul class="cmt">${an.notCarriedOver.map(n=>`<li><b>${esc(n.item)}</b>：${esc(n.reason)}</li>`).join("")}</ul>`:""}
+    <h3 style="margin:16px 0 6px">初回の要件案 <span class="hint">（見直し後の業務に基づく。機能・非機能は EARS 記法）</span></h3>
+    <div class="scroll"><table class="t"><thead><tr><th></th><th>区分</th><th>要件</th><th>見直し案・課題</th></tr></thead><tbody>
+      ${an.requirements.map((r,i)=>`<tr><td><input type="checkbox" data-areq="${i}" ${anState.reqs.has(i)?"checked":""} ${adopted?"disabled":""} aria-label="要件案${i+1}"></td><td>${TYPE[r.type]}${r.ears?`<br><span class="tag">EARS:${EARS_SHORT[r.ears.pattern]}</span>`:""}</td>
+        <td>${esc(r.title)}${r.lint&&!r.lint.ok?`<div class="cmt" style="color:var(--warn)">⚠ ${r.lint.issues.map(esc).join("／")}</div>`:""}${r.rationale?`<br><span class="cmt">理由：${esc(r.rationale)}</span>`:""}</td>
+        <td class="mono">${esc([...r.proposalIds, ...r.issueIds].join(", ")||"―")}</td></tr>`).join("")}</tbody></table></div>
+    ${an.questions.length?`<h3 style="margin:16px 0 6px">利用者に確認したいこと</h3><ul class="cmt">${an.questions.map(q=>`<li>${esc(q)}</li>`).join("")}</ul><p class="hint">「ヒアリング」で答えると、要件に反映できます。</p>`:""}
+    ${adopted?`<div class="note" style="background:var(--accent-soft)">案${esc(a.adoption.label)}を採用しました（${a.adoption.at.slice(0,16).replace("T"," ")}・${esc(a.adoption.by)}）。${a.adoption.requirementCodes.length?`要件 ${esc(a.adoption.requirementCodes.join(", "))} を追加しました。`:""}${a.adoption.changeCodes.length?`確定済みのため変更要求 ${esc(a.adoption.changeCodes.join(", "))} にしました。「変更管理」で影響を確認してください。`:""}</div>`
+      :canEdit()?`<div class="row" style="margin-top:12px;align-items:flex-end"><label class="f" style="flex:1">採用理由（任意）<input id="anReason" placeholder="例：転記をなくす案が現実的なため"></label>
+        <button class="btn" id="anAdopt">案${c.label}の選んだ見直し案と要件案を採用する</button></div>
+        ${S.baseline?'<p class="hint">要件定義は確定済みのため、選んだ要件案は「追加」の変更要求になります。</p>':""}<div id="anAdMsg"></div>`:""}`;
+  el.querySelectorAll("[data-anshow]").forEach(b=>b.onclick=()=>{ anState.show=b.dataset.anshow; resetSelection(); renderAnalysis() });
+  el.querySelectorAll("[data-prop]").forEach(cb=>cb.onchange=()=>{ cb.checked?anState.proposals.add(cb.dataset.prop):anState.proposals.delete(cb.dataset.prop); if(!cb.checked) syncReqsWithProposals(); renderAnalysis() });
+  el.querySelectorAll("[data-areq]").forEach(cb=>cb.onchange=()=>{ const i=Number(cb.dataset.areq); cb.checked?anState.reqs.add(i):anState.reqs.delete(i) });
+  if($("#anAdopt")) $("#anAdopt").onclick=async()=>{
+    if(!anState.reqs.size){ toast("要件にする要件案を1つ以上選んでください"); return }
+    try{
+      const r=await api(`/api/analyses/${a.id}/adopt`,{method:"POST",body:{label:c.label, proposalIds:[...anState.proposals], requirementIndexes:[...anState.reqs].sort((x,y)=>x-y), reason:$("#anReason").value.trim()}});
+      anState.analysis=r.analysis; renderAnalysis();
+      toast(r.requirementCodes.length?`${r.requirementCodes.length}件を要件に追加しました`:`${r.changeCodes.length}件を変更要求にしました`);
+    }catch(e){ $("#anAdMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+}
+$("#anGo").onclick=async()=>{
+  if(!S.project) return;
+  const ids=[...document.querySelectorAll("input[name=doc]:checked")].map(x=>x.value);
+  if(!ids.length){ toast("分析する資料を選んでください"); return }
+  if(anState.analysis && anState.analysis.status!=="adopted" && !confirm("まだ採用していない分析があります。新しく分析しますか？")) return;
+  const b=$("#anGo"); b.disabled=true;
+  $("#anMsg").innerHTML='<p class="hint">AIが資料を読み、現状の課題と業務の見直しを分析しています（数分かかることがあります）…</p><div id="anProg"></div>';
+  try{
+    const r=await runJob(`/api/projects/${S.project.id}/analyses`, {documentIds:ids, focus:$("#anFocus").value.trim()}, p=>{const el=$("#anProg"); if(el) el.innerHTML=stepsHtml(p)});
+    $("#anMsg").innerHTML=""; setAnalysis(r);
+  }catch(e){ $("#anMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  finally{ b.disabled=false }
+};
+
 /* ---------- 画面（ワイヤーフレーム） ---------- */
 const scrState={view:null, html:"", show:null};
 async function loadScreens(){
@@ -1088,17 +1289,27 @@ function renderCrForm(){
       <label class="f" id="crReqW" style="flex:1">対象の要件<select id="crReq">${reqs.map(r=>`<option value="${esc(r.id)}" ${r.id===pf.requirementId?"selected":""}>${esc(r.code)} ${esc(r.title.slice(0,40))}</option>`).join("")}</select></label>
       <label class="f" id="crTypeW">区分<select id="crType">${Object.entries(TYPE).map(([k,v])=>`<option value="${k}" ${k==="FR"?"selected":""}>${v}</option>`).join("")}</select></label></div>
     <div id="crBodyW" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-      <label class="f">内容（変更後）<textarea id="crTitle" rows="2"></textarea></label>
+      <div id="crEarsW"></div>
+      <details id="crTitleW"><summary class="hint">EARS の構造を使わず、文で直接書く</summary><label class="f">内容（変更後）<textarea id="crTitle" rows="2"></textarea></label></details>
       <label class="f">補足<textarea id="crDesc" rows="2"></textarea></label>
       <label class="f" style="max-width:12em">優先度<select id="crPri">${Object.entries(PRI).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label></div>
     <div class="row" style="margin-top:8px;align-items:flex-end"><label class="f" style="flex:1">理由<input id="crReason" placeholder="例：日時の変更の問い合わせが多い"></label><button class="btn" id="crAdd">登録して影響を分析する</button></div><div id="crMsg"></div>`;
-  const fill=()=>{ const r=reqs.find(x=>x.id===$("#crReq").value); if(!r) return; $("#crTitle").value=r.title; $("#crDesc").value=r.description||""; $("#crPri").value=r.priority };
-  const sync=()=>{ const k=$("#crKind").value; $("#crReqW").hidden=k==="add"; $("#crTypeW").hidden=k!=="add"; $("#crBodyW").hidden=k==="delete"; if(k==="modify") fill(); if(k==="add"){ $("#crTitle").value=""; $("#crDesc").value=""; $("#crPri").value="should" } };
-  $("#crKind").onchange=sync; $("#crReq").onchange=()=>{ if($("#crKind").value==="modify") fill() }; sync();
+  // 機能要件・非機能要件は EARS の構造で書く（文で直接書くこともできる）
+  const typeNow=()=>$("#crKind").value==="add" ? $("#crType").value : (reqs.find(x=>x.id===$("#crReq").value)||{}).type;
+  const setEars=(e)=>{
+    const t=typeNow();
+    if(EARS_TYPES.includes(t)){ $("#crEarsW").innerHTML=earsEditor("cre", e); bindEars("cre", t); $("#crTitleW").open=false; $("#crTitleW").querySelector("summary").hidden=false }
+    else { $("#crEarsW").innerHTML=""; $("#crTitleW").open=true; $("#crTitleW").querySelector("summary").hidden=true }
+  };
+  const fill=()=>{ const r=reqs.find(x=>x.id===$("#crReq").value); if(!r) return; $("#crTitle").value=r.title; $("#crDesc").value=r.description||""; $("#crPri").value=r.priority;
+    setEars(r.ears||{pattern:"ubiquitous",trigger:"",state:"",feature:"",system:"システム",response:r.title.replace(/。$/,"")}) };
+  const sync=()=>{ const k=$("#crKind").value; $("#crReqW").hidden=k==="add"; $("#crTypeW").hidden=k!=="add"; $("#crBodyW").hidden=k==="delete"; if(k==="modify") fill(); if(k==="add"){ $("#crTitle").value=""; $("#crDesc").value=""; $("#crPri").value="should"; setEars(null) } };
+  $("#crKind").onchange=sync; $("#crReq").onchange=()=>{ if($("#crKind").value==="modify") fill() }; $("#crType").onchange=()=>{ if($("#crKind").value==="add") setEars(null) }; sync();
   $("#crAdd").onclick=async()=>{
     const k=$("#crKind").value, body={kind:k, reason:$("#crReason").value.trim()};
     if(k!=="add") body.requirementId=$("#crReq").value;
-    if(k!=="delete"){ body.title=$("#crTitle").value.trim(); body.description=$("#crDesc").value.trim(); body.priority=$("#crPri").value }
+    if(k!=="delete"){ body.description=$("#crDesc").value.trim(); body.priority=$("#crPri").value;
+      if($("#cre-box") && !$("#crTitleW").open) body.ears=readEars("cre"); else body.title=$("#crTitle").value.trim() }
     if(k==="add") body.type=$("#crType").value;
     try{ const cr=await api(`/api/projects/${S.project.id}/changes`,{method:"POST",body}); changeState.selected=cr.id; await loadChange(); analyzeChange(cr.id) }
     catch(e){ $("#crMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
