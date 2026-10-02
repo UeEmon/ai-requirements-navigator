@@ -9,3 +9,4 @@ export { detectAmbiguity, type AmbiguityHit } from "./ambiguity.js";
 export * from "./uml.js";
 export * from "./glossary.js";
 export * from "./guide.js";
+export * from "./tasks.js";

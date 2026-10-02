@@ -6,6 +6,9 @@ import type {
   AuditEntry,
   CredentialPatch,
   Decision,
+  ExportItem,
+  Integration,
+  IntegrationPatch,
   Job,
   JobProgress,
   Org,
@@ -16,6 +19,8 @@ import type {
   RequirementVersion,
   Round,
   Store,
+  TaskExport,
+  TaskPlanRecord,
   UmlModelRecord,
   UmlRound,
   UsageRecord,
@@ -137,6 +142,38 @@ const toUml = (r: any): UmlModelRecord => ({
   projectId: r.project_id,
   model: r.model,
   providerId: r.provider_id,
+  createdAt: iso(r.created_at),
+});
+
+const toIntegration = (r: any): Integration => ({
+  id: r.id,
+  orgId: r.org_id,
+  kind: r.kind,
+  label: r.label,
+  config: r.config,
+  encryptedSecret: r.encrypted_secret,
+  secretLast4: r.secret_last4,
+  createdAt: iso(r.created_at),
+  updatedAt: r.updated_at ? iso(r.updated_at) : null,
+});
+const toPlan = (r: any): TaskPlanRecord => ({
+  id: r.id,
+  projectId: r.project_id,
+  plan: r.plan,
+  providerId: r.provider_id,
+  basis: r.basis,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+});
+const toExport = (r: any): TaskExport => ({
+  id: r.id,
+  projectId: r.project_id,
+  planId: r.plan_id,
+  integrationId: r.integration_id,
+  kind: r.kind,
+  target: r.target,
+  items: r.items as ExportItem[],
+  createdBy: r.created_by,
   createdAt: iso(r.created_at),
 });
 
@@ -436,6 +473,68 @@ export class PgStore implements Store {
       [projectId],
     );
     return rows[0] ? toUml(rows[0]) : null;
+  }
+
+  async addIntegration(i: Omit<Integration, "id" | "createdAt" | "updatedAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO integrations(org_id, kind, label, config, encrypted_secret, secret_last4) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [i.orgId, i.kind, i.label, JSON.stringify(i.config), i.encryptedSecret, i.secretLast4],
+    );
+    return toIntegration(rows[0]);
+  }
+  async listIntegrations(orgId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM integrations WHERE org_id = $1 ORDER BY created_at", [orgId]);
+    return rows.map(toIntegration);
+  }
+  async updateIntegration(orgId: string, id: string, patch: IntegrationPatch) {
+    const cols: Record<keyof IntegrationPatch, string> = {
+      label: "label",
+      config: "config",
+      encryptedSecret: "encrypted_secret",
+      secretLast4: "secret_last4",
+    };
+    const sets: string[] = [];
+    const vals: unknown[] = [orgId, id];
+    for (const [k, col] of Object.entries(cols) as Array<[keyof IntegrationPatch, string]>) {
+      if (patch[k] === undefined) continue;
+      vals.push(k === "config" ? JSON.stringify(patch[k]) : patch[k]);
+      sets.push(`${col} = $${vals.length}`);
+    }
+    sets.push("updated_at = now()");
+    const { rows } = await this.pool.query(`UPDATE integrations SET ${sets.join(", ")} WHERE org_id = $1 AND id = $2 RETURNING *`, vals);
+    return rows[0] ? toIntegration(rows[0]) : null;
+  }
+  async deleteIntegration(orgId: string, id: string) {
+    const r = await this.pool.query("DELETE FROM integrations WHERE org_id = $1 AND id = $2", [orgId, id]);
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  async saveTaskPlan(r: Omit<TaskPlanRecord, "id" | "createdAt">) {
+    const { rows } = await this.pool.query(
+      "INSERT INTO task_plans(project_id, plan, provider_id, basis, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+      [r.projectId, JSON.stringify(r.plan), r.providerId, JSON.stringify(r.basis), r.createdBy],
+    );
+    return toPlan(rows[0]);
+  }
+  async getTaskPlan(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM task_plans WHERE id = $1", [id]);
+    return rows[0] ? toPlan(rows[0]) : null;
+  }
+  async latestTaskPlan(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM task_plans WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1", [projectId]);
+    return rows[0] ? toPlan(rows[0]) : null;
+  }
+  async saveTaskExport(e: Omit<TaskExport, "id" | "createdAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO task_exports(project_id, plan_id, integration_id, kind, target, items, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [e.projectId, e.planId, e.integrationId, e.kind, e.target, JSON.stringify(e.items), e.createdBy],
+    );
+    return toExport(rows[0]);
+  }
+  async listTaskExports(planId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM task_exports WHERE plan_id = $1 ORDER BY created_at DESC, id", [planId]);
+    return rows.map(toExport);
   }
 
   async addUsage(u: Omit<UsageRecord, "at">) {

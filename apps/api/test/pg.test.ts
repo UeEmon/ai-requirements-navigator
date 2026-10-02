@@ -110,6 +110,45 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       expect(ur.status).toBe("awaiting_decision");
       await store.markUmlRoundDecided(ur.id);
       expect((await store.getUmlRound(ur.id))!.status).toBe("decided");
+
+      // 実装工程への連携: 連携先・タスク分解・登録結果
+      const integ = await store.addIntegration({
+        orgId: org.id,
+        kind: "github",
+        label: "GH",
+        config: { owner: "acme", repo: "app" },
+        encryptedSecret: "enc",
+        secretLast4: "1234",
+      });
+      const upd = await store.updateIntegration(org.id, integ.id, { config: { owner: "acme", repo: "web" }, label: "GH2" });
+      expect(upd).toMatchObject({ label: "GH2", config: { owner: "acme", repo: "web" }, encryptedSecret: "enc" });
+      expect(upd!.updatedAt).not.toBeNull();
+      expect(await store.updateIntegration("00000000-0000-0000-0000-000000000000", integ.id, { label: "x" })).toBeNull();
+      const plan = {
+        epics: [{ key: "E1", title: "e", description: "", requirementCodes: ["FR-01"], stories: [] }],
+        uncovered: [],
+        unknownCodes: [],
+      };
+      const tp = await store.saveTaskPlan({ projectId: project.id, plan, providerId: cred.id, basis: [{ code: "FR-01", version: 1 }], createdBy: "u1" });
+      expect((await store.latestTaskPlan(project.id))!.id).toBe(tp.id);
+      expect((await store.getTaskPlan(tp.id))!.basis).toEqual([{ code: "FR-01", version: 1 }]);
+      const ex1 = await store.saveTaskExport({
+        projectId: project.id,
+        planId: tp.id,
+        integrationId: integ.id,
+        kind: "github",
+        target: "acme/web",
+        items: [{ key: "E1", type: "epic", title: "e", status: "created", url: "https://github.com/acme/web/issues/1", externalKey: "#1" }],
+        createdBy: "u1",
+      });
+      const exports = await store.listTaskExports(tp.id);
+      expect(exports.map((e) => e.id)).toEqual([ex1.id]);
+      expect(exports[0]!.items[0]).toMatchObject({ key: "E1", externalKey: "#1" });
+      expect(await store.listIntegrations(org.id)).toHaveLength(1);
+      expect(await store.deleteIntegration(org.id, integ.id)).toBe(true);
+      expect(await store.listIntegrations(org.id)).toHaveLength(0);
+      // 連携先を削除しても登録の履歴は残る
+      expect(await store.listTaskExports(tp.id)).toHaveLength(1);
     } finally {
       await store.pool.end();
     }

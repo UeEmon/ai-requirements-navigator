@@ -54,6 +54,7 @@ export function defaultMockHandler(id: string): MockHandler {
       });
     }
     if (req.system.includes("インタビュアー")) return mockGuide(prompt);
+    if (req.system.includes("テックリード")) return mockTaskPlan(prompt);
 
     if (req.system.includes("レビュアー")) {
       const labels = [...prompt.matchAll(/### 案([A-D])/g)].map((m) => m[1]!);
@@ -186,4 +187,46 @@ function mockGuide(prompt: string): string {
     glossary: [{ term: "担当者", explanation: "その業務を受け持つ人。" }],
     coveredPoints: covered,
   });
+}
+
+/** 要件を区分ごとのエピックにまとめ、1要件を1ストーリーにする */
+function mockTaskPlan(prompt: string): string {
+  const reqs = (prompt.split("# 要件")[1] ?? "")
+    .split("\n# ")[0]!
+    .split("\n")
+    .map((l) => l.match(/^- ([A-Z]+-\d+) \[([A-Z]+)[^\]]*\] (.+?)(?: — .*)?$/))
+    .filter((m): m is RegExpMatchArray => !!m)
+    .map((m) => ({ code: m[1]!, type: m[2]!, title: m[3]! }));
+  const groups: Array<[string, string]> = [
+    ["FR", "基本機能"],
+    ["NFR", "品質・運用"],
+  ];
+  const epics = groups
+    .map(([type, title]) => ({
+      title,
+      description: `${title}に関する要件を実装する`,
+      stories: reqs
+        .filter((r) => r.type === type)
+        .map((r, i) => ({
+          title: r.title,
+          description: `${r.code} を実装する`,
+          acceptanceCriteria: [`${r.title}ことを確認できる`],
+          requirementCodes: [r.code],
+          estimate: ["S", "M", "L"][i % 3],
+          tasks: [
+            { title: "画面を作る", kind: type === "FR" ? "frontend" : "infra" },
+            { title: "処理を作る", kind: "backend" },
+            { title: "テストを書く", kind: "test" },
+          ],
+        })),
+    }))
+    .filter((e) => e.stories.length);
+  if (!epics.length) {
+    epics.push({
+      title: "準備",
+      description: "開発環境を整える",
+      stories: [{ title: "開発環境を作る", description: "", acceptanceCriteria: [], requirementCodes: [], estimate: "S", tasks: [{ title: "リポジトリを作る", kind: "infra" }] }],
+    });
+  }
+  return JSON.stringify({ epics });
 }

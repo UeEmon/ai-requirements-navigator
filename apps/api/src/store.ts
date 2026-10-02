@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CandidateContent, Guide, RequirementItem, RequirementType, ScoredEvaluation, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
+import type { CandidateContent, Guide, RequirementItem, RequirementType, ScoredEvaluation, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
 export interface Org {
   id: string;
@@ -114,7 +114,7 @@ export interface AuditEntry {
   at: string;
 }
 
-export type JobKind = "round" | "uml";
+export type JobKind = "round" | "uml" | "tasks" | "export";
 export type JobStatus = "queued" | "running" | "done" | "failed";
 export interface JobProgress {
   steps?: Array<{ key: string; label: string; status: "waiting" | "running" | "done" | "failed"; reason?: string }>;
@@ -172,6 +172,63 @@ export interface UmlModelRecord {
   projectId: string;
   model: UmlModel;
   providerId: string;
+  createdAt: string;
+}
+
+export type IntegrationKind = "github" | "jira" | "backlog";
+
+/** 課題管理ツールとの接続。トークンは暗号化して保存し、画面やログには末尾4文字しか出さない */
+export interface Integration {
+  id: string;
+  orgId: string;
+  kind: IntegrationKind;
+  label: string;
+  /** 接続先（リポジトリ、URL、プロジェクトキーなど）。秘密情報は入れない */
+  config: Record<string, string>;
+  encryptedSecret: string;
+  secretLast4: string;
+  createdAt: string;
+  updatedAt: string | null;
+}
+export type IntegrationPatch = Partial<Pick<Integration, "label" | "config" | "encryptedSecret" | "secretLast4">>;
+
+export interface TaskPlanRecord {
+  id: string;
+  projectId: string;
+  plan: TaskPlan;
+  providerId: string;
+  /** 分解に使った要件（コードと版）。要件がその後変わったかの判定に使う */
+  basis: Array<{ code: string; version: number }>;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ExportItem {
+  /** E1 / E1-S2 */
+  key: string;
+  type: "epic" | "story";
+  title: string;
+  status: "created" | "skipped" | "failed";
+  url?: string;
+  /** 外部ツールでの番号（#12、PROJ-3 など） */
+  externalKey?: string;
+  /** 外部ツールの内部ID（Backlog の親課題指定などに使う） */
+  externalId?: string;
+  error?: string;
+  /** 登録はできたが一部を省いたときの説明（ラベルや親子関係が使えなかった等） */
+  note?: string;
+}
+
+export interface TaskExport {
+  id: string;
+  projectId: string;
+  planId: string;
+  integrationId: string;
+  kind: IntegrationKind;
+  /** 登録先の表示名（owner/repo、プロジェクトキーなど） */
+  target: string;
+  items: ExportItem[];
+  createdBy: string;
   createdAt: string;
 }
 
@@ -234,6 +291,18 @@ export interface Store {
   saveUmlModel(projectId: string, model: UmlModel, providerId: string): Promise<UmlModelRecord>;
   latestUmlModel(projectId: string): Promise<UmlModelRecord | null>;
 
+  addIntegration(i: Omit<Integration, "id" | "createdAt" | "updatedAt">): Promise<Integration>;
+  listIntegrations(orgId: string): Promise<Integration[]>;
+  updateIntegration(orgId: string, id: string, patch: IntegrationPatch): Promise<Integration | null>;
+  deleteIntegration(orgId: string, id: string): Promise<boolean>;
+
+  saveTaskPlan(r: Omit<TaskPlanRecord, "id" | "createdAt">): Promise<TaskPlanRecord>;
+  getTaskPlan(id: string): Promise<TaskPlanRecord | null>;
+  latestTaskPlan(projectId: string): Promise<TaskPlanRecord | null>;
+  saveTaskExport(e: Omit<TaskExport, "id" | "createdAt">): Promise<TaskExport>;
+  /** 新しい順 */
+  listTaskExports(planId: string): Promise<TaskExport[]>;
+
   addUsage(u: Omit<UsageRecord, "at">): Promise<void>;
   /** since 以降（省略時は全期間）の利用量をAIごとに集計する */
   usageSummary(orgId: string, since?: Date): Promise<UsageRow[]>;
@@ -260,6 +329,9 @@ export class MemoryStore implements Store {
   private audits: AuditEntry[] = [];
   private jobs = new Map<string, Job>();
   private umlRounds = new Map<string, UmlRound>();
+  private integrations = new Map<string, Integration>();
+  private plans: TaskPlanRecord[] = [];
+  private exports: TaskExport[] = [];
   private seq = 0;
 
   async createOrg(name: string) {
@@ -473,6 +545,44 @@ export class MemoryStore implements Store {
   }
   async latestUmlModel(projectId: string) {
     return this.umls.filter((u) => u.projectId === projectId).at(-1) ?? null;
+  }
+  async addIntegration(i: Omit<Integration, "id" | "createdAt" | "updatedAt">) {
+    const r: Integration = { ...i, id: randomUUID(), createdAt: now(), updatedAt: null };
+    this.integrations.set(r.id, r);
+    return { ...r };
+  }
+  async listIntegrations(orgId: string) {
+    return [...this.integrations.values()].filter((x) => x.orgId === orgId).map((x) => ({ ...x }));
+  }
+  async updateIntegration(orgId: string, id: string, patch: IntegrationPatch) {
+    const r = this.integrations.get(id);
+    if (!r || r.orgId !== orgId) return null;
+    Object.assign(r, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)), { updatedAt: now() });
+    return { ...r };
+  }
+  async deleteIntegration(orgId: string, id: string) {
+    const r = this.integrations.get(id);
+    if (!r || r.orgId !== orgId) return false;
+    return this.integrations.delete(id);
+  }
+  async saveTaskPlan(r: Omit<TaskPlanRecord, "id" | "createdAt">) {
+    const x: TaskPlanRecord = { ...r, id: randomUUID(), createdAt: now() };
+    this.plans.push(x);
+    return x;
+  }
+  async getTaskPlan(id: string) {
+    return this.plans.find((x) => x.id === id) ?? null;
+  }
+  async latestTaskPlan(projectId: string) {
+    return this.plans.filter((x) => x.projectId === projectId).at(-1) ?? null;
+  }
+  async saveTaskExport(e: Omit<TaskExport, "id" | "createdAt">) {
+    const x: TaskExport = { ...e, id: randomUUID(), createdAt: now() };
+    this.exports.push(x);
+    return x;
+  }
+  async listTaskExports(planId: string) {
+    return this.exports.filter((x) => x.planId === planId).reverse();
   }
   async addUsage(u: Omit<UsageRecord, "at">) {
     this.usage.push({ ...u, at: now() });

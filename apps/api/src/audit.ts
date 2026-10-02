@@ -20,6 +20,11 @@ export type AuditAction =
   | "requirement.update"
   | "requirement.delete"
   | "spec.export"
+  | "ai.tasks"
+  | "tasks.export"
+  | "integration.create"
+  | "integration.update"
+  | "integration.delete"
   | "auth.login";
 
 export interface AuditInput {

@@ -25,6 +25,7 @@ import { z } from "zod";
 import { audit, clip } from "./audit.js";
 import { hasRole, type Authenticator, type OidcClient, type Principal, type Role, type TokenSet } from "./auth.js";
 import { maskKey, type KeyEncryptor } from "./crypto.js";
+import { implementation } from "./implementation.js";
 import { JobError, JobRunner, type JobRunnerOptions } from "./jobs.js";
 import { buildSpec, CONTENT_TYPE, PdfFontMissingError, renderDocx, renderMarkdown, renderPdf, type SpecFormat, type SpecImage } from "./spec.js";
 import type { ArtifactStorage } from "./storage.js";
@@ -833,6 +834,21 @@ export function createApp(deps: AppDeps) {
   /* 非同期ジョブ                                                         */
   /* ------------------------------------------------------------------ */
 
+  const impl = implementation({
+    store,
+    encryptor: deps.encryptor,
+    fetchImpl: deps.fetchImpl ?? fetch,
+    timeoutMs: deps.timeoutMs,
+    need,
+    loadProject,
+    actorOf,
+    body,
+    parseOrThrow,
+    budget,
+    providersOf,
+    labelsOf,
+  });
+
   const asJobError = (e: unknown): never => {
     if (e instanceof HTTPException) throw new JobError(e.message, e.status);
     if (e instanceof RoundError) throw new JobError(e.message, e.code === "all_failed" ? 502 : 400);
@@ -851,6 +867,16 @@ export function createApp(deps: AppDeps) {
         if (!p) throw new JobError("プロジェクトが見つかりません", 404);
         return executeUml(p, job.createdBy, report).catch(asJobError);
       },
+      tasks: async ({ job, report }) => {
+        const p = await store.getProject(job.projectId!);
+        if (!p) throw new JobError("プロジェクトが見つかりません", 404);
+        return impl.jobHandlers.tasks(p, job.input, job.createdBy, report).catch(asJobError);
+      },
+      export: async ({ job, report }) => {
+        const p = await store.getProject(job.projectId!);
+        if (!p) throw new JobError("プロジェクトが見つかりません", 404);
+        return impl.jobHandlers.export(p, job.input, job.createdBy, report).catch(asJobError);
+      },
     },
     deps.jobs,
   );
@@ -862,6 +888,7 @@ export function createApp(deps: AppDeps) {
     return c.json({ jobId: job.id, status: job.status }, 202);
   };
   const wantsAsync = (c: Context) => c.req.query("async") === "1" || c.req.query("async") === "true";
+  impl.routes(app, { wantsAsync, enqueue });
 
   app.get("/api/jobs/:id", async (c) => {
     const job = await store.getJob(c.req.param("id"));
