@@ -42,6 +42,20 @@ describe("runRound", () => {
     expect(res.warnings).toEqual([]);
   });
 
+  it("進み具合を通知する", async () => {
+    const ev: string[] = [];
+    const bad = new MockProvider("bad", () => "x");
+    await runRound(ctx, {
+      generators: [new MockProvider("claude"), bad],
+      evaluator: new MockProvider("judge"),
+      onProgress: (e) => ev.push(`${e.type}:${e.providerId}:${e.status}`),
+    });
+    expect(ev).toEqual(
+      expect.arrayContaining(["generator:claude:running", "generator:claude:done", "generator:bad:failed", "evaluator:judge:running", "evaluator:judge:done"]),
+    );
+    expect(ev.at(-1)).toBe("evaluator:judge:done");
+  });
+
   it("評価AIのプロンプトに生成AIの名前を含めない", async () => {
     let evalPrompt = "";
     const judge = new MockProvider("judge", async (req) => {

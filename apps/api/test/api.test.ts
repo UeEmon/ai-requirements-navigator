@@ -211,7 +211,7 @@ describe("API", () => {
     expect(r.status).toBe(400);
   });
 
-  it("UML: AIで設計モデルを作り、5種類の図を返す。最新のモデルは保存される", async () => {
+  it("UML（複数AI）: 各AIの設計モデルを匿名で比較し、採用したものを保存する", async () => {
     const project = await decidedProject();
     const before = await (await t.app.request(`/api/projects/${project.id}/uml`, as("viewer"))).json();
     expect(before.model).toBeNull();
@@ -220,17 +220,44 @@ describe("API", () => {
     const gen = await t.app.request(`/api/projects/${project.id}/uml/generate`, as("editor", { method: "POST" }));
     expect(gen.status).toBe(201);
     const g = await gen.json();
-    expect(g.diagrams.map((d: { kind: string }) => d.kind)).toEqual(["usecase", "class", "sequence", "state", "activity"]);
-    expect(g.dropped).toBe(1);
-    expect(g.model.provider).toBe("Claude役");
+    expect(g.mode).toBe("compare");
+    expect(g.candidates.map((x: { label: string }) => x.label)).toEqual(["A", "B"]);
+    expect(g.candidates[0].diagrams.map((d: { kind: string }) => d.kind)).toEqual(["usecase", "class", "sequence", "state", "activity"]);
+    expect(g.candidates[0].stats.classes).toBe(4);
+    expect(g.evaluation.totals.A).toBeTypeOf("number");
+    expect(JSON.stringify(g)).not.toContain("Claude役"); // 決定前は作成者を伏せる
+
+    // 採用前は保存されていない
+    expect((await (await t.app.request(`/api/projects/${project.id}/uml`, as("viewer"))).json()).model).toBeNull();
+
+    const ad = await t.app.request(`/api/uml-rounds/${g.umlRoundId}/adopt`, as("editor", json({ label: g.evaluation.recommendedLabel, reason: "推奨どおり" })));
+    expect(ad.status).toBe(201);
+    const adopted = await ad.json();
+    expect(Object.values(adopted.mapping).sort()).toEqual(["Claude役", "GPT役"]);
+    expect(adopted.diagrams).toHaveLength(5);
+    expect((await t.app.request(`/api/uml-rounds/${g.umlRoundId}/adopt`, as("editor", json({ label: "A" })))).status).toBe(409);
 
     const after = await (await t.app.request(`/api/projects/${project.id}/uml`, as("viewer"))).json();
-    expect(after.model.providerId).toBe(g.model.providerId);
+    expect(after.model.provider).toBe(adopted.model.provider);
     expect(after.diagrams).toHaveLength(5);
 
     const md = await (await t.app.request(`/api/projects/${project.id}/spec.md`, as("viewer"))).text();
     expect(md).toContain("### クラス図（ドメインモデル）");
     expect(md).toContain("```plantuml");
+  });
+
+  it("UML（単一AI）: 生成したモデルをそのまま採用する", async () => {
+    const [g1] = await registerMocks();
+    const project = await (
+      await t.app.request(`/api/orgs/${orgId}/projects`, as("editor", json({ name: "s", aiConfig: { mode: "single", generatorIds: [g1] } })))
+    ).json();
+    const round = await (await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "a" })))).json();
+    await t.app.request(`/api/rounds/${round.id}/decision`, as("editor", json({ pick: "A" })));
+    const g = await (await t.app.request(`/api/projects/${project.id}/uml/generate`, as("editor", { method: "POST" }))).json();
+    expect(g.mode).toBe("adopted");
+    expect(g.dropped).toBe(1);
+    expect(g.model.provider).toBe("Claude役");
+    expect(g.diagrams).toHaveLength(5);
   });
 
   it("Word: 図の画像を埋め込んで出力し、保存する", async () => {

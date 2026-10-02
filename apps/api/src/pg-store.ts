@@ -1,8 +1,25 @@
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import type { RequirementItem } from "@arn/ai-core";
-import type { UmlModel } from "@arn/ai-core";
-import type { CredentialPatch, Decision, Org, Project, ProviderCredential, Requirement, Round, Store, UmlModelRecord, UsageRecord } from "./store.js";
+import type { Guide, UmlModel } from "@arn/ai-core";
+import type {
+  AuditEntry,
+  CredentialPatch,
+  Decision,
+  Job,
+  JobProgress,
+  Org,
+  Project,
+  ProviderCredential,
+  Requirement,
+  RequirementPatch,
+  RequirementVersion,
+  Round,
+  Store,
+  UmlModelRecord,
+  UmlRound,
+  UsageRecord,
+} from "./store.js";
 
 const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
 
@@ -52,8 +69,57 @@ const toReq = (r: any): Requirement => ({
   description: r.description,
   priority: r.priority,
   roundId: r.round_id,
+  phaseKey: r.phase_key ?? null,
   source: r.source,
   version: r.version,
+  createdAt: iso(r.created_at),
+  updatedAt: r.updated_at ? iso(r.updated_at) : null,
+  deletedAt: r.deleted_at ? iso(r.deleted_at) : null,
+});
+const toVersion = (r: any): RequirementVersion => ({
+  requirementId: r.requirement_id,
+  version: r.version,
+  title: r.title,
+  description: r.description,
+  priority: r.priority,
+  changedBy: r.changed_by,
+  changeReason: r.change_reason,
+  createdAt: iso(r.created_at),
+});
+const toAudit = (r: any): AuditEntry => ({
+  id: String(r.id),
+  orgId: r.org_id,
+  actor: r.actor,
+  action: r.action,
+  targetType: r.target_type,
+  targetId: r.target_id,
+  detail: r.detail,
+  at: iso(r.at),
+});
+const toJob = (r: any): Job => ({
+  id: r.id,
+  orgId: r.org_id,
+  projectId: r.project_id,
+  kind: r.kind,
+  status: r.status,
+  input: r.input,
+  result: r.result,
+  error: r.error,
+  errorStatus: r.error_status,
+  progress: r.progress,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+  startedAt: r.started_at ? iso(r.started_at) : null,
+  finishedAt: r.finished_at ? iso(r.finished_at) : null,
+});
+const toUmlRound = (r: any): UmlRound => ({
+  id: r.id,
+  projectId: r.project_id,
+  candidates: r.candidates,
+  evaluation: r.evaluation,
+  failures: r.failures,
+  warnings: r.warnings,
+  status: r.status,
   createdAt: iso(r.created_at),
 });
 const toDecision = (r: any): Decision => ({
@@ -178,7 +244,7 @@ export class PgStore implements Store {
     await this.pool.query("UPDATE rounds SET status = 'decided' WHERE id = $1", [id]);
   }
 
-  async addRequirements(projectId: string, items: Array<RequirementItem & { roundId: string | null; source: string }>) {
+  async addRequirements(projectId: string, items: Array<RequirementItem & { roundId: string | null; source: string; phaseKey?: string | null }>) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -192,9 +258,9 @@ export class PgStore implements Store {
         );
         const code = `${it.type}-${String((c[0]?.n ?? 0) + 1).padStart(2, "0")}`;
         const { rows } = await client.query(
-          `INSERT INTO requirements(project_id, code, type, title, description, priority, round_id, source)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-          [projectId, code, it.type, it.title, it.description, it.priority, it.roundId, it.source],
+          `INSERT INTO requirements(project_id, code, type, title, description, priority, round_id, source, phase_key)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+          [projectId, code, it.type, it.title, it.description, it.priority, it.roundId, it.source, it.phaseKey ?? null],
         );
         out.push(toReq(rows[0]));
       }
@@ -208,8 +274,141 @@ export class PgStore implements Store {
     }
   }
   async listRequirements(projectId: string) {
-    const { rows } = await this.pool.query("SELECT * FROM requirements WHERE project_id = $1 ORDER BY created_at, code", [projectId]);
+    const { rows } = await this.pool.query(
+      "SELECT * FROM requirements WHERE project_id = $1 AND deleted_at IS NULL ORDER BY created_at, code",
+      [projectId],
+    );
     return rows.map(toReq);
+  }
+  async getRequirement(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM requirements WHERE id = $1", [id]);
+    return rows[0] ? toReq(rows[0]) : null;
+  }
+  async updateRequirement(id: string, patch: RequirementPatch, actor: string, reason: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows: cur } = await client.query("SELECT * FROM requirements WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [id]);
+      const r = cur[0];
+      if (!r) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+      await client.query(
+        `INSERT INTO requirement_versions(requirement_id, version, title, description, priority, changed_by, change_reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [id, r.version, r.title, r.description, r.priority, actor, reason],
+      );
+      const { rows } = await client.query(
+        `UPDATE requirements SET title = $2, description = $3, priority = $4, version = version + 1, updated_at = now()
+         WHERE id = $1 RETURNING *`,
+        [id, patch.title ?? r.title, patch.description ?? r.description, patch.priority ?? r.priority],
+      );
+      await client.query("COMMIT");
+      return toReq(rows[0]);
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+  async deleteRequirement(id: string) {
+    const r = await this.pool.query("UPDATE requirements SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL", [id]);
+    return (r.rowCount ?? 0) > 0;
+  }
+  async listRequirementVersions(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM requirement_versions WHERE requirement_id = $1 ORDER BY version DESC", [id]);
+    return rows.map(toVersion);
+  }
+
+  async saveGuide(projectId: string, guide: Guide) {
+    await this.pool.query("INSERT INTO phase_guides(project_id, phase_key, guide) VALUES ($1,$2,$3)", [projectId, guide.phaseKey, JSON.stringify(guide)]);
+  }
+  async latestGuides(projectId: string) {
+    const { rows } = await this.pool.query(
+      `SELECT DISTINCT ON (phase_key) guide FROM phase_guides WHERE project_id = $1 ORDER BY phase_key, created_at DESC`,
+      [projectId],
+    );
+    return rows.map((r: { guide: Guide }) => r.guide);
+  }
+
+  async addAudit(e: Omit<AuditEntry, "id" | "at">) {
+    await this.pool.query(
+      "INSERT INTO audit_logs(org_id, actor, action, target_type, target_id, detail) VALUES ($1,$2,$3,$4,$5,$6)",
+      [e.orgId, e.actor, e.action, e.targetType, e.targetId, JSON.stringify(e.detail)],
+    );
+  }
+  async listAudit(orgId: string, q: { limit: number; before?: string; action?: string }) {
+    const vals: unknown[] = [orgId];
+    let where = "org_id = $1";
+    if (q.before) {
+      vals.push(q.before);
+      where += ` AND id < $${vals.length}`;
+    }
+    if (q.action) {
+      vals.push(`${q.action}%`);
+      where += ` AND action LIKE $${vals.length}`;
+    }
+    vals.push(q.limit);
+    const { rows } = await this.pool.query(`SELECT * FROM audit_logs WHERE ${where} ORDER BY id DESC LIMIT $${vals.length}`, vals);
+    return rows.map(toAudit);
+  }
+  async purgeAudit(before: Date) {
+    const r = await this.pool.query("DELETE FROM audit_logs WHERE at < $1", [before]);
+    return r.rowCount ?? 0;
+  }
+
+  async createJob(j: Pick<Job, "orgId" | "projectId" | "kind" | "input" | "createdBy">) {
+    const { rows } = await this.pool.query(
+      "INSERT INTO jobs(org_id, project_id, kind, input, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+      [j.orgId, j.projectId, j.kind, JSON.stringify(j.input), j.createdBy],
+    );
+    return toJob(rows[0]);
+  }
+  async claimJob() {
+    const { rows } = await this.pool.query(
+      `UPDATE jobs SET status = 'running', started_at = now()
+       WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+       RETURNING *`,
+    );
+    return rows[0] ? toJob(rows[0]) : null;
+  }
+  async updateJobProgress(id: string, progress: JobProgress) {
+    await this.pool.query("UPDATE jobs SET progress = $2 WHERE id = $1", [id, JSON.stringify(progress)]);
+  }
+  async finishJob(id: string, r: { status: "done" | "failed"; result?: unknown; error?: string; errorStatus?: number }) {
+    await this.pool.query(
+      "UPDATE jobs SET status = $2, result = $3, error = $4, error_status = $5, finished_at = now() WHERE id = $1",
+      [id, r.status, r.result === undefined ? null : JSON.stringify(r.result), r.error ?? null, r.errorStatus ?? null],
+    );
+  }
+  async getJob(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM jobs WHERE id = $1", [id]);
+    return rows[0] ? toJob(rows[0]) : null;
+  }
+  async failStaleJobs(startedBefore: Date) {
+    const r = await this.pool.query(
+      `UPDATE jobs SET status = 'failed', error = '処理が時間内に終わりませんでした', error_status = 504, finished_at = now()
+       WHERE status = 'running' AND started_at < $1`,
+      [startedBefore],
+    );
+    return r.rowCount ?? 0;
+  }
+
+  async saveUmlRound(r: Omit<UmlRound, "id" | "createdAt" | "status">) {
+    const { rows } = await this.pool.query(
+      "INSERT INTO uml_rounds(project_id, candidates, evaluation, failures, warnings) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+      [r.projectId, JSON.stringify(r.candidates), r.evaluation ? JSON.stringify(r.evaluation) : null, JSON.stringify(r.failures), JSON.stringify(r.warnings)],
+    );
+    return toUmlRound(rows[0]);
+  }
+  async getUmlRound(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM uml_rounds WHERE id = $1", [id]);
+    return rows[0] ? toUmlRound(rows[0]) : null;
+  }
+  async markUmlRoundDecided(id: string) {
+    await this.pool.query("UPDATE uml_rounds SET status = 'decided' WHERE id = $1", [id]);
   }
 
   async addDecision(d: Omit<Decision, "id" | "createdAt">) {

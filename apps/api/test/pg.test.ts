@@ -61,6 +61,55 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       expect(upd!.updatedAt).not.toBeNull();
       expect(await store.updateCredential("00000000-0000-0000-0000-000000000000", cred.id, { model: "x" })).toBeNull();
       expect(await store.usageSummary(org.id, new Date(Date.now() + 60_000))).toEqual([]);
+
+      // 要件の版管理と論理削除（004）
+      const r0 = added[0]!;
+      const up = await store.updateRequirement(r0.id, { title: "t1改", priority: "could" }, "u1", "見直し");
+      expect(up).toMatchObject({ title: "t1改", priority: "could", description: "", version: 2 });
+      expect((await store.listRequirementVersions(r0.id))[0]).toMatchObject({ version: 1, title: "t1", changedBy: "u1", changeReason: "見直し" });
+      expect(await store.deleteRequirement(r0.id)).toBe(true);
+      expect(await store.deleteRequirement(r0.id)).toBe(false);
+      expect((await store.listRequirements(project.id)).map((r) => r.code)).toEqual(["BR-02"]);
+      expect(await store.updateRequirement(r0.id, { title: "x" }, "u1", "")).toBeNull();
+      const again = await store.addRequirements(project.id, [{ title: "t3", description: "", type: "BR", priority: "must", roundId: null, source: "手動", phaseKey: "purpose" }]);
+      expect(again[0]).toMatchObject({ code: "BR-03", phaseKey: "purpose" });
+
+      // 質問ガイド: フェーズごとの最新
+      const guide = (phaseKey: string, q: string) => ({
+        phaseKey, question: q, hint: "", options: [], glossary: [], covered: [], missing: [], coverage: 0, source: "ai" as const, providerId: null, requirementCount: 0,
+      });
+      await store.saveGuide(project.id, guide("purpose", "古い"));
+      await new Promise((r) => setTimeout(r, 5));
+      await store.saveGuide(project.id, guide("purpose", "新しい"));
+      await store.saveGuide(project.id, guide("actors", "利用者"));
+      const gs = await store.latestGuides(project.id);
+      expect(gs.map((g) => `${g.phaseKey}:${g.question}`).sort()).toEqual(["actors:利用者", "purpose:新しい"]);
+
+      // 監査ログ: 新しい順・続き・絞り込み・削除
+      for (const a of ["ai.round", "provider.update", "ai.uml"]) await store.addAudit({ orgId: org.id, actor: "u1", action: a, targetType: "", targetId: "", detail: { a } });
+      const p1 = await store.listAudit(org.id, { limit: 2 });
+      expect(p1.map((e) => e.action)).toEqual(["ai.uml", "provider.update"]);
+      expect((await store.listAudit(org.id, { limit: 10, before: p1[1]!.id })).map((e) => e.action)).toEqual(["ai.round"]);
+      expect((await store.listAudit(org.id, { limit: 10, action: "ai." })).map((e) => e.action)).toEqual(["ai.uml", "ai.round"]);
+      expect(await store.purgeAudit(new Date(Date.now() + 60_000))).toBe(3);
+
+      // ジョブ: 取り出しは1件ずつ、同時に取っても重複しない
+      const j1 = await store.createJob({ orgId: org.id, projectId: project.id, kind: "round", input: { answer: "a" }, createdBy: "u1" });
+      await store.createJob({ orgId: org.id, projectId: project.id, kind: "uml", input: {}, createdBy: "u1" });
+      const [c1, c2, c3] = await Promise.all([store.claimJob(), store.claimJob(), store.claimJob()]);
+      const claimed = [c1, c2, c3].filter(Boolean).map((j) => j!.id);
+      expect(new Set(claimed).size).toBe(2);
+      expect(claimed).toContain(j1.id);
+      await store.updateJobProgress(j1.id, { steps: [{ key: "k", label: "l", status: "done" }] });
+      await store.finishJob(j1.id, { status: "done", result: { ok: 1 } });
+      expect(await store.getJob(j1.id)).toMatchObject({ status: "done", result: { ok: 1 }, progress: { steps: [{ status: "done" }] } });
+      expect(await store.failStaleJobs(new Date(Date.now() + 60_000))).toBe(1); // 残り1件（実行中）を失敗に
+
+      // UMLの比較
+      const ur = await store.saveUmlRound({ projectId: project.id, candidates: [], evaluation: null, failures: [], warnings: ["w"] });
+      expect(ur.status).toBe("awaiting_decision");
+      await store.markUmlRoundDecided(ur.id);
+      expect((await store.getUmlRound(ur.id))!.status).toBe("decided");
     } finally {
       await store.pool.end();
     }

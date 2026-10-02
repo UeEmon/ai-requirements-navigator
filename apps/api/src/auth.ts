@@ -1,4 +1,4 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
 
 export type Role = "admin" | "editor" | "reviewer" | "viewer";
 const ROLES: Role[] = ["admin", "editor", "reviewer", "viewer"];
@@ -23,25 +23,58 @@ export const devAuthenticator: Authenticator = async (req) => {
 };
 
 export interface OidcOptions {
-  /** 例: Cognito https://cognito-idp.<region>.amazonaws.com/<poolId> / Keycloak http://keycloak:8080/realms/arn */
+  /** 例: Cognito https://cognito-idp.<region>.amazonaws.com/<poolId> / Keycloak http://localhost:8080/realms/arn */
   issuer: string;
+  /**
+   * 設定（discovery）を取りに行くURL。省略時は issuer から作る。
+   * Docker で Keycloak を使う場合、コンテナ内からは http://keycloak:8080/... で取りに行く必要がある
+   */
+  discoveryUrl?: string;
   audience?: string;
   /** 組織IDが入るクレーム名（Cognitoのカスタム属性なら custom:org_id） */
   orgClaim: string;
   roleClaim: string;
   fetchImpl?: typeof fetch;
+  /** 署名鍵の取得方法を差し替える（テスト用） */
+  keys?: JWTVerifyGetKey;
 }
 
-/** OIDC のアクセストークン（Bearer）を検証する。Amazon Cognito と Keycloak の両方で動く */
-export function oidcAuthenticator(opts: OidcOptions): Authenticator {
-  let jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
-  const f = opts.fetchImpl ?? fetch;
+export interface OidcDiscovery {
+  authorization_endpoint: string;
+  token_endpoint: string;
+  jwks_uri: string;
+  end_session_endpoint?: string;
+}
+
+/** OIDC プロバイダの設定（discovery）を1回だけ取得して使い回す */
+export class OidcDiscoveryCache {
+  private cached: Promise<OidcDiscovery> | null = null;
+  constructor(
+    private readonly url: string,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {}
+  get(): Promise<OidcDiscovery> {
+    if (!this.cached) {
+      this.cached = (async () => {
+        const res = await this.fetchImpl(this.url);
+        if (!res.ok) throw new Error(`OIDCの設定を取得できません: HTTP ${res.status}`);
+        return (await res.json()) as OidcDiscovery;
+      })();
+      this.cached.catch(() => (this.cached = null)); // 失敗したら次回やり直す
+    }
+    return this.cached;
+  }
+}
+
+export const discoveryUrlOf = (o: Pick<OidcOptions, "issuer" | "discoveryUrl">) =>
+  o.discoveryUrl ?? `${o.issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
+
+/** OIDC のIDトークン（Bearer）を検証する。Amazon Cognito と Keycloak の両方で動く */
+export function oidcAuthenticator(opts: OidcOptions, discovery = new OidcDiscoveryCache(discoveryUrlOf(opts), opts.fetchImpl)): Authenticator {
+  let jwks: JWTVerifyGetKey | undefined = opts.keys;
   const getJwks = async () => {
     if (jwks) return jwks;
-    const res = await f(`${opts.issuer.replace(/\/$/, "")}/.well-known/openid-configuration`);
-    if (!res.ok) throw new Error(`OIDCの設定を取得できません: HTTP ${res.status}`);
-    const conf = (await res.json()) as { jwks_uri: string };
-    jwks = createRemoteJWKSet(new URL(conf.jwks_uri));
+    jwks = createRemoteJWKSet(new URL((await discovery.get()).jwks_uri));
     return jwks;
   };
   return async (req) => {
@@ -57,6 +90,72 @@ export function oidcAuthenticator(opts: OidcOptions): Authenticator {
       return null;
     }
   };
+}
+
+export interface OidcClientOptions {
+  clientId: string;
+  /** 機密クライアントの場合のみ。ブラウザには渡さない */
+  clientSecret?: string;
+  scope: string;
+  /** ログアウト先（Cognito の /logout など、discovery に載らない場合に指定） */
+  logoutUrl?: string;
+  fetchImpl?: typeof fetch;
+}
+
+export interface TokenSet {
+  idToken: string;
+  refreshToken: string | null;
+  expiresIn: number;
+}
+
+/**
+ * ログイン画面用。認可コード＋PKCE のコード交換と更新をサーバー経由で行う。
+ * ブラウザから直接トークン窓口を呼ばないため、CORS の設定やクライアントシークレットの露出が不要になる。
+ */
+export class OidcClient {
+  constructor(
+    private readonly discovery: OidcDiscoveryCache,
+    private readonly opts: OidcClientOptions,
+  ) {}
+
+  async publicConfig() {
+    const d = await this.discovery.get();
+    return {
+      authorizationEndpoint: d.authorization_endpoint,
+      clientId: this.opts.clientId,
+      scope: this.opts.scope,
+      logoutUrl: this.opts.logoutUrl ?? d.end_session_endpoint ?? null,
+    };
+  }
+
+  private async token(params: Record<string, string>): Promise<TokenSet> {
+    const d = await this.discovery.get();
+    const body = new URLSearchParams({ client_id: this.opts.clientId, ...params });
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    if (this.opts.clientSecret) {
+      headers.authorization = `Basic ${Buffer.from(`${encodeURIComponent(this.opts.clientId)}:${encodeURIComponent(this.opts.clientSecret)}`).toString("base64")}`;
+    }
+    const res = await (this.opts.fetchImpl ?? fetch)(d.token_endpoint, { method: "POST", headers, body });
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || typeof json.id_token !== "string") {
+      throw new Error(`ログインに失敗しました（${String(json.error_description ?? json.error ?? `HTTP ${res.status}`)}）`);
+    }
+    return {
+      idToken: json.id_token,
+      refreshToken: typeof json.refresh_token === "string" ? json.refresh_token : null,
+      expiresIn: typeof json.expires_in === "number" ? json.expires_in : 3600,
+    };
+  }
+
+  exchange(code: string, codeVerifier: string, redirectUri: string): Promise<TokenSet> {
+    return this.token({ grant_type: "authorization_code", code, code_verifier: codeVerifier, redirect_uri: redirectUri });
+  }
+
+  async refresh(refreshToken: string): Promise<TokenSet> {
+    const t = await this.token({ grant_type: "refresh_token", refresh_token: refreshToken });
+    // Cognito は更新時に refresh_token を返さないため、元のものを使い続ける
+    return { ...t, refreshToken: t.refreshToken ?? refreshToken };
+  }
 }
 
 function toPrincipal(p: JWTPayload, opts: OidcOptions): Principal | null {

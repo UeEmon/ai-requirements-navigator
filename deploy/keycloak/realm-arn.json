@@ -1,0 +1,59 @@
+{
+  "realm": "arn",
+  "enabled": true,
+  "displayName": "要件ナビ",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "roles": {
+    "realm": [
+      { "name": "admin", "description": "AIの登録・上限・監査ログ" },
+      { "name": "editor", "description": "ヒアリング・要件の編集" },
+      { "name": "reviewer", "description": "閲覧とレビュー" },
+      { "name": "viewer", "description": "閲覧のみ" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "arn-web",
+      "name": "要件ナビ",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": ["http://localhost:8787/*"],
+      "webOrigins": ["http://localhost:8787"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8787/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "org_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

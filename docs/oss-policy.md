@@ -23,7 +23,7 @@
 | --- | --- | --- |
 | GPL / LGPL | 結合した配布物にソース公開義務が及ぶ | Pandoc（GPL）→ docx・pdfmake（MIT）で Word / PDF を生成 |
 | AGPL | ネットワーク越しの提供でもソース公開義務 | MinIO → S3 / ローカルボリューム |
-| SSPL / RSAL / BUSL | 利用条件に制限がある | Redis 7.4以降 → PostgreSQL上のキュー（pg-boss, MIT） |
+| SSPL / RSAL / BUSL | 利用条件に制限がある | Redis 7.4以降 → PostgreSQL上のジョブ表（ADR 0004） |
 | 商用・独自ライセンス | 再配布不可 | ― |
 
 PlantUML は GPL 版のサーバーを使わず、PlantUML 形式の **テキストを出力するだけ** にしています（描画は利用者側のツールで行う）。

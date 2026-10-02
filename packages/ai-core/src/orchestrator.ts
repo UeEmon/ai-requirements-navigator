@@ -13,6 +13,14 @@ export const DEFAULT_WEIGHTS: Weights = {
   clarity: 0.15,
 };
 
+/** 進み具合の通知（非同期実行で画面に表示する） */
+export type ProgressEvent = {
+  type: "generator" | "evaluator";
+  providerId: string;
+  status: "running" | "done" | "failed";
+  reason?: string;
+};
+
 export interface RoundOptions {
   generators: AIProvider[];
   /** 複数AIモードで使う評価AI。単一AIモードでは省略 */
@@ -23,6 +31,7 @@ export interface RoundOptions {
   weights?: Weights;
   /** 匿名化の並び順に使う乱数（テストで固定する） */
   random?: () => number;
+  onProgress?: (e: ProgressEvent) => void;
 }
 
 export interface LabeledCandidate {
@@ -113,16 +122,26 @@ export async function runRound(ctx: PromptContext, opts: RoundOptions): Promise<
     warnings.push("評価AIが生成AIにも含まれています。自分の案を高く評価する偏りが出る可能性があります。");
   }
 
+  const emit = (e: ProgressEvent) => {
+    try {
+      opts.onProgress?.(e);
+    } catch {
+      /* 通知の失敗で処理を止めない */
+    }
+  };
   const userPrompt = buildGeneratorPrompt(ctx);
   const settled = await Promise.all(
     generators.map(async (p) => {
+      emit({ type: "generator", providerId: p.id, status: "running" });
       try {
         const res = await withTimeout(timeoutMs, (signal) =>
           p.complete({ system: GENERATOR_SYSTEM, messages: [{ role: "user", content: userPrompt }], json: true, signal }),
         );
         const content = CandidateContent.parse(extractJson(res.text));
+        emit({ type: "generator", providerId: p.id, status: "done" });
         return { ok: true as const, providerId: p.id, content, usage: res.usage, latencyMs: res.latencyMs };
       } catch (e) {
+        emit({ type: "generator", providerId: p.id, status: "failed", reason: (e as Error).message });
         return { ok: false as const, providerId: p.id, reason: (e as Error).message };
       }
     }),
@@ -143,6 +162,7 @@ export async function runRound(ctx: PromptContext, opts: RoundOptions): Promise<
 
   let evaluation: ScoredEvaluation | undefined;
   if (evaluator && candidates.length >= 1) {
+    emit({ type: "evaluator", providerId: evaluator.id, status: "running" });
     try {
       const prompt = buildEvaluatorPrompt(ctx, candidates.map((c) => ({ label: c.label, content: c.content })));
       const res = await withTimeout(timeoutMs, (signal) =>
@@ -170,7 +190,9 @@ export async function runRound(ctx: PromptContext, opts: RoundOptions): Promise<
         mergedTotal: weightedTotal(mergedScores, weights),
         usage: res.usage,
       };
+      emit({ type: "evaluator", providerId: evaluator.id, status: "done" });
     } catch (e) {
+      emit({ type: "evaluator", providerId: evaluator.id, status: "failed", reason: (e as Error).message });
       warnings.push(`評価に失敗しました（${(e as Error).message}）。案は比較せずに表示します。`);
     }
   }

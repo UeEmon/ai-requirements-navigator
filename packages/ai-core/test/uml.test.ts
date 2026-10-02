@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   activityFromRequirements,
   buildDiagrams,
+  compareUmlModels,
   generateUmlModel,
   MockProvider,
   normalizeUmlModel,
@@ -131,5 +132,40 @@ describe("Mermaid / PlantUML への変換", () => {
     const full = buildDiagrams("予約", reqs, await mockModel());
     expect(full.map((d) => d.kind)).toEqual(["usecase", "class", "sequence", "state", "activity"]);
     expect(activityFromRequirements([])).toBeNull();
+  });
+});
+
+describe("UMLの複数AI比較", () => {
+  it("複数AIの設計モデルを匿名化して評価し、合計点をアプリ側で計算する", async () => {
+    const events: string[] = [];
+    const r = await compareUmlModels([new MockProvider("c"), new MockProvider("o")], new MockProvider("judge"), "予約", "", reqs, {
+      random: () => 0.1,
+      onProgress: (e) => events.push(`${e.type}:${e.providerId}:${e.status}`),
+    });
+    expect(r.candidates.map((c) => c.label)).toEqual(["A", "B"]);
+    expect(new Set(r.candidates.map((c) => c.providerId))).toEqual(new Set(["c", "o"]));
+    expect(r.evaluation!.totals.A).toBe(Math.round((80 + 78 + 75 + 82) / 4));
+    expect(r.evaluation!.recommendedLabel).toBe("A");
+    expect(events).toEqual(expect.arrayContaining(["generator:c:running", "generator:c:done", "evaluator:judge:done"]));
+  });
+
+  it("評価AIには作成者を伝えない", async () => {
+    let seen = "";
+    const judge = new MockProvider("judge", async (req) => {
+      seen = req.messages[0]!.content;
+      return (await new MockProvider("judge").complete(req)).text;
+    });
+    await compareUmlModels([new MockProvider("claude-x"), new MockProvider("gpt-y")], judge, "予約", "", reqs);
+    expect(seen).toContain("### 案A");
+    expect(seen).not.toMatch(/claude-x|gpt-y/);
+    expect(seen).toContain("予約（日時、状態）");
+  });
+
+  it("1案しかないときは評価しない。全滅ならエラー", async () => {
+    const r = await compareUmlModels([new MockProvider("c"), new MockProvider("bad", () => "x")], new MockProvider("judge"), "予約", "", reqs);
+    expect(r.candidates).toHaveLength(1);
+    expect(r.evaluation).toBeNull();
+    expect(r.failures.map((f) => f.providerId)).toEqual(["bad"]);
+    await expect(compareUmlModels([new MockProvider("bad", () => "x")], undefined, "予約", "", reqs)).rejects.toThrow();
   });
 });

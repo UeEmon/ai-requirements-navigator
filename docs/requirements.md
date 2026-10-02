@@ -41,10 +41,10 @@
 | F1-2 | メンバー権限（admin / editor / reviewer / viewer） | 推奨 | 済（認可） | `apps/api/src/auth.ts` |
 | F1-3 | テンプレート選択 | 推奨 | 未 | ― |
 | F2-1 | フェーズ別ガイド（6フェーズ） | 必須 | 済 | `packages/ai-core/src/phases.ts` |
-| F2-2 | 選択肢つき質問 | 必須 | デモ画面のみ | `apps/web/public/demo.html` |
-| F2-3 | 用語解説 | 必須 | デモ画面のみ | 同上 |
+| F2-2 | 選択肢つき質問（AIが回答候補を作成） | 必須 | 済 | `ai-core/src/guide.ts`、`POST /api/projects/:id/guide` |
+| F2-3 | 用語解説（標準の用語集＋AIの解説） | 必須 | 済 | `ai-core/src/glossary.ts` |
 | F2-4 | 曖昧さ検出 | 必須 | 済 | `ai-core/src/ambiguity.ts`、`POST /api/projects/:id/ambiguity` |
-| F2-5 | 抜け漏れチェック（観点の提示） | 必須 | 一部（観点をAIに指示） | `phases.ts` の checklist |
+| F2-5 | 抜け漏れチェック（観点ごとの網羅状況と網羅率） | 必須 | 済 | `GET /api/projects/:id/coverage` |
 | F2-6 | 資料取込 | 推奨 | 未 | ― |
 | F3-1 | 単一 / 複数モード選択 | 必須 | 済 | `aiConfig.mode` |
 | F3-2 | 生成AI選択（1〜4） | 必須 | 済 | `aiConfig.generatorIds` |
@@ -56,7 +56,7 @@
 | F4-4 | 採用・部分採用 | 必須 | 済 | `POST /api/rounds/:id/decision` |
 | F4-5 | 決定記録 | 必須 | 済 | `decisions` テーブル |
 | F5-1 | 要件リポジトリ（ID採番） | 必須 | 済 | `requirements` テーブル |
-| F5-2 | バージョン管理・差分 | 必須 | 一部（version列のみ） | ― |
+| F5-2 | 要件の編集・削除と版の履歴 | 必須 | 済（差分表示は今後） | `PATCH/DELETE /api/requirements/:id`、`GET .../versions` |
 | F5-3 | トレーサビリティ | 推奨 | 一部（要件→ラウンド） | `requirements.round_id` |
 | F5-4 | レビュー・承認 | 推奨 | 未 | ― |
 | F6-1 | UML生成（ユースケース・クラス・シーケンス・状態遷移・アクティビティ） | 必須 | 済 | `ai-core/src/uml.ts`、`POST /api/projects/:id/uml/generate` |
@@ -65,6 +65,10 @@
 | F8-1 | AIの登録・変更・削除（組織の管理者） | 必須 | 済 | `POST/PATCH/DELETE /api/orgs/:orgId/providers` |
 | F8-2 | 月間トークン上限（組織全体・AIごと）と80%警告 | 推奨 | 済 | `apps/api/src/usage.ts`、`PUT /api/orgs/:orgId/limits` |
 | F8-3 | 今月の利用量の確認 | 推奨 | 済 | `GET /api/orgs/:orgId/usage` |
+| F8-4 | 監査ログ（誰が・いつ・どのAIに何を送ったか） | 推奨 | 済 | `GET /api/orgs/:orgId/audit` |
+| F8-5 | ログイン画面（OIDC 認可コード＋PKCE、Cognito / Keycloak） | 推奨 | 済 | `apps/api/src/auth.ts`、[auth.md](./auth.md) |
+| F8-6 | AI処理の非同期実行と進み具合の表示 | 推奨 | 済 | `apps/api/src/jobs.ts`、`GET /api/jobs/:id` |
+| F6-4 | UML生成の複数AI比較（匿名評価して選択） | 推奨 | 済 | `compareUmlModels`、`POST /api/uml-rounds/:id/adopt` |
 | F7-1 | タスク分解 | 推奨 | 未 | ― |
 | F7-2 | GitHub / Jira / Backlog 連携 | 任意 | 一部（GitHub Issueテンプレート） | `.github/ISSUE_TEMPLATE` |
 
@@ -78,7 +82,8 @@
 | セキュリティ | APIキー保管 | 組織ごとに管理者が登録。KMS または AES-256-GCM で暗号化、組織IDで束縛。表示は末尾4桁 |
 | セキュリティ | データ送信制御 | 機密プロジェクトはローカルLLMのみ |
 | セキュリティ | 通信 | ALBでHTTPS終端（証明書指定時）、RDSへはTLS（証明書検証あり） |
-| 監査 | AI呼出の記録 | 組織・AI・プロジェクト単位でトークン数を記録 |
+| 監査 | AI呼出の記録 | 監査ログに、利用者・日時・操作・送信した回答・使ったAIとトークン数を記録。APIキーは記録しない。`AUDIT_RETENTION_DAYS`（既定365日）を過ぎたものは自動削除 |
+| 性能 | AI処理の待ち | AI処理はジョブとして実行し、画面は進み具合を表示。複数コンテナでも1回だけ実行（PostgreSQL の SKIP LOCKED） |
 | コスト | 利用上限 | 組織全体とAIごとに月間トークン上限。組織の上限で停止、AIの上限ではそのAIを除外して続行。月の区切りは `USAGE_TIMEZONE`（既定 Asia/Tokyo） |
 | 拡張性 | AIプロバイダ追加 | `ai-core/src/providers` にアダプタを追加し、factory に1行登録 |
 | 拡張性 | マルチテナント | 全データを組織IDで分離 |

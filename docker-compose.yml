@@ -49,15 +49,21 @@ services:
     volumes:
       - ollama:/root/.ollama
 
+  # ログイン画面を試す場合（設定手順: docs/auth.md）
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     profiles: ["oidc"]
-    command: start-dev
+    command: start-dev --import-realm
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # ブラウザからは localhost:8080、app コンテナからは keycloak:8080 で同じ発行者として扱う
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     ports:
       - "8080:8080"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
 
 volumes:
   pgdata:

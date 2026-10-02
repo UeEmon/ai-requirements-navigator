@@ -1,24 +1,43 @@
 import {
+  buildDiagrams,
+  compareUmlModels,
   createProvider,
+  defaultGuide,
   detectAmbiguity,
+  generateGuide,
+  generateUmlModel,
   getPhase,
   PHASES,
   RoundError,
   runRound,
-  buildDiagrams,
-  generateUmlModel,
   type AIProvider,
   type FetchLike,
+  type Guide,
+  type GuideContext,
+  type Phase,
+  type ProgressEvent,
   type RequirementItem,
+  type UmlModel,
 } from "@arn/ai-core";
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
-import { hasRole, type Authenticator, type Principal, type Role } from "./auth.js";
+import { audit, clip } from "./audit.js";
+import { hasRole, type Authenticator, type OidcClient, type Principal, type Role, type TokenSet } from "./auth.js";
 import { maskKey, type KeyEncryptor } from "./crypto.js";
+import { JobError, JobRunner, type JobRunnerOptions } from "./jobs.js";
 import { buildSpec, CONTENT_TYPE, PdfFontMissingError, renderDocx, renderMarkdown, renderPdf, type SpecFormat, type SpecImage } from "./spec.js";
 import type { ArtifactStorage } from "./storage.js";
-import { usageOf, type CredentialPatch, type Project, type ProviderCredential, type Store } from "./store.js";
+import {
+  usageOf,
+  type CredentialPatch,
+  type Job,
+  type JobProgress,
+  type Project,
+  type ProviderCredential,
+  type Requirement,
+  type Store,
+} from "./store.js";
 import { checkBudget, usageReport } from "./usage.js";
 
 export interface AppDeps {
@@ -38,9 +57,18 @@ export interface AppDeps {
   usageTimezone?: string;
   /** 現在時刻（テスト用） */
   now?: () => Date;
+  /** ログイン画面用（AUTH_MODE=oidc のとき） */
+  oidc?: { client: OidcClient; orgClaim: string; roleClaim: string };
+  /** 非同期ジョブを実行するか（既定: true） */
+  runJobs?: boolean;
+  jobs?: JobRunnerOptions;
 }
 
 type Env = { Variables: { principal: Principal } };
+
+/* ------------------------------------------------------------------ */
+/* 入力の形                                                             */
+/* ------------------------------------------------------------------ */
 
 const VendorSchema = z.enum(["anthropic", "openai", "gemini", "ollama", "mock"]);
 const CredentialInput = z.object({
@@ -79,19 +107,38 @@ const DecisionInput = z.object({
   /** 採用する項目の番号。省略時は全項目 */
   itemIndexes: z.array(z.number().int().min(0)).optional(),
   reason: z.string().max(2000).default(""),
+  /** 決定後に次のフェーズへ進むか。画面は観点の網羅状況を見てから進めるため false を送る */
   advancePhase: z.boolean().default(true),
 });
+const PhaseInput = z.object({ phaseKey: z.string().min(1) });
+const GuideInput = z.object({ phaseKey: z.string().optional() });
+const RequirementPatchInput = z
+  .object({
+    title: z.string().min(1).max(500).optional(),
+    description: z.string().max(2000).optional(),
+    priority: z.enum(["must", "should", "could"]).optional(),
+    reason: z.string().max(500).default(""),
+  })
+  .strict();
+const UmlAdoptInput = z.object({ label: z.string().min(1), reason: z.string().max(2000).default("") });
+const TokenInput = z.object({ code: z.string().min(1), codeVerifier: z.string().min(43).max(128), redirectUri: z.string().url() });
+const RefreshInput = z.object({ refreshToken: z.string().min(1) });
+
+function parseOrThrow<T extends z.ZodTypeAny>(schema: T, json: unknown): z.infer<T> {
+  const r = schema.safeParse(json);
+  if (!r.success) throw new HTTPException(400, { message: r.error.issues.map((i) => `${i.path.join(".") || "入力"}: ${i.message}`).join("; ") });
+  return r.data;
+}
 
 async function body<T extends z.ZodTypeAny>(c: Context, schema: T): Promise<z.infer<T>> {
   let json: unknown;
   try {
-    json = await c.req.json();
+    const raw = await c.req.text();
+    json = raw.trim() ? JSON.parse(raw) : {};
   } catch {
     throw new HTTPException(400, { message: "JSONの形式が正しくありません" });
   }
-  const r = schema.safeParse(json);
-  if (!r.success) throw new HTTPException(400, { message: r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") });
-  return r.data;
+  return parseOrThrow(schema, json);
 }
 
 function publicCredential(c: ProviderCredential) {
@@ -109,9 +156,32 @@ function publicCredential(c: ProviderCredential) {
   };
 }
 
+/** 要件がどのフェーズのものか（記録がない古いデータは区分から推定） */
+const TYPE_PHASE: Record<string, string> = { BR: "purpose", AC: "actors", FR: "functions", NFR: "quality", CN: "constraints" };
+const phaseOfRequirement = (r: Requirement) => r.phaseKey ?? TYPE_PHASE[r.type] ?? "functions";
+
+function nextPhaseKey(key: string): string {
+  const i = PHASES.findIndex((p) => p.key === key);
+  return PHASES[i + 1]?.key ?? "done";
+}
+
+function phaseOrThrow(key: string): Phase {
+  try {
+    return getPhase(key);
+  } catch (e) {
+    throw new HTTPException(400, { message: (e as Error).message });
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* アプリ本体                                                           */
+/* ------------------------------------------------------------------ */
+
 export function createApp(deps: AppDeps) {
   const { store } = deps;
   const app = new Hono<Env>();
+  const tz = deps.usageTimezone ?? "Asia/Tokyo";
+  const nowFn = deps.now ?? (() => new Date());
 
   app.onError((err, c) => {
     if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
@@ -119,12 +189,53 @@ export function createApp(deps: AppDeps) {
       const status = err.code === "all_failed" ? 502 : 400;
       return c.json({ error: err.message, code: err.code, failures: err.failures }, status);
     }
+    if (err instanceof JobError) return c.json({ error: err.message }, err.status as 400);
     console.error(err);
     return c.json({ error: "サーバー内部でエラーが発生しました" }, 500);
   });
 
   app.get("/health", (c) => c.json({ ok: true }));
-  app.get("/api/meta", (c) => c.json({ phases: PHASES, allowMock: deps.allowMock, auth: deps.devAuth ? "dev" : "oidc" }));
+  app.get("/api/meta", (c) =>
+    c.json({
+      phases: PHASES,
+      allowMock: deps.allowMock,
+      auth: deps.devAuth ? "dev" : "oidc",
+      oidc: deps.oidc ? { orgClaim: deps.oidc.orgClaim, roleClaim: deps.oidc.roleClaim } : null,
+    }),
+  );
+
+  /* ---------- ログイン（OIDC 認可コード＋PKCE。トークン交換はサーバー経由） ---------- */
+  app.get("/api/auth/config", async (c) => {
+    if (!deps.oidc) throw new HTTPException(404, { message: "ログイン画面は使われていません（AUTH_MODE=dev）" });
+    try {
+      return c.json(await deps.oidc.client.publicConfig());
+    } catch (e) {
+      throw new HTTPException(502, { message: (e as Error).message });
+    }
+  });
+  app.post("/api/auth/token", async (c) => {
+    if (!deps.oidc) throw new HTTPException(404, { message: "ログイン画面は使われていません" });
+    const input = await body(c, TokenInput);
+    let tokens: TokenSet;
+    try {
+      tokens = await deps.oidc.client.exchange(input.code, input.codeVerifier, input.redirectUri);
+    } catch (e) {
+      throw new HTTPException(401, { message: (e as Error).message });
+    }
+    const p = await deps.authenticate(new Request("http://local/", { headers: { authorization: `Bearer ${tokens.idToken}` } }));
+    if (!p) throw new HTTPException(403, { message: "ログインできましたが、組織または権限が設定されていません。管理者に連絡してください" });
+    await audit(store, { orgId: p.orgId, actor: p.userId, action: "auth.login", detail: { role: p.role } });
+    return c.json(tokens);
+  });
+  app.post("/api/auth/refresh", async (c) => {
+    if (!deps.oidc) throw new HTTPException(404, { message: "ログイン画面は使われていません" });
+    const input = await body(c, RefreshInput);
+    try {
+      return c.json(await deps.oidc.client.refresh(input.refreshToken));
+    } catch (e) {
+      throw new HTTPException(401, { message: (e as Error).message });
+    }
+  });
 
   /* ---------- 組織の作成（初期セットアップ） ---------- */
   app.post("/api/orgs", async (c) => {
@@ -132,7 +243,9 @@ export function createApp(deps: AppDeps) {
     const allowed = deps.bootstrapToken ? token === deps.bootstrapToken : deps.devAuth;
     if (!allowed) throw new HTTPException(403, { message: "組織の作成には初期セットアップ用トークンが必要です" });
     const { name } = await body(c, z.object({ name: z.string().min(1).max(200) }));
-    return c.json(await store.createOrg(name), 201);
+    const org = await store.createOrg(name);
+    await audit(store, { orgId: org.id, actor: "bootstrap", action: "org.create", targetType: "org", targetId: org.id, detail: { name } });
+    return c.json(org, 201);
   });
 
   /* ---------- 以降は認証必須 ---------- */
@@ -143,6 +256,7 @@ export function createApp(deps: AppDeps) {
     await next();
   });
 
+  const actorOf = (c: Context<Env>) => c.get("principal").userId;
   const need = (c: Context<Env>, orgId: string, role: Role) => {
     const p = c.get("principal");
     if (p.orgId !== orgId) throw new HTTPException(404, { message: "見つかりません" });
@@ -154,15 +268,21 @@ export function createApp(deps: AppDeps) {
     need(c, p.orgId, role);
     return p;
   };
+  const loadRequirement = async (c: Context<Env>, id: string, role: Role) => {
+    const r = await store.getRequirement(id);
+    if (!r || r.deletedAt) throw new HTTPException(404, { message: "要件が見つかりません" });
+    const p = await loadProject(c, r.projectId, role);
+    return { r, p };
+  };
 
   /** 組織に登録されたAIを復号してプロバイダにする */
-  const providersOf = async (project: Project, ids: string[]): Promise<AIProvider[]> => {
-    const creds = new Map((await store.listCredentials(project.orgId)).map((x) => [x.id, x]));
+  const providersOf = async (orgId: string, ids: string[]): Promise<AIProvider[]> => {
+    const creds = new Map((await store.listCredentials(orgId)).map((x) => [x.id, x]));
     return Promise.all(
       ids.map(async (id) => {
         const cr = creds.get(id);
         if (!cr) throw new HTTPException(400, { message: `AIの登録が削除されています: ${id}` });
-        const apiKey = cr.encryptedKey ? await deps.encryptor.decrypt(cr.encryptedKey, { orgId: project.orgId }) : undefined;
+        const apiKey = cr.encryptedKey ? await deps.encryptor.decrypt(cr.encryptedKey, { orgId }) : undefined;
         return createProvider(
           { id: cr.id, vendor: cr.vendor, model: cr.model, label: cr.label, apiKey, endpoint: cr.endpoint ?? undefined },
           { fetchImpl: deps.fetchImpl, allowMock: deps.allowMock },
@@ -170,9 +290,8 @@ export function createApp(deps: AppDeps) {
       }),
     );
   };
+  const labelsOf = async (orgId: string) => new Map((await store.listCredentials(orgId)).map((x) => [x.id, x.label]));
 
-  const tz = deps.usageTimezone ?? "Asia/Tokyo";
-  const nowFn = deps.now ?? (() => new Date());
   /** 今月の利用量から、使えるAIと警告を決める。組織の上限に達していれば 429 */
   const budget = async (orgId: string, ids: string[]) => {
     const org = await store.getOrg(orgId);
@@ -182,7 +301,35 @@ export function createApp(deps: AppDeps) {
     return b;
   };
 
-  /* ---------- 組織 ---------- */
+  /** 進み具合（画面に表示する手順の一覧）を作る */
+  const progressTracker = (labels: Map<string, string>, gens: string[], evaluator: string | null, report?: (p: JobProgress) => Promise<void>) => {
+    const steps: NonNullable<JobProgress["steps"]> = [
+      ...gens.map((id) => ({ key: `generator:${id}`, label: `${labels.get(id) ?? id}`, status: "waiting" as const })),
+      ...(evaluator ? [{ key: `evaluator:${evaluator}`, label: `評価: ${labels.get(evaluator) ?? evaluator}`, status: "waiting" as const }] : []),
+    ];
+    let chain = Promise.resolve();
+    const push = () => {
+      if (!report) return;
+      const snapshot = { steps: steps.map((s) => ({ ...s })) };
+      chain = chain.then(() => report(snapshot)).catch(() => undefined);
+    };
+    push();
+    return {
+      onProgress: (e: ProgressEvent) => {
+        const s = steps.find((x) => x.key === `${e.type}:${e.providerId}`);
+        if (!s) return;
+        s.status = e.status;
+        if (e.reason) s.reason = e.reason;
+        push();
+      },
+      flush: () => chain,
+    };
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* 組織・AI登録・利用量                                                  */
+  /* ------------------------------------------------------------------ */
+
   app.get("/api/orgs/:orgId", async (c) => {
     const orgId = c.req.param("orgId");
     need(c, orgId, "viewer");
@@ -196,12 +343,20 @@ export function createApp(deps: AppDeps) {
     const orgId = c.req.param("orgId");
     need(c, orgId, "admin");
     const { monthlyTokenLimit } = await body(c, LimitInput);
+    const before = await store.getOrg(orgId);
     const org = await store.setOrgLimit(orgId, monthlyTokenLimit);
     if (!org) throw new HTTPException(404, { message: "見つかりません" });
+    await audit(store, {
+      orgId,
+      actor: actorOf(c),
+      action: "org.limits.update",
+      targetType: "org",
+      targetId: orgId,
+      detail: { before: before?.monthlyTokenLimit ?? null, after: monthlyTokenLimit },
+    });
     return c.json(org);
   });
 
-  /* ---------- AIの接続情報（組織の管理者が登録） ---------- */
   app.get("/api/orgs/:orgId/providers", async (c) => {
     const orgId = c.req.param("orgId");
     need(c, orgId, "viewer");
@@ -226,6 +381,14 @@ export function createApp(deps: AppDeps) {
       isLocal: input.vendor === "ollama",
       monthlyTokenLimit: input.monthlyTokenLimit ?? null,
     });
+    await audit(store, {
+      orgId,
+      actor: actorOf(c),
+      action: "provider.create",
+      targetType: "provider",
+      targetId: cred.id,
+      detail: { vendor: cred.vendor, model: cred.model, label: cred.label, endpoint: cred.endpoint, monthlyTokenLimit: cred.monthlyTokenLimit },
+    });
     return c.json(publicCredential(cred), 201);
   });
 
@@ -248,14 +411,39 @@ export function createApp(deps: AppDeps) {
     }
     const updated = await store.updateCredential(orgId, current.id, patch);
     if (!updated) throw new HTTPException(404, { message: "見つかりません" });
+    const changed = (["model", "label", "endpoint", "monthlyTokenLimit"] as const).filter(
+      (k) => input[k] !== undefined && input[k] !== current[k],
+    );
+    await audit(store, {
+      orgId,
+      actor: actorOf(c),
+      action: "provider.update",
+      targetType: "provider",
+      targetId: current.id,
+      // APIキーそのものは記録しない
+      detail: {
+        label: updated.label,
+        changes: Object.fromEntries(changed.map((k) => [k, { before: current[k], after: updated[k] }])),
+        apiKeyChanged: Boolean(input.apiKey),
+      },
+    });
     return c.json(publicCredential(updated));
   });
 
   app.delete("/api/orgs/:orgId/providers/:id", async (c) => {
     const orgId = c.req.param("orgId");
     need(c, orgId, "admin");
-    const ok = await store.deleteCredential(orgId, c.req.param("id"));
-    if (!ok) throw new HTTPException(404, { message: "見つかりません" });
+    const current = (await store.listCredentials(orgId)).find((x) => x.id === c.req.param("id"));
+    const ok = current ? await store.deleteCredential(orgId, current.id) : false;
+    if (!ok || !current) throw new HTTPException(404, { message: "見つかりません" });
+    await audit(store, {
+      orgId,
+      actor: actorOf(c),
+      action: "provider.delete",
+      targetType: "provider",
+      targetId: current.id,
+      detail: { vendor: current.vendor, model: current.model, label: current.label },
+    });
     return c.body(null, 204);
   });
 
@@ -266,7 +454,19 @@ export function createApp(deps: AppDeps) {
     return c.json(await usageReport(store, orgId, org?.monthlyTokenLimit ?? null, await store.listCredentials(orgId), tz, nowFn()));
   });
 
-  /* ---------- プロジェクト ---------- */
+  /** 監査ログ（新しい順。before に前回の最後の id を渡すと続きを返す） */
+  app.get("/api/orgs/:orgId/audit", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "admin");
+    const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200);
+    const entries = await store.listAudit(orgId, { limit, before: c.req.query("before") || undefined, action: c.req.query("action") || undefined });
+    return c.json({ entries, next: entries.length === limit ? entries.at(-1)!.id : null });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* プロジェクト・フェーズ・質問ガイド                                     */
+  /* ------------------------------------------------------------------ */
+
   app.post("/api/orgs/:orgId/projects", async (c) => {
     const orgId = c.req.param("orgId");
     need(c, orgId, "editor");
@@ -281,12 +481,31 @@ export function createApp(deps: AppDeps) {
       throw new HTTPException(400, { message: "複数AIモードでは生成AIを2つ以上選んでください" });
     if (input.confidential && ids.some((id) => !creds.get(id)!.isLocal))
       throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを選べます" });
-    return c.json(await store.createProject({ orgId, ...input }), 201);
+    const project = await store.createProject({ orgId, ...input });
+    await audit(store, {
+      orgId,
+      actor: actorOf(c),
+      action: "project.create",
+      targetType: "project",
+      targetId: project.id,
+      detail: { name: project.name, confidential: project.confidential, aiConfig: project.aiConfig },
+    });
+    return c.json(project, 201);
   });
 
   app.get("/api/projects/:id", async (c) => {
     const p = await loadProject(c, c.req.param("id"), "viewer");
     return c.json({ ...p, phase: PHASES.find((x) => x.key === p.phaseKey) ?? null });
+  });
+
+  /** フェーズを移動する（次へ進む・前に戻る・完了にする） */
+  app.post("/api/projects/:id/phase", async (c) => {
+    const p = await loadProject(c, c.req.param("id"), "editor");
+    const { phaseKey } = await body(c, PhaseInput);
+    if (phaseKey !== "done") phaseOrThrow(phaseKey);
+    await store.setProjectPhase(p.id, phaseKey);
+    await audit(store, { orgId: p.orgId, actor: actorOf(c), action: "project.phase", targetType: "project", targetId: p.id, detail: { from: p.phaseKey, to: phaseKey } });
+    return c.json({ ...p, phaseKey, phase: PHASES.find((x) => x.key === phaseKey) ?? null });
   });
 
   app.post("/api/projects/:id/ambiguity", async (c) => {
@@ -295,40 +514,104 @@ export function createApp(deps: AppDeps) {
     return c.json(detectAmbiguity(text));
   });
 
-  /* ---------- 生成ラウンド: 並列生成 → 匿名化 → 評価 ---------- */
-  app.post("/api/projects/:id/rounds", async (c) => {
-    const project = await loadProject(c, c.req.param("id"), "editor");
-    const input = await body(c, RoundInput);
-    if (project.phaseKey === "done" && !input.phaseKey) throw new HTTPException(400, { message: "すべてのフェーズが完了しています" });
-    const phase = (() => {
-      try {
-        return getPhase(input.phaseKey ?? project.phaseKey);
-      } catch (e) {
-        throw new HTTPException(400, { message: (e as Error).message });
-      }
-    })();
-
-    const creds = new Map((await store.listCredentials(project.orgId)).map((x) => [x.id, x]));
-    const build = async (id: string): Promise<AIProvider> => {
-      const cr = creds.get(id);
-      if (!cr) throw new HTTPException(400, { message: `AIの登録が削除されています: ${id}` });
-      const apiKey = cr.encryptedKey ? await deps.encryptor.decrypt(cr.encryptedKey, { orgId: project.orgId }) : undefined;
-      return createProvider(
-        { id: cr.id, vendor: cr.vendor, model: cr.model, label: cr.label, apiKey, endpoint: cr.endpoint ?? undefined },
-        { fetchImpl: deps.fetchImpl, allowMock: deps.allowMock },
-      );
+  const guideContext = async (p: Project, phase: Phase): Promise<GuideContext> => {
+    const reqs = await store.listRequirements(p.id);
+    const mine = reqs.filter((r) => phaseOfRequirement(r) === phase.key);
+    return {
+      phase,
+      projectName: p.name,
+      projectPurpose: p.purpose,
+      phaseRequirements: mine.map((r) => ({ code: r.code, title: r.title })),
+      otherRequirements: reqs.filter((r) => !mine.includes(r)).map((r) => ({ code: r.code, title: r.title })),
     };
+  };
+  const withStale = (g: Guide, ctx: GuideContext) => ({ ...g, stale: g.requirementCount !== ctx.phaseRequirements.length });
+
+  /** 保存済みの質問ガイド（なければAIを使わない既定のもの）。stale=true なら要件が増減している */
+  app.get("/api/projects/:id/guide", async (c) => {
+    const p = await loadProject(c, c.req.param("id"), "viewer");
+    const phase = phaseOrThrow(c.req.query("phaseKey") ?? (p.phaseKey === "done" ? PHASES.at(-1)!.key : p.phaseKey));
+    const ctx = await guideContext(p, phase);
+    const saved = (await store.latestGuides(p.id)).find((g) => g.phaseKey === phase.key);
+    return c.json(saved ? withStale(saved, ctx) : { ...defaultGuide(ctx), stale: true });
+  });
+
+  /** AIが観点の網羅状況を判定し、次の質問・回答候補・用語解説を作る */
+  app.post("/api/projects/:id/guide", async (c) => {
+    const p = await loadProject(c, c.req.param("id"), "editor");
+    const input = await body(c, GuideInput);
+    const phase = phaseOrThrow(input.phaseKey ?? (p.phaseKey === "done" ? PHASES.at(-1)!.key : p.phaseKey));
+    const ctx = await guideContext(p, phase);
+    // 質問づくりは軽い処理なので、生成AI → 評価AI の順に1つずつ試す
+    const ids = [...new Set([...p.aiConfig.generatorIds, ...(p.aiConfig.evaluatorId ? [p.aiConfig.evaluatorId] : [])])];
+    const b = await budget(p.orgId, ids);
+    const providers = (await providersOf(p.orgId, ids.filter((id) => !b.excluded.has(id)))).filter((x) => !p.confidential || x.isLocal);
+    const r = await generateGuide(providers, ctx, Math.min(deps.timeoutMs ?? 60_000, 60_000));
+    if (r.usage && r.guide.providerId) await store.addUsage({ orgId: p.orgId, providerId: r.guide.providerId, projectId: p.id, ...usageOf(r.usage) });
+    await store.saveGuide(p.id, r.guide);
+    await audit(store, {
+      orgId: p.orgId,
+      actor: actorOf(c),
+      action: "ai.guide",
+      targetType: "project",
+      targetId: p.id,
+      detail: {
+        phase: phase.key,
+        provider: r.guide.providerId,
+        source: r.guide.source,
+        tokens: r.usage ? usageOf(r.usage) : null,
+        failures: r.failures,
+        sent: { requirements: ctx.phaseRequirements.length + ctx.otherRequirements.length },
+      },
+    });
+    return c.json({ ...withStale(r.guide, ctx), warnings: b.warnings, failures: r.failures.length }, 201);
+  });
+
+  /** 全フェーズの観点の網羅状況 */
+  app.get("/api/projects/:id/coverage", async (c) => {
+    const p = await loadProject(c, c.req.param("id"), "viewer");
+    const guides = await store.latestGuides(p.id);
+    const phases = PHASES.map((ph) => {
+      const g = guides.find((x) => x.phaseKey === ph.key);
+      return {
+        key: ph.key,
+        name: ph.name,
+        checklist: ph.checklist,
+        covered: g?.covered ?? [],
+        missing: g?.missing ?? ph.checklist,
+        coverage: g?.coverage ?? 0,
+        checked: Boolean(g),
+      };
+    });
+    const total = phases.reduce((a, x) => a + x.checklist.length, 0);
+    const done = phases.reduce((a, x) => a + x.covered.length, 0);
+    return c.json({ overall: total ? done / total : 0, phases });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* 生成ラウンド: 並列生成 → 匿名化 → 評価（同期 / 非同期）               */
+  /* ------------------------------------------------------------------ */
+
+  async function executeRound(project: Project, input: z.infer<typeof RoundInput>, actor: string, report?: (p: JobProgress) => Promise<void>) {
+    if (project.phaseKey === "done" && !input.phaseKey) throw new HTTPException(400, { message: "すべてのフェーズが完了しています" });
+    const phase = phaseOrThrow(input.phaseKey ?? project.phaseKey);
+
     // 今月の上限: 組織の上限なら停止、AI個別の上限ならそのAIを外して続行
     const evaluatorId = project.aiConfig.mode === "multi" ? project.aiConfig.evaluatorId : null;
     const b = await budget(project.orgId, [...project.aiConfig.generatorIds, ...(evaluatorId ? [evaluatorId] : [])]);
     const generatorIds = project.aiConfig.generatorIds.filter((id) => !b.excluded.has(id));
     if (!generatorIds.length) throw new HTTPException(429, { message: `生成AIがすべて今月の上限に達しています。${b.warnings.join(" ")}` });
-    const generators = await Promise.all(generatorIds.map(build));
-    const evaluator = evaluatorId && !b.excluded.has(evaluatorId) ? await build(evaluatorId) : undefined;
-    if (evaluatorId && !evaluator) b.warnings.push("評価AIが使えないため、今回は評価なしで案を表示します。");
+    const useEvaluator = evaluatorId && !b.excluded.has(evaluatorId) ? evaluatorId : null;
+    if (evaluatorId && !useEvaluator) b.warnings.push("評価AIが使えないため、今回は評価なしで案を表示します。");
+    const generators = await providersOf(project.orgId, generatorIds);
+    const evaluator = useEvaluator ? (await providersOf(project.orgId, [useEvaluator]))[0] : undefined;
+    const labels = await labelsOf(project.orgId);
+    const tracker = progressTracker(labels, generatorIds, useEvaluator, report);
 
     const existing = await store.listRequirements(project.id);
-    const result = await runRound(
+    let result: Awaited<ReturnType<typeof runRound>>;
+    try {
+      result = await runRound(
       {
         phase,
         projectName: project.name,
@@ -336,19 +619,25 @@ export function createApp(deps: AppDeps) {
         existingRequirements: existing.map((r) => ({ ...r, code: r.code })),
         userAnswer: input.answer,
       },
-      { generators, evaluator, confidential: project.confidential, timeoutMs: deps.timeoutMs, random: deps.random },
+      {
+        generators,
+        evaluator,
+        confidential: project.confidential,
+        timeoutMs: deps.timeoutMs,
+        random: deps.random,
+        onProgress: tracker.onProgress,
+      },
     );
+    } finally {
+      // 失敗しても、どのAIで止まったかを進み具合に残す
+      await tracker.flush();
+    }
     result.warnings.unshift(...b.warnings);
 
     for (const cand of result.candidates)
       await store.addUsage({ orgId: project.orgId, providerId: cand.providerId, projectId: project.id, ...usageOf(cand.usage) });
     if (result.evaluation)
-      await store.addUsage({
-        orgId: project.orgId,
-        providerId: result.evaluation.evaluatorId,
-        projectId: project.id,
-        ...usageOf(result.evaluation.usage),
-      });
+      await store.addUsage({ orgId: project.orgId, providerId: result.evaluation.evaluatorId, projectId: project.id, ...usageOf(result.evaluation.usage) });
 
     const round = await store.saveRound({
       projectId: project.id,
@@ -361,31 +650,253 @@ export function createApp(deps: AppDeps) {
       status: "awaiting_decision",
     });
 
+    await audit(store, {
+      orgId: project.orgId,
+      actor,
+      action: "ai.round",
+      targetType: "round",
+      targetId: round.id,
+      detail: {
+        projectId: project.id,
+        phase: phase.key,
+        // AIに送った内容: 利用者の回答（全文、長い場合は先頭）と、文脈として送った確定済み要件の件数
+        sent: { answer: clip(input.answer), contextRequirements: existing.length },
+        generators: result.candidates.map((x) => ({ id: x.providerId, label: labels.get(x.providerId), tokens: usageOf(x.usage) })),
+        evaluator: result.evaluation
+          ? { id: result.evaluation.evaluatorId, label: labels.get(result.evaluation.evaluatorId), tokens: usageOf(result.evaluation.usage) }
+          : null,
+        failures: result.failures.map((f) => ({ id: f.providerId, label: labels.get(f.providerId), reason: f.reason })),
+      },
+    });
+
     // 決定前は、どの案がどのAIのものかを返さない
     const ev = result.evaluation;
-    return c.json(
-      {
-        id: round.id,
-        phase: { key: phase.key, name: phase.name },
-        candidates: result.candidates.map((x) => ({ label: x.label, content: x.content, latencyMs: x.latencyMs })),
+    return {
+      id: round.id,
+      phase: { key: phase.key, name: phase.name },
+      candidates: result.candidates.map((x) => ({ label: x.label, content: x.content, latencyMs: x.latencyMs })),
+      evaluation: ev
+        ? {
+            evaluator: evaluator?.label,
+            scores: ev.scores,
+            totals: ev.totals,
+            comments: ev.comments,
+            recommendedLabel: ev.recommendedLabel,
+            recommendation: ev.recommendation,
+            merged: ev.merged,
+            mergedTotal: ev.mergedTotal,
+          }
+        : null,
+      failures: result.failures.map((f) => ({ provider: labels.get(f.providerId) ?? f.providerId, reason: f.reason })),
+      warnings: result.warnings,
+      ambiguity: detectAmbiguity(input.answer),
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* UML（単一AI: そのまま採用 / 複数AI: 匿名で比較して選ぶ）               */
+  /* ------------------------------------------------------------------ */
+
+  const reqsForUml = async (p: Project) => (await store.listRequirements(p.id)).map((r) => ({ code: r.code, type: r.type, title: r.title }));
+  const diagramsOf = async (p: Project) => {
+    const reqs = await reqsForUml(p);
+    const rec = await store.latestUmlModel(p.id);
+    return { diagrams: buildDiagrams(p.name, reqs, rec?.model), rec, reqs };
+  };
+  const umlStats = (m: UmlModel) => ({
+    classes: m.classes.length,
+    relations: m.relations.length,
+    sequences: m.sequences.length,
+    stateMachines: m.stateMachines.length,
+    activities: m.activities.length,
+  });
+
+  async function executeUml(p: Project, actor: string, report?: (pr: JobProgress) => Promise<void>) {
+    const reqs = await reqsForUml(p);
+    if (!reqs.length) throw new HTTPException(400, { message: "要件がまだありません。ヒアリングで要件を確定してから生成してください" });
+    const evaluatorId = p.aiConfig.mode === "multi" ? p.aiConfig.evaluatorId : null;
+    const ids = [...new Set([...p.aiConfig.generatorIds, ...(p.aiConfig.evaluatorId ? [p.aiConfig.evaluatorId] : [])])];
+    const b = await budget(p.orgId, ids);
+    const usable = ids.filter((id) => !b.excluded.has(id));
+    if (!usable.length) throw new HTTPException(429, { message: `使えるAIがすべて今月の上限に達しています。${b.warnings.join(" ")}` });
+    const labels = await labelsOf(p.orgId);
+    const gens = p.aiConfig.generatorIds.filter((id) => !b.excluded.has(id));
+    if (p.confidential) {
+      const all = await providersOf(p.orgId, usable);
+      if (all.some((x) => !x.isLocal)) throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを使えます" });
+    }
+
+    // 複数AIモードで生成AIが2つ以上使えるときは、比較して利用者が選ぶ
+    if (p.aiConfig.mode === "multi" && gens.length >= 2) {
+      const useEvaluator = evaluatorId && !b.excluded.has(evaluatorId) ? evaluatorId : null;
+      if (evaluatorId && !useEvaluator) b.warnings.push("評価AIが使えないため、今回は評価なしで案を表示します。");
+      const tracker = progressTracker(labels, gens, useEvaluator, report);
+      let cmp: Awaited<ReturnType<typeof compareUmlModels>>;
+      try {
+        cmp = await compareUmlModels(
+          await providersOf(p.orgId, gens),
+          useEvaluator ? (await providersOf(p.orgId, [useEvaluator]))[0] : undefined,
+          p.name,
+          p.purpose,
+          reqs,
+          { timeoutMs: deps.timeoutMs, random: deps.random, onProgress: tracker.onProgress },
+        );
+      } catch (e) {
+        throw new HTTPException(502, { message: (e as Error).message });
+      } finally {
+        await tracker.flush();
+      }
+      for (const cand of cmp.candidates) await store.addUsage({ orgId: p.orgId, providerId: cand.providerId, projectId: p.id, ...usageOf(cand.usage) });
+      if (cmp.evaluation) await store.addUsage({ orgId: p.orgId, providerId: cmp.evaluation.evaluatorId, projectId: p.id, ...usageOf(cmp.evaluation.usage) });
+      const warnings = [...b.warnings, ...cmp.warnings];
+      const round = await store.saveUmlRound({
+        projectId: p.id,
+        candidates: cmp.candidates.map((x) => ({ label: x.label, providerId: x.providerId, model: x.model, dropped: x.dropped })),
+        evaluation: cmp.evaluation,
+        failures: cmp.failures,
+        warnings,
+      });
+      await audit(store, {
+        orgId: p.orgId,
+        actor,
+        action: "ai.uml",
+        targetType: "uml_round",
+        targetId: round.id,
+        detail: {
+          projectId: p.id,
+          mode: "compare",
+          sent: { requirements: reqs.length },
+          generators: cmp.candidates.map((x) => ({ id: x.providerId, label: labels.get(x.providerId), tokens: usageOf(x.usage) })),
+          evaluator: cmp.evaluation ? { id: cmp.evaluation.evaluatorId, label: labels.get(cmp.evaluation.evaluatorId), tokens: usageOf(cmp.evaluation.usage) } : null,
+          failures: cmp.failures.map((f) => ({ id: f.providerId, label: labels.get(f.providerId), reason: f.reason })),
+        },
+      });
+      const ev = cmp.evaluation;
+      // 決定前は、どの案がどのAIのものかを返さない
+      return {
+        mode: "compare" as const,
+        umlRoundId: round.id,
+        candidates: cmp.candidates.map((x) => ({ label: x.label, diagrams: buildDiagrams(p.name, reqs, x.model), stats: umlStats(x.model), dropped: x.dropped })),
         evaluation: ev
           ? {
-              evaluator: evaluator?.label,
+              evaluator: labels.get(ev.evaluatorId),
               scores: ev.scores,
               totals: ev.totals,
               comments: ev.comments,
               recommendedLabel: ev.recommendedLabel,
               recommendation: ev.recommendation,
-              merged: ev.merged,
-              mergedTotal: ev.mergedTotal,
             }
           : null,
-        failures: result.failures.map((f) => ({ provider: creds.get(f.providerId)?.label ?? f.providerId, reason: f.reason })),
-        warnings: result.warnings,
-        ambiguity: detectAmbiguity(input.answer),
+        failures: cmp.failures.map((f) => ({ provider: labels.get(f.providerId) ?? f.providerId, reason: f.reason })),
+        warnings,
+      };
+    }
+
+    // 単一AIモード: 生成AI → 評価AI の順に試し、最初に成功したものを採用する
+    const providers = await providersOf(p.orgId, usable);
+    const tracker = progressTracker(labels, usable.slice(0, 1), null, report);
+    tracker.onProgress({ type: "generator", providerId: usable[0]!, status: "running" });
+    let result: Awaited<ReturnType<typeof generateUmlModel>>;
+    try {
+      result = await generateUmlModel(providers, p.name, p.purpose, reqs, deps.timeoutMs);
+    } catch (e) {
+      throw new HTTPException(502, { message: (e as Error).message });
+    }
+    tracker.onProgress({ type: "generator", providerId: usable[0]!, status: "done" });
+    await tracker.flush();
+    await store.addUsage({ orgId: p.orgId, providerId: result.providerId, projectId: p.id, ...usageOf(result.usage) });
+    const rec = await store.saveUmlModel(p.id, result.model, result.providerId);
+    await audit(store, {
+      orgId: p.orgId,
+      actor,
+      action: "ai.uml",
+      targetType: "project",
+      targetId: p.id,
+      detail: {
+        mode: "single",
+        sent: { requirements: reqs.length },
+        generators: [{ id: result.providerId, label: labels.get(result.providerId), tokens: usageOf(result.usage) }],
+        failures: result.failures.map((f) => ({ id: f.providerId, label: labels.get(f.providerId), reason: f.reason })),
       },
-      201,
-    );
+    });
+    return {
+      mode: "adopted" as const,
+      diagrams: buildDiagrams(p.name, reqs, rec.model),
+      model: { providerId: rec.providerId, provider: labels.get(result.providerId) ?? result.providerId, createdAt: rec.createdAt },
+      dropped: result.dropped,
+      failures: result.failures,
+      warnings: b.warnings,
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 非同期ジョブ                                                         */
+  /* ------------------------------------------------------------------ */
+
+  const asJobError = (e: unknown): never => {
+    if (e instanceof HTTPException) throw new JobError(e.message, e.status);
+    if (e instanceof RoundError) throw new JobError(e.message, e.code === "all_failed" ? 502 : 400);
+    throw e;
+  };
+  const runner = new JobRunner(
+    store,
+    {
+      round: async ({ job, report }) => {
+        const p = await store.getProject(job.projectId!);
+        if (!p) throw new JobError("プロジェクトが見つかりません", 404);
+        return executeRound(p, parseOrThrow(RoundInput, job.input), job.createdBy, report).catch(asJobError);
+      },
+      uml: async ({ job, report }) => {
+        const p = await store.getProject(job.projectId!);
+        if (!p) throw new JobError("プロジェクトが見つかりません", 404);
+        return executeUml(p, job.createdBy, report).catch(asJobError);
+      },
+    },
+    deps.jobs,
+  );
+  if (deps.runJobs !== false) runner.start();
+
+  const enqueue = async (c: Context<Env>, p: Project, kind: Job["kind"], input: Record<string, unknown>) => {
+    const job = await store.createJob({ orgId: p.orgId, projectId: p.id, kind, input, createdBy: actorOf(c) });
+    runner.kick();
+    return c.json({ jobId: job.id, status: job.status }, 202);
+  };
+  const wantsAsync = (c: Context) => c.req.query("async") === "1" || c.req.query("async") === "true";
+
+  app.get("/api/jobs/:id", async (c) => {
+    const job = await store.getJob(c.req.param("id"));
+    if (!job) throw new HTTPException(404, { message: "見つかりません" });
+    need(c, job.orgId, "viewer");
+    if (job.createdBy !== actorOf(c) && !hasRole(c.get("principal"), "admin")) throw new HTTPException(404, { message: "見つかりません" });
+    return c.json({
+      id: job.id,
+      kind: job.kind,
+      status: job.status,
+      progress: job.progress,
+      result: job.status === "done" ? job.result : null,
+      error: job.error,
+      errorStatus: job.errorStatus,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* ルート: 生成・決定・UML                                              */
+  /* ------------------------------------------------------------------ */
+
+  app.post("/api/projects/:id/rounds", async (c) => {
+    const project = await loadProject(c, c.req.param("id"), "editor");
+    const input = await body(c, RoundInput);
+    if (wantsAsync(c)) {
+      // 受け付け時点で、上限やフェーズの誤りはすぐに返す
+      if (project.phaseKey === "done" && !input.phaseKey) throw new HTTPException(400, { message: "すべてのフェーズが完了しています" });
+      phaseOrThrow(input.phaseKey ?? project.phaseKey);
+      await budget(project.orgId, []);
+      return enqueue(c, project, "round", input);
+    }
+    return c.json(await executeRound(project, input, actorOf(c)), 201);
   });
 
   app.post("/api/rounds/:id/decision", async (c) => {
@@ -395,8 +906,7 @@ export function createApp(deps: AppDeps) {
     if (round.status === "decided") throw new HTTPException(409, { message: "このラウンドは決定済みです" });
     const input = await body(c, DecisionInput);
 
-    const content =
-      input.pick === "merged" ? round.evaluation?.merged : round.candidates.find((x) => x.label === input.pick)?.content;
+    const content = input.pick === "merged" ? round.evaluation?.merged : round.candidates.find((x) => x.label === input.pick)?.content;
     if (!content) throw new HTTPException(400, { message: `選択肢がありません: ${input.pick}` });
     const picked: RequirementItem[] = input.itemIndexes
       ? input.itemIndexes.map((i) => {
@@ -407,29 +917,136 @@ export function createApp(deps: AppDeps) {
       : content.items;
     if (!picked.length) throw new HTTPException(400, { message: "採用する項目を1つ以上選んでください" });
 
-    const creds = new Map((await store.listCredentials(project.orgId)).map((x) => [x.id, x.label]));
-    const mapping = Object.fromEntries(round.candidates.map((x) => [x.label, creds.get(x.providerId) ?? x.providerId]));
+    const labels = await labelsOf(project.orgId);
+    const mapping = Object.fromEntries(round.candidates.map((x) => [x.label, labels.get(x.providerId) ?? x.providerId]));
     const pickName = input.pick === "merged" ? "統合案" : `案${input.pick}`;
     const added = await store.addRequirements(
       project.id,
-      picked.map((it) => ({ ...it, roundId: round.id, source: pickName })),
+      picked.map((it) => ({ ...it, roundId: round.id, source: pickName, phaseKey: round.phaseKey })),
     );
     const decision = await store.addDecision({ projectId: project.id, roundId: round.id, pick: pickName, reason: input.reason, mapping });
     await store.markRoundDecided(round.id);
 
     let nextPhase: string | null = project.phaseKey;
     if (input.advancePhase && round.phaseKey === project.phaseKey) {
-      const i = PHASES.findIndex((p) => p.key === project.phaseKey);
-      nextPhase = PHASES[i + 1]?.key ?? "done";
+      nextPhase = nextPhaseKey(project.phaseKey);
       await store.setProjectPhase(project.id, nextPhase);
     }
+    await audit(store, {
+      orgId: project.orgId,
+      actor: actorOf(c),
+      action: "decision.create",
+      targetType: "round",
+      targetId: round.id,
+      detail: { projectId: project.id, pick: pickName, reason: input.reason, mapping, added: added.map((r) => r.code) },
+    });
     return c.json({ added, decision, mapping, nextPhase }, 201);
   });
 
-  /* ---------- 要件・成果物 ---------- */
+  app.get("/api/projects/:id/uml", async (c) => {
+    const p = await loadProject(c, c.req.param("id"), "viewer");
+    const { diagrams, rec } = await diagramsOf(p);
+    const labels = await labelsOf(p.orgId);
+    return c.json({
+      diagrams,
+      model: rec ? { providerId: rec.providerId, provider: labels.get(rec.providerId) ?? null, createdAt: rec.createdAt } : null,
+    });
+  });
+
+  /** AIが要件から設計モデル（クラス・シーケンス・状態・アクティビティ）を作る */
+  app.post("/api/projects/:id/uml/generate", async (c) => {
+    const p = await loadProject(c, c.req.param("id"), "editor");
+    if (wantsAsync(c)) {
+      if (!(await reqsForUml(p)).length) throw new HTTPException(400, { message: "要件がまだありません。ヒアリングで要件を確定してから生成してください" });
+      await budget(p.orgId, []);
+      return enqueue(c, p, "uml", {});
+    }
+    return c.json(await executeUml(p, actorOf(c)), 201);
+  });
+
+  /** 複数AIで比較したUMLの案から1つを採用する */
+  app.post("/api/uml-rounds/:id/adopt", async (c) => {
+    const round = await store.getUmlRound(c.req.param("id"));
+    if (!round) throw new HTTPException(404, { message: "見つかりません" });
+    const p = await loadProject(c, round.projectId, "editor");
+    if (round.status === "decided") throw new HTTPException(409, { message: "この比較は決定済みです" });
+    const input = await body(c, UmlAdoptInput);
+    const cand = round.candidates.find((x) => x.label === input.label);
+    if (!cand) throw new HTTPException(400, { message: `選択肢がありません: ${input.label}` });
+    const rec = await store.saveUmlModel(p.id, cand.model, cand.providerId);
+    await store.markUmlRoundDecided(round.id);
+    const labels = await labelsOf(p.orgId);
+    const mapping = Object.fromEntries(round.candidates.map((x) => [x.label, labels.get(x.providerId) ?? x.providerId]));
+    await audit(store, {
+      orgId: p.orgId,
+      actor: actorOf(c),
+      action: "uml.adopt",
+      targetType: "uml_round",
+      targetId: round.id,
+      detail: { projectId: p.id, pick: `案${cand.label}`, reason: input.reason, mapping },
+    });
+    return c.json(
+      {
+        diagrams: buildDiagrams(p.name, await reqsForUml(p), rec.model),
+        model: { providerId: rec.providerId, provider: mapping[cand.label], createdAt: rec.createdAt },
+        mapping,
+      },
+      201,
+    );
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* 要件の参照・手直し                                                   */
+  /* ------------------------------------------------------------------ */
+
   app.get("/api/projects/:id/requirements", async (c) => {
     const p = await loadProject(c, c.req.param("id"), "viewer");
     return c.json(await store.listRequirements(p.id));
+  });
+
+  /** 要件の手直し。変更前の内容は版として残る */
+  app.patch("/api/requirements/:id", async (c) => {
+    const { r, p } = await loadRequirement(c, c.req.param("id"), "editor");
+    const input = await body(c, RequirementPatchInput);
+    const { reason, ...patch } = input;
+    if (!Object.values(patch).some((v) => v !== undefined)) throw new HTTPException(400, { message: "変更する項目がありません" });
+    const updated = await store.updateRequirement(r.id, patch, actorOf(c), reason);
+    if (!updated) throw new HTTPException(404, { message: "要件が見つかりません" });
+    await audit(store, {
+      orgId: p.orgId,
+      actor: actorOf(c),
+      action: "requirement.update",
+      targetType: "requirement",
+      targetId: r.id,
+      detail: {
+        code: r.code,
+        reason,
+        before: { title: r.title, description: r.description, priority: r.priority },
+        after: { title: updated.title, description: updated.description, priority: updated.priority },
+        version: updated.version,
+      },
+    });
+    return c.json(updated);
+  });
+
+  /** 要件の削除（論理削除。番号は再利用しない） */
+  app.delete("/api/requirements/:id", async (c) => {
+    const { r, p } = await loadRequirement(c, c.req.param("id"), "editor");
+    await store.deleteRequirement(r.id);
+    await audit(store, {
+      orgId: p.orgId,
+      actor: actorOf(c),
+      action: "requirement.delete",
+      targetType: "requirement",
+      targetId: r.id,
+      detail: { code: r.code, title: r.title, reason: c.req.query("reason") ?? "" },
+    });
+    return c.body(null, 204);
+  });
+
+  app.get("/api/requirements/:id/versions", async (c) => {
+    const { r } = await loadRequirement(c, c.req.param("id"), "viewer");
+    return c.json({ current: r, history: await store.listRequirementVersions(r.id) });
   });
 
   app.get("/api/projects/:id/decisions", async (c) => {
@@ -437,54 +1054,10 @@ export function createApp(deps: AppDeps) {
     return c.json(await store.listDecisions(p.id));
   });
 
-  /* ---------- UML ---------- */
-  const diagramsOf = async (p: Project) => {
-    const reqs = (await store.listRequirements(p.id)).map((r) => ({ code: r.code, type: r.type, title: r.title }));
-    const rec = await store.latestUmlModel(p.id);
-    return { diagrams: buildDiagrams(p.name, reqs, rec?.model), rec, reqs };
-  };
+  /* ------------------------------------------------------------------ */
+  /* 仕様書（Markdown / Word / PDF）                                       */
+  /* ------------------------------------------------------------------ */
 
-  app.get("/api/projects/:id/uml", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "viewer");
-    const { diagrams, rec } = await diagramsOf(p);
-    return c.json({ diagrams, model: rec ? { providerId: rec.providerId, createdAt: rec.createdAt } : null });
-  });
-
-  /** AIが要件から設計モデル（クラス・シーケンス・状態・アクティビティ）を作る */
-  app.post("/api/projects/:id/uml/generate", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "editor");
-    const reqs = (await store.listRequirements(p.id)).map((r) => ({ code: r.code, type: r.type, title: r.title }));
-    if (!reqs.length) throw new HTTPException(400, { message: "要件がまだありません。ヒアリングで要件を確定してから生成してください" });
-    // 生成AI → 評価AI の順に試す（評価AIは設計の確認役としても使える）
-    const ids = [...new Set([...p.aiConfig.generatorIds, ...(p.aiConfig.evaluatorId ? [p.aiConfig.evaluatorId] : [])])];
-    const b = await budget(p.orgId, ids);
-    const usable = ids.filter((id) => !b.excluded.has(id));
-    if (!usable.length) throw new HTTPException(429, { message: `使えるAIがすべて今月の上限に達しています。${b.warnings.join(" ")}` });
-    const providers = await providersOf(p, usable);
-    if (p.confidential && providers.some((x) => !x.isLocal)) throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを使えます" });
-    let result: Awaited<ReturnType<typeof generateUmlModel>>;
-    try {
-      result = await generateUmlModel(providers, p.name, p.purpose, reqs, deps.timeoutMs);
-    } catch (e) {
-      const failures = (e as { failures?: Array<{ providerId: string; reason: string }> }).failures ?? [];
-      return c.json({ error: (e as Error).message, failures }, 502);
-    }
-    await store.addUsage({ orgId: p.orgId, providerId: result.providerId, projectId: p.id, ...usageOf(result.usage) });
-    const rec = await store.saveUmlModel(p.id, result.model, result.providerId);
-    const label = providers.find((x) => x.id === result.providerId)?.label ?? result.providerId;
-    return c.json(
-      {
-        diagrams: buildDiagrams(p.name, reqs, rec.model),
-        model: { providerId: rec.providerId, provider: label, createdAt: rec.createdAt },
-        dropped: result.dropped,
-        failures: result.failures,
-        warnings: b.warnings,
-      },
-      201,
-    );
-  });
-
-  /* ---------- 仕様書（Markdown / Word / PDF） ---------- */
   const ImageInput = z.object({
     title: z.string().min(1).max(200),
     png: z.string().max(8_000_000), // Base64
@@ -532,16 +1105,7 @@ export function createApp(deps: AppDeps) {
   /** 仕様書を出力し、保存先（ローカルボリューム / S3）に版として残す */
   app.post("/api/projects/:id/exports", async (c) => {
     const p = await loadProject(c, c.req.param("id"), "editor");
-    const raw = await c.req.text();
-    let json: unknown = {};
-    try {
-      if (raw.trim()) json = JSON.parse(raw);
-    } catch {
-      throw new HTTPException(400, { message: "JSONの形式が正しくありません" });
-    }
-    const parsed = ExportInput.safeParse(json);
-    if (!parsed.success) throw new HTTPException(400, { message: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") });
-    const input = parsed.data;
+    const input = await body(c, ExportInput);
     const images: SpecImage[] = input.images.map((i) => ({ title: i.title, png: Buffer.from(i.png, "base64"), width: i.width, height: i.height }));
     for (const img of images) {
       if (img.png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new HTTPException(400, { message: `PNG画像ではありません: ${img.title}` });
@@ -552,8 +1116,16 @@ export function createApp(deps: AppDeps) {
       key = `${p.orgId}/${p.id}/spec-${new Date().toISOString().replace(/[:.]/g, "-")}.${input.format}`;
       await deps.storage.put(key, buf, CONTENT_TYPE[input.format]);
     }
+    await audit(store, {
+      orgId: p.orgId,
+      actor: actorOf(c),
+      action: "spec.export",
+      targetType: "project",
+      targetId: p.id,
+      detail: { format: input.format, images: images.length, bytes: buf.length, key: key ?? null },
+    });
     return fileResponse(c, p, input.format, buf, key);
   });
 
-  return app;
+  return Object.assign(app, { jobs: runner });
 }

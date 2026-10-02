@@ -82,6 +82,20 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
 .meter i{display:block;height:100%;background:var(--accent)}
 .meter.warnc i{background:var(--warn)}
 .meter.over i{background:var(--bad)}
+.term{border-bottom:1.5px dotted var(--accent);cursor:help;position:relative}
+.term:hover::after,.term:focus::after{content:attr(data-tip);position:absolute;left:0;top:calc(100% + 6px);width:min(260px,70vw);background:var(--ink);color:var(--paper);font-size:12px;line-height:1.5;padding:8px 10px;border-radius:4px;z-index:10;font-weight:400}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chips button{font:inherit;border:1px dashed var(--accent);color:var(--accent);background:none;border-radius:16px;padding:3px 10px;font-size:13px;cursor:pointer;text-align:left}
+.chips button:hover{background:var(--accent-soft)}
+.phases button{font:inherit;border:0;background:none;color:inherit;cursor:pointer;padding:0}
+.cover{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0}
+.cover span{font-size:12px;border:1px solid var(--rule);border-radius:12px;padding:1px 9px;color:var(--ink-2)}
+.cover span.ok{border-color:var(--good);color:var(--good)}
+.steps{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:13px}
+.steps li{display:flex;gap:8px;align-items:baseline}
+.steps .st{font-family:var(--f-mono);font-size:11.5px;min-width:5.5em}
+.steps .running{color:var(--accent)}.steps .done{color:var(--good)}.steps .failed{color:var(--bad)}
+.who{font-size:12.5px;color:var(--ink-2)}
 .chk{display:flex;flex-wrap:wrap;gap:6px}
 .chk label{display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--rule);border-radius:16px;padding:3px 10px;cursor:pointer}
 .chk label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
@@ -127,7 +141,7 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
   <section class="view" id="v-admin"><div class="grid2">
     <div class="panel" id="provPanel"></div>
     <div class="panel" id="projPanel"></div>
-  </div><div class="panel" id="usagePanel" hidden></div></section>
+  </div><div class="panel" id="usagePanel" hidden></div><div class="panel" id="auditPanel" hidden></div></section>
 </div>
 <div class="toast" id="toast" hidden></div>
 
@@ -136,8 +150,12 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const store = { get(k){try{return localStorage.getItem("arn."+k)}catch(e){return null}}, set(k,v){try{v==null?localStorage.removeItem("arn."+k):localStorage.setItem("arn."+k,v)}catch(e){}} };
-const S = { meta:null, orgId:store.get("orgId")||"", role:store.get("role")||"admin", token:store.get("token")||"", providers:[], project:null, round:null };
+const sess = { get(k){try{return sessionStorage.getItem("arn."+k)}catch(e){return null}}, set(k,v){try{v==null?sessionStorage.removeItem("arn."+k):sessionStorage.setItem("arn."+k,v)}catch(e){}} };
+const S = { meta:null, orgId:store.get("orgId")||"", role:store.get("role")||"admin", user:"", token:sess.get("idToken")||"", refresh:sess.get("refreshToken")||"", providers:[], project:null, round:null, guide:null, umlCompare:null };
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
 function toast(t){const el=$("#toast");el.textContent=t;el.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>el.hidden=true,2600)}
+const isOidc = () => S.meta?.auth === "oidc";
+const canEdit = () => ["admin","editor"].includes(S.role);
 
 function authHeaders(){
   const h = {};
@@ -145,42 +163,141 @@ function authHeaders(){
   else if (S.token) h["authorization"] = "Bearer " + S.token;
   return h;
 }
-async function api(path, opts={}){
+async function api(path, opts={}, retried=false){
+  if (isOidc() && S.token && tokenExpiresSoon()) await refreshTokens();
   const headers = {"content-type":"application/json", ...authHeaders(), ...(opts.headers||{})};
   const res = await fetch(path, {...opts, headers, body: opts.body && typeof opts.body !== "string" ? JSON.stringify(opts.body) : opts.body});
+  if (res.status === 401 && isOidc() && !retried && S.refresh) { if (await refreshTokens()) return api(path, opts, true); }
+  if (res.status === 401 && isOidc()) { signedOut("ログインの有効期限が切れました。もう一度ログインしてください"); throw new Error("ログインが必要です"); }
   if (res.status === 204) return null;
   const ct = res.headers.get("content-type") || "";
   const data = ct.includes("json") ? await res.json() : await res.text();
   if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
   return data;
 }
+/** 非同期ジョブを受け付けて、終わるまで進み具合を表示しながら待つ */
+async function runJob(path, body, onProgress){
+  const r = await api(path + "?async=1", {method:"POST", body});
+  const until = Date.now() + 10*60*1000;
+  while (Date.now() < until) {
+    await sleep(1000);
+    const j = await api(`/api/jobs/${r.jobId}`);
+    onProgress?.(j.progress || {});
+    if (j.status === "done") return j.result;
+    if (j.status === "failed") throw new Error(j.error || "処理に失敗しました");
+  }
+  throw new Error("時間内に終わりませんでした。しばらくしてから画面を開き直してください");
+}
+const ST = {waiting:"待機中", running:"作成中…", done:"完了", failed:"失敗"};
+function stepsHtml(p){
+  return `<ul class="steps">${(p.steps||[]).map(s=>`<li><span class="st ${s.status}">${ST[s.status]||s.status}</span><span>${esc(s.label)}${s.reason?`<span class="hint">（${esc(s.reason)}）</span>`:""}</span></li>`).join("")}</ul>`;
+}
+
+/* ---------- ログイン（OIDC 認可コード＋PKCE） ---------- */
+const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+function jwtClaims(t){
+  try{
+    let b = t.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"); while(b.length%4) b+="=";
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b), c=>c.charCodeAt(0))));
+  }catch(e){ return {} }
+}
+const ROLE_ORDER=["admin","editor","reviewer","viewer"];
+function applyClaims(){
+  const c = jwtClaims(S.token), o = S.meta?.oidc || {};
+  S.orgId = c[o.orgClaim] || "";
+  const roles = [].concat(c[o.roleClaim] || []);
+  S.role = ROLE_ORDER.find(r=>roles.includes(r)) || "viewer";
+  S.user = c.email || c.preferred_username || c.sub || "";
+  S.exp = (c.exp||0)*1000;
+}
+const tokenExpiresSoon = () => S.exp && Date.now() > S.exp - 60_000;
+function setTokens(t){
+  S.token=t.idToken; S.refresh=t.refreshToken||""; sess.set("idToken",S.token); sess.set("refreshToken",S.refresh||null); applyClaims();
+}
+async function refreshTokens(){
+  if (!S.refresh) return false;
+  try{
+    const r = await fetch("/api/auth/refresh",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({refreshToken:S.refresh})});
+    if (!r.ok) throw new Error();
+    setTokens(await r.json()); return true;
+  }catch(e){ return false }
+}
+function signedOut(msg){
+  S.token=""; S.refresh=""; S.exp=0; sess.set("idToken",null); sess.set("refreshToken",null);
+  renderConn(); $("#hear").innerHTML=`<div class="panel"><h2>ログインしてください</h2>${msg?`<p class="hint">${esc(msg)}</p>`:""}<button class="btn" id="loginBig">ログイン</button></div>`;
+  $("#loginBig").onclick=login;
+}
+async function login(){
+  try{
+    const conf = await (await fetch("/api/auth/config")).json();
+    if (conf.error) throw new Error(conf.error);
+    const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+    const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
+    sess.set("pkceVerifier", verifier); sess.set("pkceState", state);
+    const u = new URL(conf.authorizationEndpoint);
+    Object.entries({response_type:"code", client_id:conf.clientId, redirect_uri:location.origin+location.pathname, scope:conf.scope, state, code_challenge:challenge, code_challenge_method:"S256"})
+      .forEach(([k,v])=>u.searchParams.set(k,v));
+    location.assign(u.toString());
+  }catch(e){ toast("ログイン画面を開けません："+e.message) }
+}
+async function handleCallback(){
+  const q = new URLSearchParams(location.search);
+  if (!q.get("code") && !q.get("error")) return;
+  history.replaceState(null, "", location.pathname);
+  if (q.get("error")) { toast("ログインできませんでした："+(q.get("error_description")||q.get("error"))); return; }
+  if (q.get("state") !== sess.get("pkceState")) { toast("ログインの確認に失敗しました。もう一度お試しください"); return; }
+  const r = await fetch("/api/auth/token",{method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({code:q.get("code"), codeVerifier:sess.get("pkceVerifier"), redirectUri:location.origin+location.pathname})});
+  sess.set("pkceVerifier",null); sess.set("pkceState",null);
+  const data = await r.json().catch(()=>({}));
+  if (!r.ok) { toast(data.error || "ログインできませんでした"); return; }
+  setTokens(data); toast("ログインしました");
+}
+async function logout(){
+  const idToken = S.token;
+  let conf = {}; try{ conf = await (await fetch("/api/auth/config")).json() }catch(e){}
+  signedOut("ログアウトしました");
+  if (conf.logoutUrl) {
+    const u = new URL(conf.logoutUrl), back = location.origin + location.pathname;
+    // Keycloak: post_logout_redirect_uri / id_token_hint、Cognito: client_id / logout_uri
+    u.searchParams.set("client_id", conf.clientId); u.searchParams.set("post_logout_redirect_uri", back);
+    u.searchParams.set("logout_uri", back); if (idToken) u.searchParams.set("id_token_hint", idToken);
+    location.assign(u.toString());
+  }
+}
 
 /* ---------- 接続 ---------- */
 function renderConn(){
-  const dev = S.meta?.auth === "dev";
-  $("#conn").innerHTML = dev
-    ? `<span class="hint">開発用ログイン</span>
+  if (S.meta?.auth === "dev") {
+    $("#conn").innerHTML = `<span class="hint">開発用ログイン</span>
        <input id="cOrg" placeholder="組織ID" value="${esc(S.orgId)}" style="width:15em">
-       <select id="cRole">${["admin","editor","reviewer","viewer"].map(r=>`<option ${r===S.role?"selected":""}>${r}</option>`).join("")}</select>
-       <button class="btn sm ghost" id="cNewOrg">組織を作成</button>`
-    : `<input id="cTok" type="password" placeholder="IDトークン（Cognito / Keycloak）" value="${esc(S.token)}" style="width:18em">
+       <select id="cRole">${ROLE_ORDER.map(r=>`<option ${r===S.role?"selected":""}>${r}</option>`).join("")}</select>
        <button class="btn sm ghost" id="cNewOrg">組織を作成</button>`;
-  if (dev){
     $("#cOrg").onchange = e => { S.orgId = e.target.value.trim(); store.set("orgId", S.orgId); reload(); };
     $("#cRole").onchange = e => { S.role = e.target.value; store.set("role", S.role); reload(); };
-  } else $("#cTok").onchange = e => { S.token = e.target.value.trim(); store.set("token", S.token); reload(); };
-  $("#cNewOrg").onclick = createOrg;
+    $("#cNewOrg").onclick = createOrg;
+    return;
+  }
+  $("#conn").innerHTML = S.token
+    ? `<span class="who">${esc(S.user)}（${esc(S.role)}）</span><button class="btn sm ghost" id="cOut">ログアウト</button>`
+    : `<button class="btn sm" id="cIn">ログイン</button><button class="btn sm ghost" id="cNewOrg">組織を作成</button>`;
+  $("#cOut") && ($("#cOut").onclick = logout);
+  $("#cIn") && ($("#cIn").onclick = login);
+  $("#cNewOrg") && ($("#cNewOrg").onclick = createOrg);
 }
 async function createOrg(){
   const panel = $("#hear");
   panel.innerHTML = `<div class="panel"><h2>組織を作成</h2><div class="row">
     <label class="f">組織名<input id="oName" value="サンプル組織"></label>
     ${S.meta?.auth==="dev"?"":`<label class="f">初期セットアップ用トークン<input id="oTok" type="password"></label>`}
-    <button class="btn" id="oGo">作成</button></div><div id="oMsg"></div></div>`;
+    <button class="btn" id="oGo">作成</button></div><div id="oMsg"></div>
+    ${isOidc()?`<p class="hint">作成後、表示された組織IDを、利用者の「組織ID」属性（Cognito: custom:org_id）に設定してください。</p>`:""}</div>`;
   $("#oGo").onclick = async () => {
     try{
       const headers = $("#oTok") ? {"x-bootstrap-token": $("#oTok").value} : {};
       const org = await api("/api/orgs", {method:"POST", body:{name:$("#oName").value}, headers});
+      if (isOidc()) { $("#oMsg").innerHTML=`<div class="note">組織を作成しました。組織ID：<span class="mono">${esc(org.id)}</span></div>`; return; }
       S.orgId = org.id; store.set("orgId", org.id); toast("組織を作成しました");
       renderConn(); reload(); switchTab("admin");
     }catch(e){ $("#oMsg").innerHTML = `<div class="note err">${esc(e.message)}</div>` }
@@ -199,7 +316,7 @@ document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>switchTab(
 const VENDORS = {anthropic:"Claude（Anthropic）", openai:"GPT（OpenAI）", gemini:"Gemini（Google）", ollama:"ローカルLLM（Ollama）", mock:"模擬AI（開発用）"};
 async function loadProviders(){ S.providers = S.orgId || S.token ? await api(`/api/orgs/${S.orgId}/providers`).catch(()=>[]) : []; }
 function renderAdmin(){
-  const isAdmin = S.role === "admin" || S.meta?.auth !== "dev";
+  const isAdmin = S.role === "admin";
   const lim = v => v==null ? "上限なし" : Number(v).toLocaleString();
   $("#provPanel").innerHTML = `<h2>AIの登録（組織の管理者）</h2>
     <p class="hint">APIキーは組織ごとに登録し、暗号化して保存します。表示は末尾4桁のみです。月間上限（トークン）に達したAIは、その月は使われません。</p>
@@ -270,7 +387,47 @@ function renderAdmin(){
     try{ const p=await api(`/api/orgs/${S.orgId}/projects`,{method:"POST",body}); await openProject(p.id); switchTab("hear"); }
     catch(e){ $("#jMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   };
-  if (isAdmin) loadUsage();
+  if (isAdmin) { loadUsage(); auditState.entries=[]; auditState.next=null; loadAudit(); }
+  else { $("#usagePanel").hidden=true; $("#auditPanel").hidden=true; }
+}
+/* ---------- 監査ログ ---------- */
+const ACTION={"org.create":"組織の作成","org.limits.update":"組織の上限変更","provider.create":"AIの登録","provider.update":"AIの変更","provider.delete":"AIの削除",
+  "project.create":"プロジェクト作成","project.phase":"フェーズ移動","ai.round":"AIで案を生成","ai.guide":"AIで質問を作成","ai.uml":"AIでUML生成",
+  "decision.create":"案の採用","uml.adopt":"UML案の採用","requirement.update":"要件の編集","requirement.delete":"要件の削除","spec.export":"仕様書の出力","auth.login":"ログイン"};
+const auditState={entries:[], next:null, action:""};
+function auditSummary(e){
+  const d=e.detail||{};
+  switch(e.action){
+    case "ai.round": return `送信：「${(d.sent?.answer||"").slice(0,60)}」／生成：${(d.generators||[]).map(g=>g.label).join("、")}${d.evaluator?`／評価：${d.evaluator.label}`:""}`;
+    case "ai.uml": return `${d.mode==="compare"?"比較":"単一"}／${(d.generators||[]).map(g=>g.label).join("、")}`;
+    case "ai.guide": return `フェーズ：${d.phase}／${d.source==="ai"?"AI":"既定"}`;
+    case "provider.update": return `${d.label}：${Object.keys(d.changes||{}).join("、")}${d.apiKeyChanged?"、APIキー":""}`;
+    case "provider.create": case "provider.delete": return `${d.label}（${d.vendor} / ${d.model}）`;
+    case "requirement.update": return `${d.code}：「${(d.before?.title||"").slice(0,30)}」→「${(d.after?.title||"").slice(0,30)}」`;
+    case "requirement.delete": return `${d.code}：${(d.title||"").slice(0,40)}`;
+    case "decision.create": case "uml.adopt": return `${d.pick}${d.reason?`（${d.reason}）`:""}`;
+    case "org.limits.update": return `${d.before??"上限なし"} → ${d.after??"上限なし"}`;
+    case "project.phase": return `${d.from} → ${d.to}`;
+    case "spec.export": return `${d.format}${d.images?`（図${d.images}件）`:""}`;
+    default: return d.name || d.role || "";
+  }
+}
+async function loadAudit(more=false){
+  try{
+    const q=new URLSearchParams({limit:"30"}); if(auditState.action) q.set("action",auditState.action); if(more&&auditState.next) q.set("before",auditState.next);
+    const r=await api(`/api/orgs/${S.orgId}/audit?${q}`);
+    auditState.entries = more ? auditState.entries.concat(r.entries) : r.entries; auditState.next=r.next;
+    $("#auditPanel").hidden=false;
+    $("#auditPanel").innerHTML=`<div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">監査ログ</h2>
+      <label class="f">種類<select id="auF"><option value="">すべて</option>${[["ai.","AIの呼び出し"],["provider.","AIの登録・変更"],["requirement.","要件の手直し"],["decision.","案の採用"],["auth.","ログイン"],["spec.","仕様書の出力"],["org.","組織"]].map(([v,l])=>`<option value="${v}" ${auditState.action===v?"selected":""}>${l}</option>`).join("")}</select></label></div>
+      <p class="hint">誰が・いつ・何をしたかと、AIに送った内容の要約を記録しています。APIキーは記録しません。保持期間を過ぎたものは自動で削除されます。</p>
+      <div class="scroll"><table class="t"><thead><tr><th>日時</th><th>利用者</th><th>操作</th><th>内容</th></tr></thead><tbody>
+      ${auditState.entries.map(e=>`<tr><td class="mono">${e.at.slice(0,19).replace("T"," ")}</td><td class="mono">${esc(e.actor)}</td><td>${esc(ACTION[e.action]||e.action)}</td>
+        <td><span class="cmt">${esc(auditSummary(e))}</span> <details style="display:inline"><summary class="hint">詳細</summary><pre class="code">${esc(JSON.stringify(e.detail,null,2))}</pre></details></td></tr>`).join("")||'<tr><td colspan="4" class="hint">記録はまだありません</td></tr>'}
+      </tbody></table></div>${auditState.next?`<button class="btn sm ghost" id="auMore" style="margin-top:8px">さらに表示</button>`:""}`;
+    $("#auF").onchange=e=>{auditState.action=e.target.value; loadAudit()};
+    $("#auMore") && ($("#auMore").onclick=()=>loadAudit(true));
+  }catch(e){ $("#auditPanel").hidden=true }
 }
 function meter(used, limit){
   if(limit==null) return `<span class="hint">上限なし</span>`;
@@ -300,31 +457,93 @@ async function loadUsage(){
 }
 async function openProject(id){
   if(!id) return;
-  try{ S.project = await api(`/api/projects/${id}`); store.set("projectId", id); S.round=null; renderHear(); toast("プロジェクトを開きました") }
+  try{ S.project = await api(`/api/projects/${id}`); store.set("projectId", id); S.round=null; S.guide=null; renderHear(); loadGuide(); toast("プロジェクトを開きました") }
   catch(e){ toast(e.message) }
 }
 
 /* ---------- ヒアリング ---------- */
+function gloss(text, glossary){
+  let h = esc(text);
+  const terms = (glossary||[]).slice().sort((a,b)=>b.term.length-a.term.length);
+  if (!terms.length) return h;
+  const re = new RegExp(terms.map(t=>t.term.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("|"), "g");
+  const tip = Object.fromEntries(terms.map(t=>[t.term, t.explanation]));
+  return h.replace(re, m => `<span class="term" tabindex="0" data-tip="${esc(tip[m])}">${m}</span>`);
+}
 function renderHear(){
   const el=$("#hear");
+  if(isOidc() && !S.token){ signedOut(); return; }
   if(!S.project){
     el.innerHTML=`<div class="panel"><h2>はじめに</h2><ol class="hint" style="margin:0;padding-left:1.2em">
-      <li>右上で組織を作成（またはIDを入力）</li><li>「AI設定・プロジェクト」でAIを登録（APIキーは組織ごと）</li><li>プロジェクトを作成すると、ここで質問が始まります</li></ol></div>`;
+      <li>${isOidc()?"管理者から組織に追加してもらい、ログイン":"右上で組織を作成（またはIDを入力）"}</li><li>「AI設定・プロジェクト」でAIを登録（APIキーは組織ごと）</li><li>プロジェクトを作成すると、ここで質問が始まります</li></ol></div>`;
     return;
   }
   const phases=S.meta.phases, cur=S.project.phaseKey, ci=phases.findIndex(p=>p.key===cur);
-  const strip=`<ol class="phases">${phases.map((p,i)=>`<li class="${cur==="done"||i<ci?"done":i===ci?"cur":""}">${i+1}. ${esc(p.name)}</li>`).join("")}</ol>`;
-  if(cur==="done"){ el.innerHTML=`<div class="panel">${strip}<h2>すべてのフェーズが完了しました</h2><p class="hint">要件一覧・UML・仕様書のタブで成果物を確認できます。</p></div>`; return; }
-  const ph=phases[ci];
-  el.innerHTML=`<div class="panel">${strip}<div class="lbl">${esc(S.project.name)} ・ ${S.project.aiConfig.mode==="multi"?"複数AI＋評価AI":"単一AI"}</div>
-    <p class="q">${esc(ph.question)}</p><p class="hint">観点：${ph.checklist.map(esc).join("、")}</p>
-    <textarea id="ans" rows="3" placeholder="思いつくままに書いてください"></textarea>
+  const strip=`<ol class="phases">${phases.map((p,i)=>`<li class="${cur==="done"||i<ci?"done":i===ci?"cur":""}">${canEdit()?`<button data-phase="${p.key}" title="このフェーズへ移動">${i+1}. ${esc(p.name)}</button>`:`${i+1}. ${esc(p.name)}`}</li>`).join("")}</ol>`;
+  if(cur==="done"){
+    el.innerHTML=`<div class="panel">${strip}<h2>すべてのフェーズが完了しました</h2><p class="hint">要件一覧・UML・仕様書のタブで成果物を確認できます。フェーズ名を押すと、そのフェーズに戻って追加のヒアリングができます。</p></div>`;
+    bindPhaseStrip(); return;
+  }
+  const ph=phases[ci], g=S.guide && S.guide.phaseKey===ph.key ? S.guide : null;
+  const q = g?.question || ph.question, hint = g?.hint ?? ph.hint, options = g?.options?.length ? g.options : (ph.defaultOptions||[]), glossary = g?.glossary || [];
+  const covered = new Set(g?.covered||[]), pct = Math.round((g?.coverage||0)*100);
+  el.innerHTML=`<div class="panel">${strip}<div class="lbl">${esc(S.project.name)} ・ ${S.project.aiConfig.mode==="multi"?"複数AI＋評価AI":"単一AI"} ・ ${esc(ph.name)}</div>
+    <p class="q" id="q">${gloss(q, glossary)}</p>${hint?`<p class="hint" style="margin-top:-6px">${gloss(hint, glossary)}</p>`:""}
+    <div class="chips" id="opts">${options.map(o=>`<button type="button">${esc(o)}</button>`).join("")}</div>
+    <textarea id="ans" rows="3" placeholder="思いつくままに書いてください。上の候補を押すと入力できます"></textarea>
     <div id="amb"></div>
-    <div class="row" style="margin-top:8px"><button class="btn" id="send">AIに案を作ってもらう</button><span class="hint" id="sendMsg"></span></div></div>
+    <div class="row" style="margin-top:8px"><button class="btn" id="send" ${canEdit()?"":"disabled"}>AIに案を作ってもらう</button><span class="hint" id="sendMsg"></span></div>
+    ${glossary.length?`<details style="margin-top:10px"><summary class="hint">この質問の用語の説明（${glossary.length}件）</summary><dl class="hint" style="margin:6px 0 0">${glossary.map(t=>`<dt style="font-weight:500;color:var(--ink)">${esc(t.term)}</dt><dd style="margin:0 0 6px">${esc(t.explanation)}</dd>`).join("")}</dl></details>`:""}
+    <div style="margin-top:14px;border-top:1px solid var(--rule);padding-top:10px">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <span class="hint">このフェーズの観点：${g?`${covered.size} / ${ph.checklist.length}（${pct}%）`:"未確認"}${g?.source==="default"?"（AIが使えないため既定の質問を表示中）":""}</span>
+        <div class="row">${canEdit()?`<button class="btn sm ghost" id="regen">AIで質問を作り直す</button><button class="btn sm ${g&&g.missing.length===0?"":"ghost"}" id="nextPhase">次のフェーズへ</button>`:""}</div></div>
+      <div class="cover">${ph.checklist.map(c=>`<span class="${covered.has(c)?"ok":""}">${covered.has(c)?"✓ ":""}${esc(c)}</span>`).join("")}</div>
+      <div id="guideMsg"></div>
+    </div></div>
     <div id="roundOut"></div>`;
+  bindPhaseStrip();
+  $("#opts").querySelectorAll("button").forEach(b=>b.onclick=()=>{const t=$("#ans"); t.value=t.value?t.value+"\n"+b.textContent:b.textContent; t.focus(); checkAmb();});
   let t; $("#ans").oninput=()=>{clearTimeout(t);t=setTimeout(checkAmb,500)};
   $("#send").onclick=sendAnswer;
+  $("#regen") && ($("#regen").onclick=()=>refreshGuide(true));
+  $("#nextPhase") && ($("#nextPhase").onclick=async()=>{
+    if(g && g.missing.length && !$("#nextPhase").dataset.sure){
+      $("#nextPhase").dataset.sure="1"; $("#nextPhase").textContent="未確認の観点があります。進む";
+      $("#guideMsg").innerHTML=`<div class="note warn">まだ確認できていない観点：${g.missing.map(esc).join("、")}。後から戻って追加することもできます。</div>`; return;
+    }
+    await movePhase(nextKey(ph.key));
+  });
   if(S.round) renderRound();
+}
+const nextKey = k => { const ps=S.meta.phases, i=ps.findIndex(p=>p.key===k); return ps[i+1]?.key || "done"; };
+function bindPhaseStrip(){
+  document.querySelectorAll("[data-phase]").forEach(b=>b.onclick=()=>movePhase(b.dataset.phase));
+}
+async function movePhase(key){
+  try{ S.project = await api(`/api/projects/${S.project.id}/phase`,{method:"POST",body:{phaseKey:key}}); S.round=null; S.guide=null; renderHear(); loadGuide(); }
+  catch(e){ toast(e.message) }
+}
+/** 保存済みのガイドを表示し、古ければAIで作り直す */
+async function loadGuide(){
+  if(!S.project || S.project.phaseKey==="done") return;
+  try{
+    S.guide = await api(`/api/projects/${S.project.id}/guide`);
+    renderHear();
+    if((S.guide.stale || S.guide.source==="default") && canEdit()) refreshGuide(false);
+  }catch(e){}
+}
+async function refreshGuide(user){
+  if(!S.project) return;
+  const msg=$("#guideMsg"); if(msg) msg.innerHTML='<p class="hint">AIが観点の確認と次の質問を準備しています…</p>';
+  try{
+    const g = await api(`/api/projects/${S.project.id}/guide`,{method:"POST",body:{}});
+    if(S.project.phaseKey!==g.phaseKey) return;
+    const ans = $("#ans")?.value || "";
+    S.guide=g; renderHear(); if($("#ans")) $("#ans").value=ans;
+    if(g.warnings?.length) $("#guideMsg").innerHTML=g.warnings.map(w=>`<div class="note warn">${esc(w)}</div>`).join("");
+    if(user) toast("質問を作り直しました");
+  }catch(e){ if($("#guideMsg")) $("#guideMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
 async function checkAmb(){
   const text=$("#ans").value; if(!text){$("#amb").innerHTML="";return}
@@ -334,10 +553,13 @@ async function checkAmb(){
 }
 async function sendAnswer(){
   const answer=$("#ans").value.trim(); if(!answer) return;
-  $("#send").disabled=true; $("#sendMsg").textContent=`${S.project.aiConfig.generatorIds.length}つのAIで案を作成中…（最大90秒）`;
-  try{ S.round = await api(`/api/projects/${S.project.id}/rounds`,{method:"POST",body:{answer}}); renderRound(); }
-  catch(e){ $("#roundOut").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
-  finally{ $("#send").disabled=false; $("#sendMsg").textContent="" }
+  $("#send").disabled=true; $("#sendMsg").textContent="受け付けました";
+  $("#roundOut").innerHTML=`<div class="panel"><h3>案を作成しています</h3><div id="prog"></div></div>`;
+  try{
+    S.round = await runJob(`/api/projects/${S.project.id}/rounds`, {answer}, p=>{ const el=$("#prog"); if(el) el.innerHTML=stepsHtml(p); });
+    renderRound();
+  }catch(e){ $("#roundOut").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  finally{ if($("#send")){ $("#send").disabled=false; $("#sendMsg").textContent="" } }
 }
 function itemsHtml(items, key, checked=true){
   return `<ul>${items.map((it,i)=>`<li><label><input type="checkbox" data-k="${key}" data-i="${i}" ${checked?"checked":""}>
@@ -373,9 +595,9 @@ async function decide(pick){
   const idx=[...document.querySelectorAll(`input[data-k="${pick}"]:checked`)].map(i=>Number(i.dataset.i));
   if(!idx.length){toast("採用する項目を1つ以上チェックしてください");return}
   try{
-    const res=await api(`/api/rounds/${S.round.id}/decision`,{method:"POST",body:{pick,itemIndexes:idx,reason:$("#reason").value}});
+    const res=await api(`/api/rounds/${S.round.id}/decision`,{method:"POST",body:{pick,itemIndexes:idx,reason:$("#reason").value,advancePhase:false}});
     toast(`${res.added.length}件を要件に追加しました（${Object.entries(res.mapping).map(([l,n])=>l+"="+n).join(" / ")}）`);
-    S.round=null; S.project=await api(`/api/projects/${S.project.id}`); renderHear();
+    S.round=null; S.project=await api(`/api/projects/${S.project.id}`); renderHear(); refreshGuide(false);
   }catch(e){ $("#decMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
 
@@ -384,8 +606,36 @@ const TYPE={BR:"目的",AC:"利用者",FR:"機能",NFR:"非機能",CN:"制約"},
 async function loadReqs(){
   if(!S.project){$("#reqs").innerHTML='<p class="hint">プロジェクトを開いてください</p>';$("#decs").innerHTML="";return}
   const [reqs,decs]=await Promise.all([api(`/api/projects/${S.project.id}/requirements`),api(`/api/projects/${S.project.id}/decisions`)]);
-  $("#reqs").innerHTML=`<table class="t"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>優先度</th><th>根拠</th></tr></thead><tbody>
-    ${reqs.map(r=>`<tr><td class="mono">${r.code}</td><td>${TYPE[r.type]}</td><td>${esc(r.title)}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}</td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td></tr>`).join("")||'<tr><td colspan="5" class="hint">まだありません</td></tr>'}</tbody></table>`;
+  const ed=canEdit();
+  $("#reqs").innerHTML=`<table class="t"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>優先度</th><th>根拠</th>${ed?"<th></th>":""}</tr></thead><tbody>
+    ${reqs.map(r=>`<tr id="rq-${r.id}"><td class="mono">${r.code}${r.version>1?`<br><span class="tag">v${r.version}</span>`:""}</td><td>${TYPE[r.type]}</td>
+      <td>${esc(r.title)}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}<div id="rh-${r.id}"></div></td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td>
+      ${ed?`<td style="white-space:nowrap"><button class="btn sm ghost" data-redit="${r.id}">編集</button> <button class="btn sm ghost" data-rhist="${r.id}">履歴</button> <button class="btn sm danger" data-rdel="${r.id}">削除</button></td>`:""}</tr>
+      ${ed?`<tr id="re-${r.id}" hidden><td colspan="6"><div style="display:flex;flex-direction:column;gap:8px">
+        <label class="f">内容<textarea id="reT-${r.id}" rows="2">${esc(r.title)}</textarea></label>
+        <label class="f">補足<textarea id="reD-${r.id}" rows="2">${esc(r.description)}</textarea></label>
+        <div class="row"><label class="f">優先度<select id="reP-${r.id}">${Object.entries(PRI).map(([k,v])=>`<option value="${k}" ${k===r.priority?"selected":""}>${v}</option>`).join("")}</select></label>
+          <label class="f" style="flex:1">変更理由（任意）<input id="reR-${r.id}" placeholder="例：数値を明確にした"></label>
+          <button class="btn sm" data-rsave="${r.id}">保存</button><button class="btn sm ghost" data-rcancel="${r.id}">取消</button></div>
+        <div id="reM-${r.id}"></div></div></td></tr>`:""}`).join("")||'<tr><td colspan="6" class="hint">まだありません</td></tr>'}</tbody></table>`;
+  const q=k=>document.getElementById(k);
+  document.querySelectorAll("[data-redit]").forEach(b=>b.onclick=()=>{const r=q("re-"+b.dataset.redit); r.hidden=!r.hidden});
+  document.querySelectorAll("[data-rcancel]").forEach(b=>b.onclick=()=>{q("re-"+b.dataset.rcancel).hidden=true});
+  document.querySelectorAll("[data-rsave]").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.rsave;
+    try{ await api(`/api/requirements/${id}`,{method:"PATCH",body:{title:q("reT-"+id).value.trim(),description:q("reD-"+id).value.trim(),priority:q("reP-"+id).value,reason:q("reR-"+id).value.trim()}}); toast("要件を更新しました（変更前の内容は履歴に残ります）"); loadReqs() }
+    catch(e){ q("reM-"+id).innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  });
+  document.querySelectorAll("[data-rdel]").forEach(b=>b.onclick=async()=>{
+    if(!b.dataset.sure){ b.dataset.sure="1"; b.textContent="本当に削除"; setTimeout(()=>{delete b.dataset.sure; b.textContent="削除"},4000); return; }
+    try{ await api(`/api/requirements/${b.dataset.rdel}`,{method:"DELETE"}); toast("削除しました（番号は再利用しません）"); loadReqs() }catch(e){ toast(e.message) }
+  });
+  document.querySelectorAll("[data-rhist]").forEach(b=>b.onclick=async()=>{
+    const box=q("rh-"+b.dataset.rhist); if(box.innerHTML){box.innerHTML="";return}
+    try{ const v=await api(`/api/requirements/${b.dataset.rhist}/versions`);
+      box.innerHTML=v.history.length?`<div class="cmt" style="margin-top:6px;border-left:2px solid var(--rule);padding-left:8px">${v.history.map(h=>`v${h.version}（${h.createdAt.slice(0,16).replace("T"," ")}・${esc(h.changedBy)}${h.changeReason?`・${esc(h.changeReason)}`:""}）：${esc(h.title)}／${PRI[h.priority]||h.priority}`).join("<br>")}</div>`:`<div class="cmt">変更履歴はありません</div>`;
+    }catch(e){ toast(e.message) }
+  });
   $("#decs").innerHTML=decs.map(d=>`<div class="hint">${d.createdAt.slice(0,16).replace("T"," ")}　${esc(d.pick)}を採用 — ${esc(d.reason||"（理由未入力）")}　<span class="mono">${Object.entries(d.mapping).map(([l,n])=>esc(l+"="+n)).join(" / ")}</span></div>`).join("")||'<p class="hint">まだありません</p>';
 }
 /* ---------- UML ---------- */
@@ -434,7 +684,7 @@ async function copyText(t){ try{await navigator.clipboard.writeText(t);toast("�
 
 function renderUmlInfo(u){
   $("#umlInfo").textContent = u.model
-    ? `設計モデル：${u.model.createdAt.slice(0,16).replace("T"," ")} 作成`
+    ? `設計モデル：${u.model.createdAt.slice(0,16).replace("T"," ")} 作成${u.model.provider?`（${u.model.provider}）`:""}`
     : "設計モデルはまだありません（ユースケース図と、要件順のアクティビティ図のみ）";
 }
 async function loadUml(){
@@ -463,15 +713,42 @@ async function drawUml(diagrams){
 }
 $("#umlGen").onclick=async()=>{
   if(!S.project) return;
-  const b=$("#umlGen"); b.disabled=true; $("#umlMsg").innerHTML='<p class="hint">AIが設計モデルを作成しています…（最大90秒）</p>';
+  const b=$("#umlGen"); b.disabled=true; S.umlCompare=null;
+  $("#umlMsg").innerHTML='<p class="hint">AIが設計モデルを作成しています…</p><div id="umlProg"></div>';
   try{
-    const r=await api(`/api/projects/${S.project.id}/uml/generate`,{method:"POST"});
+    const r=await runJob(`/api/projects/${S.project.id}/uml/generate`, {}, p=>{const el=$("#umlProg"); if(el) el.innerHTML=stepsHtml(p)});
+    if(r.mode==="compare"){ S.umlCompare=r; renderUmlCompare(); return; }
     umlCache={diagrams:r.diagrams, model:r.model}; renderUmlInfo(umlCache);
-    $("#umlMsg").innerHTML=`<div class="note" style="background:var(--accent-soft)">${esc(r.model.provider)} が作成しました。${r.dropped?`整合しない参照 ${r.dropped}件は取り除きました。`:""}${r.failures.length?`（失敗：${r.failures.map(f=>esc(f.reason)).join("、")}）`:""}</div>`;
+    $("#umlMsg").innerHTML=`<div class="note" style="background:var(--accent-soft)">${esc(r.model.provider)} が作成しました。${r.dropped?`整合しない参照 ${r.dropped}件は取り除きました。`:""}</div>`+(r.warnings||[]).map(w=>`<div class="note warn">${esc(w)}</div>`).join("");
     await drawUml(r.diagrams);
   }catch(e){ $("#umlMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   finally{ b.disabled=false }
 };
+const UML_CRIT=[["traceability","要件との対応"],["consistency","整合性"],["granularity","粒度"],["clarity","分かりやすさ"]];
+async function renderUmlCompare(show){
+  const r=S.umlCompare, ev=r.evaluation, cur=show || ev?.recommendedLabel || r.candidates[0].label;
+  const c=r.candidates.find(x=>x.label===cur) || r.candidates[0];
+  $("#umlMsg").innerHTML=`<div style="margin-top:12px"><h3>設計モデルの比較（作成したAIは採用後に表示）</h3>
+    ${(r.warnings||[]).map(w=>`<div class="note warn">${esc(w)}</div>`).join("")}
+    ${ev?`<div class="scroll"><table class="t"><thead><tr><th>評価基準（評価：${esc(ev.evaluator||"")}）</th>${r.candidates.map(x=>`<th>案${x.label}</th>`).join("")}</tr></thead><tbody>
+      ${UML_CRIT.map(([k,n])=>`<tr><td>${n}</td>${r.candidates.map(x=>`<td class="mono">${ev.scores[x.label]?.[k]??"―"}</td>`).join("")}</tr>`).join("")}
+      <tr><td><b>総合</b></td>${r.candidates.map(x=>`<td class="mono"><b>${ev.totals[x.label]??"―"}</b></td>`).join("")}</tr>
+      <tr><td>規模</td>${r.candidates.map(x=>`<td class="cmt">クラス${x.stats.classes}・シーケンス${x.stats.sequences}・状態${x.stats.stateMachines}・アクティビティ${x.stats.activities}</td>`).join("")}</tr></tbody></table></div>
+      <div class="verdict"><b>評価AIの所見：</b>${esc(ev.recommendation)}</div>`:""}
+    <div class="row" style="margin-top:12px;align-items:center"><span class="hint">表示中：</span>${r.candidates.map(x=>`<button class="btn sm ${x.label===c.label?"":"ghost"}" data-ushow="${x.label}">案${x.label}${ev?.recommendedLabel===x.label?"（推奨）":""}</button>`).join("")}</div>
+    <div class="row" style="margin-top:10px"><label class="f" style="flex:1">採用理由（任意）<input id="uReason"></label><button class="btn" id="uAdopt">案${c.label}を採用する</button></div>
+    <div id="uMsg"></div></div>`;
+  document.querySelectorAll("[data-ushow]").forEach(b=>b.onclick=()=>renderUmlCompare(b.dataset.ushow));
+  $("#uAdopt").onclick=async()=>{
+    try{
+      const a=await api(`/api/uml-rounds/${r.umlRoundId}/adopt`,{method:"POST",body:{label:c.label,reason:$("#uReason").value}});
+      S.umlCompare=null; umlCache={diagrams:a.diagrams, model:a.model}; renderUmlInfo(umlCache);
+      $("#umlMsg").innerHTML=`<div class="note" style="background:var(--accent-soft)">案${c.label}（${esc(a.model.provider)}）を採用しました。対応：${Object.entries(a.mapping).map(([l,n])=>esc(l+"="+n)).join(" / ")}</div>`;
+      await drawUml(a.diagrams);
+    }catch(e){ $("#uMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+  await drawUml(c.diagrams);
+}
 
 /* ---------- 仕様書 ---------- */
 async function loadSpec(){
@@ -504,15 +781,17 @@ document.querySelectorAll("[data-fmt]").forEach(b=>b.onclick=async()=>{
 
 /* ---------- 起動 ---------- */
 async function reload(){
+  if(isOidc() && !S.token){ signedOut(); return; }
   await loadProviders();
   const pid=store.get("projectId");
   if(pid && (!S.project || S.project.id!==pid)) { try{ S.project=await api(`/api/projects/${pid}`) }catch(e){ S.project=null } }
-  renderHear();
+  renderHear(); loadGuide();
   if($("#v-admin").classList.contains("on")) renderAdmin();
 }
 (async()=>{
   try{ S.meta=await (await fetch("/api/meta")).json() }
   catch(e){ $("#hear").innerHTML='<div class="panel note err">APIに接続できません。サーバーが起動しているか確認してください。</div>'; return }
+  if(isOidc()){ await handleCallback(); if(S.token) applyClaims(); }
   renderConn(); await reload();
 })();
 </script>

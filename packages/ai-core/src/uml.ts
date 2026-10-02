@@ -406,6 +406,27 @@ export interface UmlGenerationResult {
   failures: Array<{ providerId: string; reason: string }>;
 }
 
+async function generateOneModel(p: AIProvider, prompt: string, timeoutMs: number) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await p.complete({
+      system: UML_SYSTEM,
+      messages: [{ role: "user", content: prompt }],
+      json: true,
+      maxTokens: 8000,
+      signal: ctrl.signal,
+    });
+    const { model, dropped } = normalizeUmlModel(UmlModel.parse(extractJson(res.text)));
+    if (!model.classes.length && !model.sequences.length && !model.stateMachines.length && !model.activities.length) {
+      throw new Error("設計モデルが空です");
+    }
+    return { model, dropped, usage: res.usage };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 指定順にAIを試し、最初に検証を通ったモデルを返す */
 export async function generateUmlModel(
   providers: AIProvider[],
@@ -417,28 +438,185 @@ export async function generateUmlModel(
   const failures: Array<{ providerId: string; reason: string }> = [];
   const prompt = buildUmlPrompt(projectName, purpose, reqs);
   for (const p of providers) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await p.complete({
-        system: UML_SYSTEM,
-        messages: [{ role: "user", content: prompt }],
-        json: true,
-        maxTokens: 8000,
-        signal: ctrl.signal,
-      });
-      const { model, dropped } = normalizeUmlModel(UmlModel.parse(extractJson(res.text)));
-      if (!model.classes.length && !model.sequences.length && !model.stateMachines.length && !model.activities.length) {
-        throw new Error("設計モデルが空です");
-      }
-      return { model, providerId: p.id, usage: res.usage, dropped, failures };
+      const r = await generateOneModel(p, prompt, timeoutMs);
+      return { ...r, providerId: p.id, failures };
     } catch (e) {
       failures.push({ providerId: p.id, reason: (e as Error).message });
-    } finally {
-      clearTimeout(timer);
     }
   }
   const err = new Error("UMLモデルを生成できませんでした") as Error & { failures: typeof failures };
   err.failures = failures;
   throw err;
+}
+
+/* ------------------------------------------------------------------ */
+/* 複数AIで設計モデルを作り、評価AIが匿名で比較する                     */
+/* ------------------------------------------------------------------ */
+
+export const UML_CRITERIA = { traceability: "要件との対応", consistency: "整合性", granularity: "粒度の適切さ", clarity: "分かりやすさ" } as const;
+export type UmlCriterion = keyof typeof UML_CRITERIA;
+
+const umlScore = z.number().min(0).max(100);
+export const UmlEvaluationContent = z.object({
+  scores: z.record(
+    z.string(),
+    z.object({ traceability: umlScore, consistency: umlScore, granularity: umlScore, clarity: umlScore }),
+  ),
+  comments: z
+    .record(z.string(), z.object({ strengths: z.array(z.string()).default([]), weaknesses: z.array(z.string()).default([]) }))
+    .default({}),
+  recommendedLabel: z.string(),
+  recommendation: z.string(),
+});
+export type UmlEvaluationContent = z.infer<typeof UmlEvaluationContent>;
+
+export const UML_EVAL_SYSTEM = `あなたは設計レビュアーです。同じ要件から作られた複数のUML設計モデルを、作成者を知らされずに比較評価します。
+評価基準（各0〜100点）:
+- traceability（要件との対応）: 確定済みの要件が設計に反映されているか。要件にないものを作り込んでいないか
+- consistency（整合性）: クラス・シーケンス・状態・アクティビティの間で名前や流れが矛盾していないか
+- granularity（粒度の適切さ）: 概要設計として細かすぎず粗すぎないか
+- clarity（分かりやすさ）: 専門家でない利用者が図を読んで理解できるか
+出力は次の形のJSONのみ。説明文やコードフェンスは付けない:
+{ "scores": { "A": { "traceability": 0, "consistency": 0, "granularity": 0, "clarity": 0 } }, "comments": { "A": { "strengths": ["..."], "weaknesses": ["..."] } }, "recommendedLabel": "A", "recommendation": "利用者向けに、どれを選ぶとよいかを2〜3文で" }`;
+
+/** 評価AIに渡すための、設計モデルの文章による要約 */
+export function summarizeUmlModel(m: UmlModel): string {
+  const out: string[] = [];
+  const cl = (c: UmlModel["classes"][number]) => c.label ?? c.name;
+  if (m.classes.length) {
+    out.push("クラス:");
+    for (const c of m.classes) out.push(`- ${cl(c)}（${c.attributes.map((a) => a.name).join("、") || "属性なし"}）${c.operations.length ? ` 操作: ${c.operations.join("、")}` : ""}`);
+    for (const r of m.relations) {
+      const f = m.classes.find((c) => c.name === r.from);
+      const t = m.classes.find((c) => c.name === r.to);
+      out.push(`- 関連: ${f ? cl(f) : r.from} → ${t ? cl(t) : r.to}（${r.kind}${r.label ? `、${r.label}` : ""}）`);
+    }
+  }
+  for (const sq of m.sequences) {
+    const lab = new Map(sq.participants.map((p) => [p.id, p.label]));
+    out.push(`シーケンス「${sq.title}」: ${sq.messages.map((x) => `${lab.get(x.from)}→${lab.get(x.to)}:${x.text}`).join(" / ")}`);
+  }
+  for (const sm of m.stateMachines) {
+    out.push(`状態遷移「${sm.entity}」: ${sm.transitions.map((t) => `${t.from}→${t.to}${t.event ? `(${t.event})` : ""}`).join(" / ")}`);
+  }
+  for (const a of m.activities) {
+    const lab = new Map(a.steps.map((x) => [x.id, x.label]));
+    out.push(`アクティビティ「${a.title}」: ${a.edges.map((e) => `${lab.get(e.from)}→${lab.get(e.to)}`).join(" / ")}`);
+  }
+  return out.join("\n");
+}
+
+export interface UmlCandidate {
+  label: string;
+  providerId: string;
+  model: UmlModel;
+  dropped: number;
+  usage: Usage;
+}
+
+export interface UmlComparison {
+  candidates: UmlCandidate[];
+  failures: Array<{ providerId: string; reason: string }>;
+  evaluation:
+    | (UmlEvaluationContent & { evaluatorId: string; totals: Record<string, number>; usage: Usage })
+    | null;
+  warnings: string[];
+}
+
+export type UmlProgressEvent = { type: "generator" | "evaluator"; providerId: string; status: "running" | "done" | "failed"; reason?: string };
+
+/** 複数のAIで並列に設計モデルを作り、評価AIが匿名（案A/B…、順序はランダム）で採点する */
+export async function compareUmlModels(
+  generators: AIProvider[],
+  evaluator: AIProvider | undefined,
+  projectName: string,
+  purpose: string,
+  reqs: UmlRequirement[],
+  opts: { timeoutMs?: number; random?: () => number; onProgress?: (e: UmlProgressEvent) => void } = {},
+): Promise<UmlComparison> {
+  const timeoutMs = opts.timeoutMs ?? 90_000;
+  const random = opts.random ?? Math.random;
+  const emit = (e: UmlProgressEvent) => {
+    try {
+      opts.onProgress?.(e);
+    } catch {
+      /* 通知の失敗で処理を止めない */
+    }
+  };
+  const prompt = buildUmlPrompt(projectName, purpose, reqs);
+  const warnings: string[] = [];
+  if (evaluator && generators.some((g) => g.id === evaluator.id)) {
+    warnings.push("評価AIが生成AIにも含まれています。自分の案を高く評価する偏りが出る可能性があります。");
+  }
+  const settled = await Promise.all(
+    generators.map(async (p) => {
+      emit({ type: "generator", providerId: p.id, status: "running" });
+      try {
+        const r = await generateOneModel(p, prompt, timeoutMs);
+        emit({ type: "generator", providerId: p.id, status: "done" });
+        return { ok: true as const, providerId: p.id, ...r };
+      } catch (e) {
+        emit({ type: "generator", providerId: p.id, status: "failed", reason: (e as Error).message });
+        return { ok: false as const, providerId: p.id, reason: (e as Error).message };
+      }
+    }),
+  );
+  const failures = settled.flatMap((s) => (s.ok ? [] : [{ providerId: s.providerId, reason: s.reason }]));
+  const ok = settled.flatMap((s) => (s.ok ? [s] : []));
+  if (!ok.length) {
+    const err = new Error("UMLモデルを生成できませんでした") as Error & { failures: typeof failures };
+    err.failures = failures;
+    throw err;
+  }
+  if (failures.length) warnings.push(`${failures.length}件のAIで生成に失敗しました。取得できた案で続行します。`);
+
+  // 匿名化: 並び順をランダムにして案A, B…を振る
+  const order = [...ok];
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [order[i], order[j]] = [order[j]!, order[i]!];
+  }
+  const candidates: UmlCandidate[] = order.map((s, i) => ({
+    label: "ABCDEF"[i]!,
+    providerId: s.providerId,
+    model: s.model,
+    dropped: s.dropped,
+    usage: s.usage,
+  }));
+
+  let evaluation: UmlComparison["evaluation"] = null;
+  if (evaluator && candidates.length >= 2) {
+    emit({ type: "evaluator", providerId: evaluator.id, status: "running" });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const body = `${prompt}
+
+# 評価対象の設計モデル（提示順はランダム）
+${candidates.map((c) => `### 案${c.label}\n${summarizeUmlModel(c.model)}`).join("\n\n")}
+
+全ての案（${candidates.map((c) => c.label).join(", ")}）を評価してください。`;
+      const res = await evaluator.complete({ system: UML_EVAL_SYSTEM, messages: [{ role: "user", content: body }], json: true, signal: ctrl.signal });
+      const ev = UmlEvaluationContent.parse(extractJson(res.text));
+      const totals: Record<string, number> = {};
+      for (const c of candidates) {
+        const sc = ev.scores[c.label];
+        if (!sc) {
+          warnings.push(`評価AIが案${c.label}を採点しませんでした。`);
+          continue;
+        }
+        // 4基準の平均（合計点はAIの申告ではなくここで計算する）
+        totals[c.label] = Math.round((sc.traceability + sc.consistency + sc.granularity + sc.clarity) / 4);
+      }
+      evaluation = { ...ev, evaluatorId: evaluator.id, totals, usage: res.usage };
+      emit({ type: "evaluator", providerId: evaluator.id, status: "done" });
+    } catch (e) {
+      emit({ type: "evaluator", providerId: evaluator.id, status: "failed", reason: (e as Error).message });
+      warnings.push(`評価に失敗しました（${(e as Error).message}）。案は比較せずに表示します。`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { candidates, failures, evaluation, warnings };
 }

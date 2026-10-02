@@ -42,6 +42,18 @@ export function defaultMockHandler(id: string): MockHandler {
     const answer = prompt.split("# 利用者の回答")[1]?.split("\n").find((l) => l.trim())?.trim() ?? "回答";
 
     if (req.system.includes("ソフトウェア設計者")) return JSON.stringify(MOCK_UML);
+    if (req.system.includes("設計レビュアー")) {
+      const labels = [...prompt.matchAll(/### 案([A-F])/g)].map((m) => m[1]!);
+      return JSON.stringify({
+        scores: Object.fromEntries(
+          labels.map((l, i) => [l, { traceability: 80 - i * 5, consistency: 78, granularity: 75, clarity: 82 - i * 3 }]),
+        ),
+        comments: Object.fromEntries(labels.map((l) => [l, { strengths: ["主要な概念を押さえている"], weaknesses: ["例外の流れが少ない"] }])),
+        recommendedLabel: labels[0] ?? "A",
+        recommendation: `案${labels[0] ?? "A"}が要件との対応で優れています。`,
+      });
+    }
+    if (req.system.includes("インタビュアー")) return mockGuide(prompt);
 
     if (req.system.includes("レビュアー")) {
       const labels = [...prompt.matchAll(/### 案([A-D])/g)].map((m) => m[1]!);
@@ -158,3 +170,20 @@ const MOCK_UML = {
     },
   ],
 };
+
+/** 確定した要件の件数ぶん、観点を前から順に「埋まった」とみなす */
+function mockGuide(prompt: string): string {
+  const section = (name: string) =>
+    (prompt.split(`# ${name}`)[1] ?? "").split("\n# ")[0]!.split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());
+  const checklist = section("確認すべき観点");
+  const done = section("このフェーズで確定した要件").length;
+  const covered = checklist.slice(0, Math.min(done, checklist.length));
+  const next = checklist[covered.length];
+  return JSON.stringify({
+    question: next ? `「${next}」について、今の状況を教えてください。` : "ほかに補足したいことはありますか？",
+    hint: "思いつく範囲で大丈夫です。",
+    options: ["今は紙で管理している", "担当者によってやり方が違う", "応答時間を3秒以内にしたい"],
+    glossary: [{ term: "担当者", explanation: "その業務を受け持つ人。" }],
+    coveredPoints: covered,
+  });
+}

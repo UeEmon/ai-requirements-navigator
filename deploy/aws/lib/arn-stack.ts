@@ -22,6 +22,10 @@ import type { Construct } from "constructs";
 
 export interface ArnStackProps extends StackProps {
   certificateArn?: string;
+  /** 独自ドメイン（例: req.example.com）。DNSのCNAMEはALBのDNS名に向ける */
+  domainName?: string;
+  /** Cognito のログイン画面のドメイン接頭辞（全世界で一意）。省略時は arn-<アカウントID> */
+  cognitoDomainPrefix?: string;
   dbInstanceClass: string;
   desiredCount: number;
 }
@@ -85,10 +89,9 @@ export class ArnStack extends Stack {
     for (const g of ["admin", "editor", "reviewer", "viewer"]) {
       new cognito.CfnUserPoolGroup(this, `Group-${g}`, { userPoolId: userPool.userPoolId, groupName: g });
     }
-    const client = userPool.addClient("WebClient", {
-      authFlows: { userSrp: true },
-      oAuth: { flows: { authorizationCodeGrant: true }, scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL] },
-      readAttributes: new cognito.ClientAttributes().withCustomAttributes("org_id").withStandardAttributes({ email: true }),
+    // ログイン画面（Cognito のホストされたUI）
+    const loginDomain = userPool.addDomain("Login", {
+      cognitoDomain: { domainPrefix: props.cognitoDomainPrefix ?? `arn-${this.account}` },
     });
 
     // 最初の組織を作るためのトークン
@@ -131,7 +134,6 @@ export class ArnStack extends Stack {
           AWS_REGION: this.region,
           AUTH_MODE: "oidc",
           OIDC_ISSUER: `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`,
-          OIDC_AUDIENCE: client.userPoolClientId,
           OIDC_ORG_CLAIM: "custom:org_id",
           OIDC_ROLE_CLAIM: "cognito:groups",
           ALLOW_MOCK_PROVIDER: "false",
@@ -151,7 +153,36 @@ export class ArnStack extends Stack {
     key.grantEncryptDecrypt(service.taskDefinition.taskRole);
     bucket.grantReadWrite(service.taskDefinition.taskRole);
 
-    new CfnOutput(this, "Url", { value: `${certificate ? "https" : "http"}://${service.loadBalancer.loadBalancerDnsName}` });
+    // 画面のURL（ログイン後の戻り先）。Cognito は https 以外の戻り先を受け付けないため、ログインには証明書が必要
+    const baseUrl = props.domainName
+      ? `https://${props.domainName}`
+      : `${certificate ? "https" : "http"}://${service.loadBalancer.loadBalancerDnsName}`;
+    const client = userPool.addClient("WebClient", {
+      authFlows: { userSrp: true },
+      generateSecret: false, // 公開クライアント（認可コード＋PKCE）
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
+        callbackUrls: certificate ? [`${baseUrl}/`] : ["https://localhost/"],
+        logoutUrls: certificate ? [`${baseUrl}/`] : ["https://localhost/"],
+      },
+      readAttributes: new cognito.ClientAttributes().withCustomAttributes("org_id").withStandardAttributes({ email: true }),
+      idTokenValidity: Duration.hours(1),
+      refreshTokenValidity: Duration.days(1),
+    });
+    const container = service.taskDefinition.defaultContainer!;
+    container.addEnvironment("OIDC_AUDIENCE", client.userPoolClientId);
+    container.addEnvironment("OIDC_CLIENT_ID", client.userPoolClientId);
+    container.addEnvironment("OIDC_SCOPES", "openid email profile");
+    container.addEnvironment("OIDC_LOGOUT_URL", `${loginDomain.baseUrl()}/logout`);
+    if (!certificate) {
+      new CfnOutput(this, "LoginNotice", {
+        value: "ログイン画面を使うには HTTPS が必要です。-c certificateArn=... （必要なら -c domainName=...）を指定して再デプロイしてください",
+      });
+    }
+
+    new CfnOutput(this, "Url", { value: baseUrl });
+    new CfnOutput(this, "LoginDomain", { value: loginDomain.baseUrl() });
     new CfnOutput(this, "UserPoolId", { value: userPool.userPoolId });
     new CfnOutput(this, "UserPoolClientId", { value: client.userPoolClientId });
     new CfnOutput(this, "BootstrapTokenSecret", { value: bootstrap.secretName });

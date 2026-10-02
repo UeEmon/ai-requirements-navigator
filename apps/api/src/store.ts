@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CandidateContent, RequirementItem, RequirementType, ScoredEvaluation, UmlModel, Usage, Vendor } from "@arn/ai-core";
+import type { CandidateContent, Guide, RequirementItem, RequirementType, ScoredEvaluation, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
 export interface Org {
   id: string;
@@ -81,8 +81,70 @@ export interface Requirement {
   description: string;
   priority: RequirementItem["priority"];
   roundId: string | null;
+  /** どのフェーズのヒアリングで確定したか */
+  phaseKey: string | null;
   source: string;
   version: number;
+  createdAt: string;
+  updatedAt: string | null;
+  deletedAt: string | null;
+}
+
+export interface RequirementVersion {
+  requirementId: string;
+  version: number;
+  title: string;
+  description: string;
+  priority: string;
+  changedBy: string;
+  changeReason: string;
+  createdAt: string;
+}
+
+export type RequirementPatch = Partial<Pick<Requirement, "title" | "description" | "priority">>;
+
+export interface AuditEntry {
+  id: string;
+  orgId: string;
+  actor: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  detail: Record<string, unknown>;
+  at: string;
+}
+
+export type JobKind = "round" | "uml";
+export type JobStatus = "queued" | "running" | "done" | "failed";
+export interface JobProgress {
+  steps?: Array<{ key: string; label: string; status: "waiting" | "running" | "done" | "failed"; reason?: string }>;
+  message?: string;
+}
+export interface Job {
+  id: string;
+  orgId: string;
+  projectId: string | null;
+  kind: JobKind;
+  status: JobStatus;
+  input: Record<string, unknown>;
+  result: unknown;
+  error: string | null;
+  errorStatus: number | null;
+  progress: JobProgress;
+  createdBy: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface UmlRound {
+  id: string;
+  projectId: string;
+  candidates: Array<{ label: string; providerId: string; model: UmlModel; dropped: number }>;
+  evaluation: UmlComparison["evaluation"];
+  failures: UmlComparison["failures"];
+  warnings: string[];
+  status: "awaiting_decision" | "decided";
   createdAt: string;
 }
 
@@ -134,9 +196,37 @@ export interface Store {
   /** コード（FR-01 など）は区分ごとの連番で採番する */
   addRequirements(
     projectId: string,
-    items: Array<RequirementItem & { roundId: string | null; source: string }>,
+    items: Array<RequirementItem & { roundId: string | null; source: string; phaseKey?: string | null }>,
   ): Promise<Requirement[]>;
+  /** 削除済みを含まない */
   listRequirements(projectId: string): Promise<Requirement[]>;
+  getRequirement(id: string): Promise<Requirement | null>;
+  /** 変更前の内容を版として残し、version を1つ上げる */
+  updateRequirement(id: string, patch: RequirementPatch, actor: string, reason: string): Promise<Requirement | null>;
+  /** 論理削除。番号は再利用しない */
+  deleteRequirement(id: string): Promise<boolean>;
+  listRequirementVersions(id: string): Promise<RequirementVersion[]>;
+
+  saveGuide(projectId: string, guide: Guide): Promise<void>;
+  /** フェーズごとの最新ガイド */
+  latestGuides(projectId: string): Promise<Guide[]>;
+
+  addAudit(e: Omit<AuditEntry, "id" | "at">): Promise<void>;
+  listAudit(orgId: string, q: { limit: number; before?: string; action?: string }): Promise<AuditEntry[]>;
+  purgeAudit(before: Date): Promise<number>;
+
+  createJob(j: Pick<Job, "orgId" | "projectId" | "kind" | "input" | "createdBy">): Promise<Job>;
+  /** 待ち行列の先頭を1件取り出して実行中にする（同時に複数が取らない） */
+  claimJob(): Promise<Job | null>;
+  updateJobProgress(id: string, progress: JobProgress): Promise<void>;
+  finishJob(id: string, r: { status: "done" | "failed"; result?: unknown; error?: string; errorStatus?: number }): Promise<void>;
+  getJob(id: string): Promise<Job | null>;
+  /** 一定時間以上「実行中」のまま止まったジョブを失敗にする */
+  failStaleJobs(startedBefore: Date): Promise<number>;
+
+  saveUmlRound(r: Omit<UmlRound, "id" | "createdAt" | "status">): Promise<UmlRound>;
+  getUmlRound(id: string): Promise<UmlRound | null>;
+  markUmlRoundDecided(id: string): Promise<void>;
 
   addDecision(d: Omit<Decision, "id" | "createdAt">): Promise<Decision>;
   listDecisions(projectId: string): Promise<Decision[]>;
@@ -165,6 +255,12 @@ export class MemoryStore implements Store {
   private decisions: Decision[] = [];
   private usage: UsageRecord[] = [];
   private umls: UmlModelRecord[] = [];
+  private versions: RequirementVersion[] = [];
+  private guides: Array<{ projectId: string; guide: Guide; at: string }> = [];
+  private audits: AuditEntry[] = [];
+  private jobs = new Map<string, Job>();
+  private umlRounds = new Map<string, UmlRound>();
+  private seq = 0;
 
   async createOrg(name: string) {
     const o: Org = { id: randomUUID(), name, monthlyTokenLimit: null, createdAt: now() };
@@ -224,7 +320,7 @@ export class MemoryStore implements Store {
     const r = this.rounds.get(id);
     if (r) r.status = "decided";
   }
-  async addRequirements(projectId: string, items: Array<RequirementItem & { roundId: string | null; source: string }>) {
+  async addRequirements(projectId: string, items: Array<RequirementItem & { roundId: string | null; source: string; phaseKey?: string | null }>) {
     const out: Requirement[] = [];
     for (const it of items) {
       const n = this.reqs.filter((r) => r.projectId === projectId && r.type === it.type).length + 1;
@@ -237,9 +333,12 @@ export class MemoryStore implements Store {
         description: it.description,
         priority: it.priority,
         roundId: it.roundId,
+        phaseKey: it.phaseKey ?? null,
         source: it.source,
         version: 1,
         createdAt: now(),
+        updatedAt: null,
+        deletedAt: null,
       };
       this.reqs.push(r);
       out.push(r);
@@ -247,7 +346,117 @@ export class MemoryStore implements Store {
     return out;
   }
   async listRequirements(projectId: string) {
-    return this.reqs.filter((r) => r.projectId === projectId);
+    return this.reqs.filter((r) => r.projectId === projectId && !r.deletedAt);
+  }
+  async getRequirement(id: string) {
+    return this.reqs.find((r) => r.id === id) ?? null;
+  }
+  async updateRequirement(id: string, patch: RequirementPatch, actor: string, reason: string) {
+    const r = this.reqs.find((x) => x.id === id && !x.deletedAt);
+    if (!r) return null;
+    this.versions.push({
+      requirementId: r.id,
+      version: r.version,
+      title: r.title,
+      description: r.description,
+      priority: r.priority,
+      changedBy: actor,
+      changeReason: reason,
+      createdAt: now(),
+    });
+    Object.assign(r, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)));
+    r.version += 1;
+    r.updatedAt = now();
+    return r;
+  }
+  async deleteRequirement(id: string) {
+    const r = this.reqs.find((x) => x.id === id && !x.deletedAt);
+    if (!r) return false;
+    r.deletedAt = now();
+    return true;
+  }
+  async listRequirementVersions(id: string) {
+    return this.versions.filter((v) => v.requirementId === id).sort((a, b) => b.version - a.version);
+  }
+  async saveGuide(projectId: string, guide: Guide) {
+    this.guides.push({ projectId, guide, at: now() });
+  }
+  async latestGuides(projectId: string) {
+    const m = new Map<string, Guide>();
+    for (const g of this.guides.filter((x) => x.projectId === projectId)) m.set(g.guide.phaseKey, g.guide);
+    return [...m.values()];
+  }
+  async addAudit(e: Omit<AuditEntry, "id" | "at">) {
+    this.audits.push({ ...e, id: String(++this.seq), at: now() });
+  }
+  async listAudit(orgId: string, q: { limit: number; before?: string; action?: string }) {
+    return this.audits
+      .filter((a) => a.orgId === orgId && (!q.before || Number(a.id) < Number(q.before)) && (!q.action || a.action.startsWith(q.action)))
+      .sort((a, b) => Number(b.id) - Number(a.id))
+      .slice(0, q.limit);
+  }
+  async purgeAudit(before: Date) {
+    const n = this.audits.length;
+    this.audits = this.audits.filter((a) => a.at >= before.toISOString());
+    return n - this.audits.length;
+  }
+  async createJob(j: Pick<Job, "orgId" | "projectId" | "kind" | "input" | "createdBy">) {
+    const job: Job = {
+      ...j,
+      id: randomUUID(),
+      status: "queued",
+      result: null,
+      error: null,
+      errorStatus: null,
+      progress: {},
+      createdAt: now(),
+      startedAt: null,
+      finishedAt: null,
+    };
+    this.jobs.set(job.id, job);
+    return { ...job };
+  }
+  async claimJob() {
+    const next = [...this.jobs.values()].filter((j) => j.status === "queued").sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+    if (!next) return null;
+    next.status = "running";
+    next.startedAt = now();
+    return { ...next };
+  }
+  async updateJobProgress(id: string, progress: JobProgress) {
+    const j = this.jobs.get(id);
+    if (j) j.progress = progress;
+  }
+  async finishJob(id: string, r: { status: "done" | "failed"; result?: unknown; error?: string; errorStatus?: number }) {
+    const j = this.jobs.get(id);
+    if (!j) return;
+    Object.assign(j, { status: r.status, result: r.result ?? null, error: r.error ?? null, errorStatus: r.errorStatus ?? null, finishedAt: now() });
+  }
+  async getJob(id: string) {
+    const j = this.jobs.get(id);
+    return j ? { ...j } : null;
+  }
+  async failStaleJobs(startedBefore: Date) {
+    let n = 0;
+    for (const j of this.jobs.values()) {
+      if (j.status === "running" && j.startedAt && j.startedAt < startedBefore.toISOString()) {
+        Object.assign(j, { status: "failed", error: "処理が時間内に終わりませんでした", errorStatus: 504, finishedAt: now() });
+        n++;
+      }
+    }
+    return n;
+  }
+  async saveUmlRound(r: Omit<UmlRound, "id" | "createdAt" | "status">) {
+    const x: UmlRound = { ...r, id: randomUUID(), status: "awaiting_decision", createdAt: now() };
+    this.umlRounds.set(x.id, x);
+    return x;
+  }
+  async getUmlRound(id: string) {
+    return this.umlRounds.get(id) ?? null;
+  }
+  async markUmlRoundDecided(id: string) {
+    const r = this.umlRounds.get(id);
+    if (r) r.status = "decided";
   }
   async addDecision(d: Omit<Decision, "id" | "createdAt">) {
     const x = { ...d, id: randomUUID(), createdAt: now() };

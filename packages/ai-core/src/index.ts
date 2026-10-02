@@ -7,3 +7,5 @@ export * from "./providers/index.js";
 export { extractJson } from "./json.js";
 export { detectAmbiguity, type AmbiguityHit } from "./ambiguity.js";
 export * from "./uml.js";
+export * from "./glossary.js";
+export * from "./guide.js";

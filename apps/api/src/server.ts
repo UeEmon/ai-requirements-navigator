@@ -2,7 +2,8 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { resolve } from "node:path";
 import { createApp } from "./app.js";
-import { devAuthenticator, oidcAuthenticator } from "./auth.js";
+import { scheduleAuditPurge } from "./audit.js";
+import { devAuthenticator, discoveryUrlOf, OidcClient, OidcDiscoveryCache, oidcAuthenticator, type Authenticator } from "./auth.js";
 import { KmsKeyEncryptor, LocalKeyEncryptor, type KeyEncryptor } from "./crypto.js";
 import { migrate } from "./migrate.js";
 import { PgStore } from "./pg-store.js";
@@ -56,14 +57,32 @@ async function main() {
 
   const devAuth = (env.AUTH_MODE ?? "dev") === "dev";
   if (devAuth && isProd) throw new Error("本番環境では AUTH_MODE=oidc を使ってください");
-  const authenticate = devAuth
-    ? devAuthenticator
-    : oidcAuthenticator({
-        issuer: required("OIDC_ISSUER"),
-        audience: env.OIDC_AUDIENCE || undefined,
-        orgClaim: env.OIDC_ORG_CLAIM ?? "custom:org_id",
-        roleClaim: env.OIDC_ROLE_CLAIM ?? "cognito:groups",
-      });
+  let authenticate: Authenticator = devAuthenticator;
+  let oidc: Parameters<typeof createApp>[0]["oidc"];
+  if (!devAuth) {
+    const opts = {
+      issuer: required("OIDC_ISSUER"),
+      discoveryUrl: env.OIDC_DISCOVERY_URL || undefined,
+      audience: env.OIDC_AUDIENCE || env.OIDC_CLIENT_ID || undefined,
+      orgClaim: env.OIDC_ORG_CLAIM ?? "custom:org_id",
+      roleClaim: env.OIDC_ROLE_CLAIM ?? "cognito:groups",
+    };
+    const discovery = new OidcDiscoveryCache(discoveryUrlOf(opts));
+    authenticate = oidcAuthenticator(opts, discovery);
+    // ログイン画面（OIDC_CLIENT_ID を設定したとき）
+    if (env.OIDC_CLIENT_ID) {
+      oidc = {
+        client: new OidcClient(discovery, {
+          clientId: env.OIDC_CLIENT_ID,
+          clientSecret: env.OIDC_CLIENT_SECRET || undefined,
+          scope: env.OIDC_SCOPES || "openid email profile",
+          logoutUrl: env.OIDC_LOGOUT_URL || undefined,
+        }),
+        orgClaim: opts.orgClaim,
+        roleClaim: opts.roleClaim,
+      };
+    }
+  }
 
   const allowMock = bool(env.ALLOW_MOCK_PROVIDER, !isProd);
   const app = createApp({
@@ -76,7 +95,10 @@ async function main() {
     bootstrapToken: env.BOOTSTRAP_TOKEN || undefined,
     timeoutMs: Number(env.AI_TIMEOUT_MS ?? 90_000),
     usageTimezone: env.USAGE_TIMEZONE || "Asia/Tokyo",
+    oidc,
+    jobs: { concurrency: Number(env.JOB_CONCURRENCY ?? 4), staleMs: Number(env.AI_TIMEOUT_MS ?? 90_000) * 5 },
   });
+  scheduleAuditPurge(store, Number(env.AUDIT_RETENTION_DAYS ?? 365));
 
   // 画面（apps/web/public）を同じコンテナから配信する
   const webRoot = env.WEB_DIR ?? "../web/public";

@@ -66,7 +66,16 @@ jobs:
           R=$(curl -fs -X POST localhost:8787/api/projects/$PJ/rounds "${H[@]}" -d '{"answer":"電話予約を減らしたい"}' | jq -r .id)
           curl -fs -X POST localhost:8787/api/rounds/$R/decision "${H[@]}" -d '{"pick":"merged"}' | jq .nextPhase
           curl -fs localhost:8787/api/projects/$PJ/spec.md "${H[@]}" | head -20
-          curl -fs -X POST localhost:8787/api/projects/$PJ/uml/generate "${H[@]}" | jq -c '[.diagrams[].kind]'
+          # 質問ガイド・非同期実行・UMLの比較と採用・要件の編集・監査ログ
+          curl -fs -X POST localhost:8787/api/projects/$PJ/guide "${H[@]}" -d '{}' | jq -c '{source, coverage, missing}'
+          JOB=$(curl -fs -X POST "localhost:8787/api/projects/$PJ/rounds?async=1" "${H[@]}" -d '{"answer":"顧客と店長が使う"}' | jq -r .jobId)
+          for i in $(seq 1 30); do S=$(curl -fs localhost:8787/api/jobs/$JOB "${H[@]}" | jq -r .status); [ "$S" = done ] && break; [ "$S" = failed ] && exit 1; sleep 1; done
+          [ "$S" = done ] && echo "::notice::非同期ジョブOK"
+          UR=$(curl -fs -X POST localhost:8787/api/projects/$PJ/uml/generate "${H[@]}" | jq -r .umlRoundId)
+          curl -fs -X POST localhost:8787/api/uml-rounds/$UR/adopt "${H[@]}" -d '{"label":"A"}' | jq -c '[.diagrams[].kind]'
+          RQ=$(curl -fs localhost:8787/api/projects/$PJ/requirements "${H[@]}" | jq -r '.[0].id')
+          curl -fs -X PATCH localhost:8787/api/requirements/$RQ "${H[@]}" -d '{"title":"編集した要件","reason":"CI"}' | jq -c '{code, version}'
+          curl -fs "localhost:8787/api/orgs/$ORG/audit?limit=5" "${H[@]}" | jq -c '[.entries[].action]'
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"docx"}' -o spec.docx && file spec.docx
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"pdf"}' -o spec.pdf && head -c 5 spec.pdf | grep -q '%PDF-'
           grep -a -q 'NotoSansCJK' spec.pdf && echo "::notice::PDFに日本語フォント(Noto Sans CJK)が埋め込まれています ($(stat -c%s spec.pdf) bytes)"
