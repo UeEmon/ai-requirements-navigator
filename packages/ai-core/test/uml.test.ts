@@ -41,6 +41,12 @@ describe("UMLモデルの生成", () => {
     expect(r.failures.map((f) => f.providerId)).toEqual(["bad"]);
   });
 
+  it("空のモデルは失敗として次のAIを試す", async () => {
+    const empty = new MockProvider("empty", () => "{}");
+    const r = await generateUmlModel([empty, new MockProvider("good")], "予約", "", reqs);
+    expect(r.failures).toEqual([{ providerId: "empty", reason: "設計モデルが空です" }]);
+  });
+
   it("すべて失敗したらエラー", async () => {
     await expect(generateUmlModel([new MockProvider("bad", () => "{}x")], "予約", "", reqs)).rejects.toThrow(
       "UMLモデルを生成できませんでした",

@@ -428,6 +428,9 @@ export async function generateUmlModel(
         signal: ctrl.signal,
       });
       const { model, dropped } = normalizeUmlModel(UmlModel.parse(extractJson(res.text)));
+      if (!model.classes.length && !model.sequences.length && !model.stateMachines.length && !model.activities.length) {
+        throw new Error("設計モデルが空です");
+      }
       return { model, providerId: p.id, usage: res.usage, dropped, failures };
     } catch (e) {
       failures.push({ providerId: p.id, reason: (e as Error).message });
