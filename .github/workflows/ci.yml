@@ -35,7 +35,14 @@ jobs:
       - name: Type check
         run: npm run typecheck
       - name: Test (unit + PostgreSQL)
-        run: npm test
+        shell: bash
+        run: |
+          set +e
+          npm test > /tmp/test.log 2>&1
+          ec=$?
+          cat /tmp/test.log
+          if [ $ec -ne 0 ]; then grep -v '^\s*$' /tmp/test.log | tail -60 | while IFS= read -r l; do echo "::error::$l"; done; fi
+          exit $ec
       - name: License check (production dependencies)
         run: npm run licenses
       - name: License check (including dev tools)
