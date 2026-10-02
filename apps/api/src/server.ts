@@ -75,6 +75,7 @@ async function main() {
     devAuth,
     bootstrapToken: env.BOOTSTRAP_TOKEN || undefined,
     timeoutMs: Number(env.AI_TIMEOUT_MS ?? 90_000),
+    usageTimezone: env.USAGE_TIMEZONE || "Asia/Tokyo",
   });
 
   // 画面（apps/web/public）を同じコンテナから配信する

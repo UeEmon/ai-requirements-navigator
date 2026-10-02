@@ -78,6 +78,10 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
 .canvas{overflow-x:auto;text-align:center}
 .canvas svg{max-width:none;height:auto}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:8px 16px;border-radius:var(--r);font-size:13px;z-index:20}
+.meter{width:120px;height:6px;background:var(--tint);border-radius:3px;overflow:hidden;flex:none}
+.meter i{display:block;height:100%;background:var(--accent)}
+.meter.warnc i{background:var(--warn)}
+.meter.over i{background:var(--bad)}
 .chk{display:flex;flex-wrap:wrap;gap:6px}
 .chk label{display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--rule);border-radius:16px;padding:3px 10px;cursor:pointer}
 .chk label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
@@ -196,11 +200,19 @@ const VENDORS = {anthropic:"Claude（Anthropic）", openai:"GPT（OpenAI）", ge
 async function loadProviders(){ S.providers = S.orgId || S.token ? await api(`/api/orgs/${S.orgId}/providers`).catch(()=>[]) : []; }
 function renderAdmin(){
   const isAdmin = S.role === "admin" || S.meta?.auth !== "dev";
+  const lim = v => v==null ? "上限なし" : Number(v).toLocaleString();
   $("#provPanel").innerHTML = `<h2>AIの登録（組織の管理者）</h2>
-    <p class="hint">APIキーは組織ごとに登録し、暗号化して保存します。表示は末尾4桁のみです。</p>
-    <div class="scroll"><table class="t"><thead><tr><th>名前</th><th>種類</th><th>モデル</th><th>キー</th><th></th></tr></thead><tbody>
-    ${S.providers.map(p=>`<tr><td>${esc(p.label)}</td><td>${esc(VENDORS[p.vendor]||p.vendor)}</td><td class="mono">${esc(p.model)}</td><td class="mono">${esc(p.apiKey||"―")}</td>
-      <td>${isAdmin?`<button class="btn sm danger" data-del="${p.id}">削除</button>`:""}</td></tr>`).join("") || `<tr><td colspan="5" class="hint">まだ登録されていません</td></tr>`}
+    <p class="hint">APIキーは組織ごとに登録し、暗号化して保存します。表示は末尾4桁のみです。月間上限（トークン）に達したAIは、その月は使われません。</p>
+    <div class="scroll"><table class="t"><thead><tr><th>名前</th><th>種類</th><th>モデル</th><th>キー</th><th>月間上限</th><th></th></tr></thead><tbody>
+    ${S.providers.map(p=>`<tr><td>${esc(p.label)}</td><td>${esc(VENDORS[p.vendor]||p.vendor)}</td><td class="mono">${esc(p.model)}</td><td class="mono">${esc(p.apiKey||"―")}</td><td class="mono">${lim(p.monthlyTokenLimit)}</td>
+      <td style="white-space:nowrap">${isAdmin?`<button class="btn sm ghost" data-edit="${p.id}">変更</button> <button class="btn sm danger" data-del="${p.id}">削除</button>`:""}</td></tr>
+      <tr id="edit-${p.id}" hidden><td colspan="6"><div class="row">
+        <label class="f">モデル名<input id="eM-${p.id}" value="${esc(p.model)}"></label>
+        <label class="f">表示名<input id="eL-${p.id}" value="${esc(p.label)}"></label>
+        ${p.vendor==="ollama"||p.vendor==="mock"?"":`<label class="f">新しいAPIキー<input id="eK-${p.id}" type="password" autocomplete="off" placeholder="空欄なら変更しない"></label>`}
+        ${p.vendor==="mock"?"":`<label class="f">接続先<input id="eE-${p.id}" value="${esc(p.endpoint||"")}" placeholder="空欄なら標準"></label>`}
+        <label class="f">月間上限（トークン）<input id="eT-${p.id}" type="number" min="1" step="1000" value="${p.monthlyTokenLimit??""}" placeholder="空欄なら上限なし"></label>
+        <button class="btn sm" data-save="${p.id}">保存</button><button class="btn sm ghost" data-cancel="${p.id}">取消</button></div><div id="eMsg-${p.id}"></div></td></tr>`).join("") || `<tr><td colspan="6" class="hint">まだ登録されていません</td></tr>`}
     </tbody></table></div>
     ${isAdmin?`<h3 style="margin-top:16px">追加</h3><div class="row">
       <label class="f">種類<select id="pV">${Object.entries(VENDORS).filter(([k])=>k!=="mock"||S.meta?.allowMock).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label>
@@ -208,8 +220,20 @@ function renderAdmin(){
       <label class="f">表示名<input id="pL" placeholder="任意"></label>
       <label class="f" id="pKw">APIキー<input id="pK" type="password" autocomplete="off"></label>
       <label class="f" id="pEw" hidden>接続先<input id="pE" placeholder="http://ollama:11434"></label>
-      <button class="btn" id="pAdd">登録</button></div><div id="pMsg"></div>`:`<p class="note warn">登録・削除は admin 権限が必要です。</p>`}`;
+      <label class="f">月間上限（トークン）<input id="pT" type="number" min="1" step="1000" placeholder="空欄なら上限なし"></label>
+      <button class="btn" id="pAdd">登録</button></div><div id="pMsg"></div>`:`<p class="note warn">登録・変更・削除は admin 権限が必要です。</p>`}`;
+  const numOrNull = v => v.trim()==="" ? null : Math.floor(Number(v));
   document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{ try{await api(`/api/orgs/${S.orgId}/providers/${b.dataset.del}`,{method:"DELETE"}); await loadProviders(); renderAdmin(); toast("削除しました")}catch(e){toast(e.message)} });
+  document.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>{ const r=$("#edit-"+b.dataset.edit); r.hidden=!r.hidden; });
+  document.querySelectorAll("[data-cancel]").forEach(b=>b.onclick=()=>{ $("#edit-"+b.dataset.cancel).hidden=true; });
+  document.querySelectorAll("[data-save]").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.save, v=k=>document.getElementById(`${k}-${id}`);
+    const body={model:v("eM").value.trim(), label:v("eL").value.trim(), monthlyTokenLimit:numOrNull(v("eT").value)};
+    if(v("eK")&&v("eK").value) body.apiKey=v("eK").value;
+    if(v("eE")) body.endpoint=v("eE").value.trim()||null;
+    try{ await api(`/api/orgs/${S.orgId}/providers/${id}`,{method:"PATCH",body}); await loadProviders(); renderAdmin(); toast("変更しました") }
+    catch(e){ v("eMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  });
   if ($("#pV")){
     const sync=()=>{ const v=$("#pV").value; $("#pKw").hidden = v==="ollama"||v==="mock"; $("#pEw").hidden = v!=="ollama"; if(v==="mock")$("#pM").value="mock"; };
     $("#pV").onchange=sync; sync();
@@ -218,6 +242,7 @@ function renderAdmin(){
       if($("#pL").value.trim()) b.label=$("#pL").value.trim();
       if(!$("#pKw").hidden && $("#pK").value) b.apiKey=$("#pK").value;
       if(!$("#pEw").hidden && $("#pE").value) b.endpoint=$("#pE").value.trim();
+      const t=numOrNull($("#pT").value); if(t) b.monthlyTokenLimit=t;
       try{ await api(`/api/orgs/${S.orgId}/providers`,{method:"POST",body:b}); await loadProviders(); renderAdmin(); toast("登録しました") }
       catch(e){ $("#pMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
     };
@@ -247,11 +272,30 @@ function renderAdmin(){
   };
   if (isAdmin) loadUsage();
 }
+function meter(used, limit){
+  if(limit==null) return `<span class="hint">上限なし</span>`;
+  const r=Math.min(1, used/limit), cls=r>=1?"over":r>=0.8?"warnc":"";
+  return `<div class="meter ${cls}"><i style="width:${(r*100).toFixed(1)}%"></i></div><span class="mono">${Math.floor(used/limit*100)}%</span>`;
+}
 async function loadUsage(){
-  try{ const u=await api(`/api/orgs/${S.orgId}/usage`); const names=Object.fromEntries(S.providers.map(p=>[p.id,p.label]));
+  try{
+    const [u, org]=await Promise.all([api(`/api/orgs/${S.orgId}/usage`), api(`/api/orgs/${S.orgId}`)]);
+    const n=v=>Number(v).toLocaleString();
     $("#usagePanel").hidden=false;
-    $("#usagePanel").innerHTML=`<h2>利用量（組織全体）</h2><div class="scroll"><table class="t"><thead><tr><th>AI</th><th>呼出回数</th><th>入力トークン</th><th>出力トークン</th></tr></thead><tbody>
-      ${u.map(r=>`<tr><td>${esc(names[r.providerId]||r.providerId)}</td><td class="mono">${r.calls}</td><td class="mono">${r.inputTokens.toLocaleString()}</td><td class="mono">${r.outputTokens.toLocaleString()}</td></tr>`).join("")||'<tr><td colspan="4" class="hint">まだ利用がありません</td></tr>'}</tbody></table></div>`;
+    $("#usagePanel").innerHTML=`<h2>今月の利用量（${esc(u.month)}）</h2>
+      <p class="hint">月の区切り：${esc(u.timezone)}。上限は呼び出し前に判定するため、1回分だけ上限を少し超えることがあります。80%を超えると警告を表示します。</p>
+      <div class="row" style="align-items:center;margin:8px 0 14px">
+        <b>組織全体</b><span class="mono">${n(u.org.used)}${u.org.limit!=null?" / "+n(u.org.limit):""} トークン</span>${meter(u.org.used,u.org.limit)}</div>
+      <div class="row"><label class="f">組織の月間上限（トークン）<input id="oLim" type="number" min="1" step="10000" value="${org.monthlyTokenLimit??""}" placeholder="空欄なら上限なし"></label>
+        <button class="btn sm" id="oLimSave">保存</button><span class="hint" id="oLimMsg"></span></div>
+      <div class="scroll" style="margin-top:14px"><table class="t"><thead><tr><th>AI</th><th>呼出回数</th><th>入力</th><th>出力</th><th>合計 / 上限</th><th>上限に対する割合</th></tr></thead><tbody>
+      ${u.providers.map(r=>`<tr><td>${esc(r.label)}</td><td class="mono">${r.calls}</td><td class="mono">${n(r.inputTokens)}</td><td class="mono">${n(r.outputTokens)}</td>
+        <td class="mono">${n(r.used)}${r.limit!=null?" / "+n(r.limit):""}</td><td><div class="row" style="align-items:center;gap:6px;flex-wrap:nowrap">${meter(r.used,r.limit)}</div></td></tr>`).join("")||'<tr><td colspan="6" class="hint">まだ利用がありません</td></tr>'}</tbody></table></div>`;
+    $("#oLimSave").onclick=async()=>{
+      const v=$("#oLim").value.trim();
+      try{ await api(`/api/orgs/${S.orgId}/limits`,{method:"PUT",body:{monthlyTokenLimit: v===""?null:Math.floor(Number(v))}}); toast("上限を保存しました"); loadUsage() }
+      catch(e){ $("#oLimMsg").textContent=e.message }
+    };
   }catch(e){ $("#usagePanel").hidden=true }
 }
 async function openProject(id){

@@ -62,6 +62,9 @@
 | F6-1 | UML生成（ユースケース・クラス・シーケンス・状態遷移・アクティビティ） | 必須 | 済 | `ai-core/src/uml.ts`、`POST /api/projects/:id/uml/generate` |
 | F6-2 | 仕様書生成 | 必須 | 済（Markdown / Word / PDF） | `apps/api/src/spec.ts` |
 | F6-3 | エクスポート（Markdown / Word / PDF、図の画像埋め込み）・版の保存 | 必須 | 済 | `apps/api/src/spec.ts`、`POST /api/projects/:id/exports` |
+| F8-1 | AIの登録・変更・削除（組織の管理者） | 必須 | 済 | `POST/PATCH/DELETE /api/orgs/:orgId/providers` |
+| F8-2 | 月間トークン上限（組織全体・AIごと）と80%警告 | 推奨 | 済 | `apps/api/src/usage.ts`、`PUT /api/orgs/:orgId/limits` |
+| F8-3 | 今月の利用量の確認 | 推奨 | 済 | `GET /api/orgs/:orgId/usage` |
 | F7-1 | タスク分解 | 推奨 | 未 | ― |
 | F7-2 | GitHub / Jira / Backlog 連携 | 任意 | 一部（GitHub Issueテンプレート） | `.github/ISSUE_TEMPLATE` |
 
@@ -76,6 +79,7 @@
 | セキュリティ | データ送信制御 | 機密プロジェクトはローカルLLMのみ |
 | セキュリティ | 通信 | ALBでHTTPS終端（証明書指定時）、RDSへはTLS（証明書検証あり） |
 | 監査 | AI呼出の記録 | 組織・AI・プロジェクト単位でトークン数を記録 |
+| コスト | 利用上限 | 組織全体とAIごとに月間トークン上限。組織の上限で停止、AIの上限ではそのAIを除外して続行。月の区切りは `USAGE_TIMEZONE`（既定 Asia/Tokyo） |
 | 拡張性 | AIプロバイダ追加 | `ai-core/src/providers` にアダプタを追加し、factory に1行登録 |
 | 拡張性 | マルチテナント | 全データを組織IDで分離 |
 | 移植性 | 動作環境 | AWS（ECS Fargate）とローカルDockerで同じイメージ |

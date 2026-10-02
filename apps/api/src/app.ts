@@ -18,7 +18,8 @@ import { hasRole, type Authenticator, type Principal, type Role } from "./auth.j
 import { maskKey, type KeyEncryptor } from "./crypto.js";
 import { buildSpec, CONTENT_TYPE, PdfFontMissingError, renderDocx, renderMarkdown, renderPdf, type SpecFormat, type SpecImage } from "./spec.js";
 import type { ArtifactStorage } from "./storage.js";
-import { usageOf, type Project, type ProviderCredential, type Store } from "./store.js";
+import { usageOf, type CredentialPatch, type Project, type ProviderCredential, type Store } from "./store.js";
+import { checkBudget, usageReport } from "./usage.js";
 
 export interface AppDeps {
   store: Store;
@@ -33,6 +34,10 @@ export interface AppDeps {
   fetchImpl?: FetchLike;
   timeoutMs?: number;
   random?: () => number;
+  /** 月間上限の「月」を数えるタイムゾーン（既定: Asia/Tokyo） */
+  usageTimezone?: string;
+  /** 現在時刻（テスト用） */
+  now?: () => Date;
 }
 
 type Env = { Variables: { principal: Principal } };
@@ -44,7 +49,19 @@ const CredentialInput = z.object({
   label: z.string().max(100).optional(),
   apiKey: z.string().min(1).max(500).optional(),
   endpoint: z.string().url().optional(),
+  monthlyTokenLimit: z.number().int().positive().nullable().optional(),
 });
+/** 登録済みAIの変更。種類（vendor）は変えられない。apiKey を省略すると今のキーを使い続ける */
+const CredentialPatchInput = z
+  .object({
+    model: z.string().min(1).max(200).optional(),
+    label: z.string().min(1).max(100).optional(),
+    endpoint: z.string().url().nullable().optional(),
+    apiKey: z.string().min(1).max(500).optional(),
+    monthlyTokenLimit: z.number().int().positive().nullable().optional(),
+  })
+  .strict();
+const LimitInput = z.object({ monthlyTokenLimit: z.number().int().positive().nullable() });
 const ProjectInput = z.object({
   name: z.string().min(1).max(200),
   purpose: z.string().max(2000).default(""),
@@ -86,7 +103,9 @@ function publicCredential(c: ProviderCredential) {
     endpoint: c.endpoint,
     apiKey: maskKey(c.keyLast4),
     isLocal: c.isLocal,
+    monthlyTokenLimit: c.monthlyTokenLimit,
     createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
   };
 }
 
@@ -152,6 +171,36 @@ export function createApp(deps: AppDeps) {
     );
   };
 
+  const tz = deps.usageTimezone ?? "Asia/Tokyo";
+  const nowFn = deps.now ?? (() => new Date());
+  /** 今月の利用量から、使えるAIと警告を決める。組織の上限に達していれば 429 */
+  const budget = async (orgId: string, ids: string[]) => {
+    const org = await store.getOrg(orgId);
+    const report = await usageReport(store, orgId, org?.monthlyTokenLimit ?? null, await store.listCredentials(orgId), tz, nowFn());
+    const b = checkBudget(report, ids);
+    if (b.blocked) throw new HTTPException(429, { message: b.blocked });
+    return b;
+  };
+
+  /* ---------- 組織 ---------- */
+  app.get("/api/orgs/:orgId", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "viewer");
+    const org = await store.getOrg(orgId);
+    if (!org) throw new HTTPException(404, { message: "見つかりません" });
+    return c.json(org);
+  });
+
+  /** 組織全体の月間トークン上限（null で上限なし） */
+  app.put("/api/orgs/:orgId/limits", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "admin");
+    const { monthlyTokenLimit } = await body(c, LimitInput);
+    const org = await store.setOrgLimit(orgId, monthlyTokenLimit);
+    if (!org) throw new HTTPException(404, { message: "見つかりません" });
+    return c.json(org);
+  });
+
   /* ---------- AIの接続情報（組織の管理者が登録） ---------- */
   app.get("/api/orgs/:orgId/providers", async (c) => {
     const orgId = c.req.param("orgId");
@@ -175,8 +224,31 @@ export function createApp(deps: AppDeps) {
       encryptedKey: input.apiKey ? await deps.encryptor.encrypt(input.apiKey, { orgId }) : null,
       keyLast4: input.apiKey ? input.apiKey.slice(-4) : null,
       isLocal: input.vendor === "ollama",
+      monthlyTokenLimit: input.monthlyTokenLimit ?? null,
     });
     return c.json(publicCredential(cred), 201);
+  });
+
+  /** 登録済みAIの変更（モデル名・表示名・接続先・APIキー・月間上限） */
+  app.patch("/api/orgs/:orgId/providers/:id", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "admin");
+    const input = await body(c, CredentialPatchInput);
+    const current = (await store.listCredentials(orgId)).find((x) => x.id === c.req.param("id"));
+    if (!current) throw new HTTPException(404, { message: "見つかりません" });
+    const patch: CredentialPatch = {
+      model: input.model,
+      label: input.label,
+      endpoint: input.endpoint,
+      monthlyTokenLimit: input.monthlyTokenLimit,
+    };
+    if (input.apiKey) {
+      patch.encryptedKey = await deps.encryptor.encrypt(input.apiKey, { orgId });
+      patch.keyLast4 = input.apiKey.slice(-4);
+    }
+    const updated = await store.updateCredential(orgId, current.id, patch);
+    if (!updated) throw new HTTPException(404, { message: "見つかりません" });
+    return c.json(publicCredential(updated));
   });
 
   app.delete("/api/orgs/:orgId/providers/:id", async (c) => {
@@ -190,7 +262,8 @@ export function createApp(deps: AppDeps) {
   app.get("/api/orgs/:orgId/usage", async (c) => {
     const orgId = c.req.param("orgId");
     need(c, orgId, "admin");
-    return c.json(await store.usageSummary(orgId));
+    const org = await store.getOrg(orgId);
+    return c.json(await usageReport(store, orgId, org?.monthlyTokenLimit ?? null, await store.listCredentials(orgId), tz, nowFn()));
   });
 
   /* ---------- プロジェクト ---------- */
@@ -245,9 +318,14 @@ export function createApp(deps: AppDeps) {
         { fetchImpl: deps.fetchImpl, allowMock: deps.allowMock },
       );
     };
-    const generators = await Promise.all(project.aiConfig.generatorIds.map(build));
-    const evaluator =
-      project.aiConfig.mode === "multi" && project.aiConfig.evaluatorId ? await build(project.aiConfig.evaluatorId) : undefined;
+    // 今月の上限: 組織の上限なら停止、AI個別の上限ならそのAIを外して続行
+    const evaluatorId = project.aiConfig.mode === "multi" ? project.aiConfig.evaluatorId : null;
+    const b = await budget(project.orgId, [...project.aiConfig.generatorIds, ...(evaluatorId ? [evaluatorId] : [])]);
+    const generatorIds = project.aiConfig.generatorIds.filter((id) => !b.excluded.has(id));
+    if (!generatorIds.length) throw new HTTPException(429, { message: `生成AIがすべて今月の上限に達しています。${b.warnings.join(" ")}` });
+    const generators = await Promise.all(generatorIds.map(build));
+    const evaluator = evaluatorId && !b.excluded.has(evaluatorId) ? await build(evaluatorId) : undefined;
+    if (evaluatorId && !evaluator) b.warnings.push("評価AIが使えないため、今回は評価なしで案を表示します。");
 
     const existing = await store.listRequirements(project.id);
     const result = await runRound(
@@ -260,6 +338,7 @@ export function createApp(deps: AppDeps) {
       },
       { generators, evaluator, confidential: project.confidential, timeoutMs: deps.timeoutMs, random: deps.random },
     );
+    result.warnings.unshift(...b.warnings);
 
     for (const cand of result.candidates)
       await store.addUsage({ orgId: project.orgId, providerId: cand.providerId, projectId: project.id, ...usageOf(cand.usage) });
@@ -378,7 +457,10 @@ export function createApp(deps: AppDeps) {
     if (!reqs.length) throw new HTTPException(400, { message: "要件がまだありません。ヒアリングで要件を確定してから生成してください" });
     // 生成AI → 評価AI の順に試す（評価AIは設計の確認役としても使える）
     const ids = [...new Set([...p.aiConfig.generatorIds, ...(p.aiConfig.evaluatorId ? [p.aiConfig.evaluatorId] : [])])];
-    const providers = await providersOf(p, ids);
+    const b = await budget(p.orgId, ids);
+    const usable = ids.filter((id) => !b.excluded.has(id));
+    if (!usable.length) throw new HTTPException(429, { message: `使えるAIがすべて今月の上限に達しています。${b.warnings.join(" ")}` });
+    const providers = await providersOf(p, usable);
     if (p.confidential && providers.some((x) => !x.isLocal)) throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを使えます" });
     let result: Awaited<ReturnType<typeof generateUmlModel>>;
     try {
@@ -396,6 +478,7 @@ export function createApp(deps: AppDeps) {
         model: { providerId: rec.providerId, provider: label, createdAt: rec.createdAt },
         dropped: result.dropped,
         failures: result.failures,
+        warnings: b.warnings,
       },
       201,
     );

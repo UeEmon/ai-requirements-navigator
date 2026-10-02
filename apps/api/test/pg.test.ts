@@ -26,6 +26,7 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
         encryptedKey: null,
         keyLast4: null,
         isLocal: true,
+        monthlyTokenLimit: null,
       });
       const project = await store.createProject({
         orgId: org.id,
@@ -52,6 +53,14 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       await store.addUsage({ orgId: org.id, providerId: cred.id, projectId: project.id, inputTokens: 5, outputTokens: 3 });
       expect(await store.usageSummary(org.id)).toEqual([{ providerId: cred.id, inputTokens: 5, outputTokens: 3, calls: 1 }]);
       expect((await store.getProject(project.id))!.aiConfig.generatorIds).toEqual([cred.id]);
+
+      // 上限と変更（003_limits）
+      expect((await store.setOrgLimit(org.id, 1000))!.monthlyTokenLimit).toBe(1000);
+      const upd = await store.updateCredential(org.id, cred.id, { model: "llama2", monthlyTokenLimit: 500, endpoint: null });
+      expect(upd).toMatchObject({ model: "llama2", monthlyTokenLimit: 500, label: "ローカル", endpoint: null });
+      expect(upd!.updatedAt).not.toBeNull();
+      expect(await store.updateCredential("00000000-0000-0000-0000-000000000000", cred.id, { model: "x" })).toBeNull();
+      expect(await store.usageSummary(org.id, new Date(Date.now() + 60_000))).toEqual([]);
     } finally {
       await store.pool.end();
     }

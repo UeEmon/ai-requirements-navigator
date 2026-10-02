@@ -140,7 +140,9 @@ describe("API", () => {
     expect(t.storage.files.size).toBe(1);
 
     const usage = await (await t.app.request(`/api/orgs/${orgId}/usage`, as("admin"))).json();
-    expect(usage).toHaveLength(3); // 生成2 + 評価1
+    expect(usage.providers.filter((p: { calls: number }) => p.calls > 0)).toHaveLength(3); // 生成2 + 評価1
+    expect(usage.org.used).toBeGreaterThan(0);
+    expect(usage.month).toMatch(/^\d{4}-\d{2}$/);
   });
 
   it("閲覧者は生成できない", async () => {
@@ -281,5 +283,123 @@ describe("API", () => {
     const project = await decidedProject();
     const r = await t.app.request(`/api/projects/${project.id}/spec.pdf`, as("viewer"));
     expect(r.status).toBe(501);
+  });
+
+  /* ---------- 登録済みAIの変更 ---------- */
+  it("登録済みAIのモデル名・APIキー・上限を変更できる。キーを省略すると据え置き", async () => {
+    const cr = await (
+      await t.app.request(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor: "anthropic", model: "old", apiKey: "sk-aaaa1111" })))
+    ).json();
+    const patch = (b: unknown, role = "admin") =>
+      t.app.request(`/api/orgs/${orgId}/providers/${cr.id}`, as(role, { ...json(b), method: "PATCH" }));
+
+    expect((await patch({ model: "new" }, "editor")).status).toBe(403);
+    expect((await patch({ vendor: "openai" })).status).toBe(400); // 種類は変更不可
+
+    const r1 = await (await patch({ model: "new", label: "Claude本番", monthlyTokenLimit: 50000 })).json();
+    expect(r1).toMatchObject({ model: "new", label: "Claude本番", monthlyTokenLimit: 50000, apiKey: "••••1111" });
+    expect(r1.updatedAt).not.toBeNull();
+
+    const r2 = await (await patch({ apiKey: "sk-bbbb2222" })).json();
+    expect(r2.apiKey).toBe("••••2222");
+    expect(r2.model).toBe("new");
+    const [saved] = await t.store.listCredentials(orgId);
+    expect(await t.encryptor.decrypt(saved!.encryptedKey!, { orgId })).toBe("sk-bbbb2222");
+
+    const r3 = await (await patch({ monthlyTokenLimit: null })).json();
+    expect(r3.monthlyTokenLimit).toBeNull();
+
+    const other = (await (await t.app.request("/api/orgs", json({ name: "別組織" }))).json()).id;
+    const r4 = await t.app.request(`/api/orgs/${other}/providers/${cr.id}`, as("admin", { ...json({ model: "x" }), method: "PATCH" }, other));
+    expect(r4.status).toBe(404);
+  });
+
+  /* ---------- 月間上限 ---------- */
+  async function multiProject() {
+    const [g1, g2, ev] = await registerMocks();
+    const project = await (
+      await t.app.request(`/api/orgs/${orgId}/projects`, as("editor", json({ name: "p", aiConfig: { mode: "multi", generatorIds: [g1, g2], evaluatorId: ev } })))
+    ).json();
+    return { project, g1: g1!, g2: g2!, ev: ev! };
+  }
+  const setProviderLimit = (id: string, monthlyTokenLimit: number | null) =>
+    t.app.request(`/api/orgs/${orgId}/providers/${id}`, as("admin", { ...json({ monthlyTokenLimit }), method: "PATCH" }));
+
+  it("組織の上限は管理者だけが設定でき、達したら生成を止める（429）", async () => {
+    const { project } = await multiProject();
+    const put = (b: unknown, role = "admin") => t.app.request(`/api/orgs/${orgId}/limits`, as(role, { ...json(b), method: "PUT" }));
+    expect((await put({ monthlyTokenLimit: 1 }, "editor")).status).toBe(403);
+    expect((await put({ monthlyTokenLimit: 0 })).status).toBe(400);
+    expect((await (await put({ monthlyTokenLimit: 1 })).json()).monthlyTokenLimit).toBe(1);
+
+    const first = await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "a" })));
+    expect(first.status).toBe(201); // 呼び出し前は0なので通る
+    const second = await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "b" })));
+    expect(second.status).toBe(429);
+    expect((await second.json()).error).toContain("組織のトークン上限");
+
+    const org = await (await t.app.request(`/api/orgs/${orgId}`, as("viewer"))).json();
+    expect(org.monthlyTokenLimit).toBe(1);
+    await put({ monthlyTokenLimit: null });
+    expect((await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "c" })))).status).toBe(201);
+  });
+
+  it("80%に達すると警告を返す", async () => {
+    const { project } = await multiProject();
+    await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "a" })));
+    const used = (await (await t.app.request(`/api/orgs/${orgId}/usage`, as("admin"))).json()).org.used;
+    await t.app.request(`/api/orgs/${orgId}/limits`, as("admin", { ...json({ monthlyTokenLimit: Math.ceil(used / 0.9) }), method: "PUT" }));
+    const r = await (await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "b" })))).json();
+    expect(r.warnings.some((w: string) => w.includes("組織の今月の利用量"))).toBe(true);
+  });
+
+  it("上限に達した生成AIは外して続行し、評価AIが上限なら評価なしで続行する", async () => {
+    const { project, g1, ev } = await multiProject();
+    await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "a" })));
+    await setProviderLimit(g1, 1);
+    const r1 = await (await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "b" })))).json();
+    expect(r1.candidates).toHaveLength(1);
+    expect(r1.warnings.some((w: string) => w.includes("Claude役") && w.includes("上限"))).toBe(true);
+    expect(r1.evaluation).not.toBeNull();
+
+    await setProviderLimit(ev, 1);
+    const r2 = await (await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "c" })))).json();
+    expect(r2.evaluation).toBeNull();
+    expect(r2.warnings.some((w: string) => w.includes("評価なし"))).toBe(true);
+  });
+
+  it("生成AIがすべて上限なら429", async () => {
+    const { project, g1, g2 } = await multiProject();
+    await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "a" })));
+    await setProviderLimit(g1, 1);
+    await setProviderLimit(g2, 1);
+    const r = await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "b" })));
+    expect(r.status).toBe(429);
+  });
+
+  it("利用量の集計は今月分のみ（月をまたぐとリセット）", async () => {
+    let now = new Date();
+    const store = new MemoryStore();
+    const enc = new LocalKeyEncryptor(randomBytes(32).toString("base64"));
+    const app = createApp({
+      store,
+      encryptor: enc,
+      storage: new MemoryStorage(),
+      authenticate: devAuthenticator,
+      allowMock: true,
+      devAuth: true,
+      now: () => now,
+    });
+    const org = await store.createOrg("o");
+    await store.addUsage({ orgId: org.id, providerId: "p", projectId: "x", inputTokens: 100, outputTokens: 0 });
+    const h = { headers: { "x-org-id": org.id, "x-role": "admin" } };
+    // 利用は現在時刻で記録される。集計の基準を40日後（翌月以降）にすると、今月分は数えない
+    now = new Date(Date.now() + 40 * 24 * 3600 * 1000);
+    const next = await (await app.request(`/api/orgs/${org.id}/usage`, h)).json();
+    expect(next.org.used).toBe(0);
+    now = new Date();
+    const cur = await (await app.request(`/api/orgs/${org.id}/usage`, h)).json();
+    expect(cur.org.used).toBe(100);
+    expect(cur.providers[0].deleted).toBe(true); // 登録のないAIの利用分も合計に含める
   });
 });

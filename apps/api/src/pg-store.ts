@@ -2,11 +2,11 @@ import { readFileSync } from "node:fs";
 import pg from "pg";
 import type { RequirementItem } from "@arn/ai-core";
 import type { UmlModel } from "@arn/ai-core";
-import type { Decision, Org, Project, ProviderCredential, Requirement, Round, Store, UmlModelRecord, UsageRecord } from "./store.js";
+import type { CredentialPatch, Decision, Org, Project, ProviderCredential, Requirement, Round, Store, UmlModelRecord, UsageRecord } from "./store.js";
 
 const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
 
-const toOrg = (r: any): Org => ({ id: r.id, name: r.name, createdAt: iso(r.created_at) });
+const toOrg = (r: any): Org => ({ id: r.id, name: r.name, monthlyTokenLimit: r.monthly_token_limit ?? null, createdAt: iso(r.created_at) });
 const toCred = (r: any): ProviderCredential => ({
   id: r.id,
   orgId: r.org_id,
@@ -17,7 +17,9 @@ const toCred = (r: any): ProviderCredential => ({
   encryptedKey: r.encrypted_key,
   keyLast4: r.key_last4,
   isLocal: r.is_local,
+  monthlyTokenLimit: r.monthly_token_limit ?? null,
   createdAt: iso(r.created_at),
+  updatedAt: r.updated_at ? iso(r.updated_at) : null,
 });
 const toProject = (r: any): Project => ({
   id: r.id,
@@ -91,13 +93,41 @@ export class PgStore implements Store {
     return rows[0] ? toOrg(rows[0]) : null;
   }
 
-  async addCredential(c: Omit<ProviderCredential, "id" | "createdAt">) {
+  async setOrgLimit(id: string, monthlyTokenLimit: number | null) {
+    const { rows } = await this.pool.query("UPDATE orgs SET monthly_token_limit = $2 WHERE id = $1 RETURNING *", [id, monthlyTokenLimit]);
+    return rows[0] ? toOrg(rows[0]) : null;
+  }
+
+  async addCredential(c: Omit<ProviderCredential, "id" | "createdAt" | "updatedAt">) {
     const { rows } = await this.pool.query(
-      `INSERT INTO provider_credentials(org_id, vendor, model, label, endpoint, encrypted_key, key_last4, is_local)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [c.orgId, c.vendor, c.model, c.label, c.endpoint, c.encryptedKey, c.keyLast4, c.isLocal],
+      `INSERT INTO provider_credentials(org_id, vendor, model, label, endpoint, encrypted_key, key_last4, is_local, monthly_token_limit)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [c.orgId, c.vendor, c.model, c.label, c.endpoint, c.encryptedKey, c.keyLast4, c.isLocal, c.monthlyTokenLimit],
     );
     return toCred(rows[0]);
+  }
+  async updateCredential(orgId: string, id: string, patch: CredentialPatch) {
+    const cols: Record<keyof CredentialPatch, string> = {
+      model: "model",
+      label: "label",
+      endpoint: "endpoint",
+      encryptedKey: "encrypted_key",
+      keyLast4: "key_last4",
+      monthlyTokenLimit: "monthly_token_limit",
+    };
+    const sets: string[] = [];
+    const vals: unknown[] = [orgId, id];
+    for (const [k, col] of Object.entries(cols) as Array<[keyof CredentialPatch, string]>) {
+      if (patch[k] === undefined) continue;
+      vals.push(patch[k]);
+      sets.push(`${col} = $${vals.length}`);
+    }
+    sets.push("updated_at = now()");
+    const { rows } = await this.pool.query(
+      `UPDATE provider_credentials SET ${sets.join(", ")} WHERE org_id = $1 AND id = $2 RETURNING *`,
+      vals,
+    );
+    return rows[0] ? toCred(rows[0]) : null;
   }
   async listCredentials(orgId: string) {
     const { rows } = await this.pool.query("SELECT * FROM provider_credentials WHERE org_id = $1 ORDER BY created_at", [orgId]);
@@ -215,11 +245,11 @@ export class PgStore implements Store {
       [u.orgId, u.providerId, u.projectId, u.inputTokens, u.outputTokens],
     );
   }
-  async usageSummary(orgId: string) {
+  async usageSummary(orgId: string, since?: Date) {
     const { rows } = await this.pool.query(
       `SELECT provider_id, sum(input_tokens)::int AS i, sum(output_tokens)::int AS o, count(*)::int AS n
-       FROM usage_records WHERE org_id = $1 GROUP BY provider_id ORDER BY provider_id`,
-      [orgId],
+       FROM usage_records WHERE org_id = $1 AND at >= $2 GROUP BY provider_id ORDER BY provider_id`,
+      [orgId, since ?? new Date(0)],
     );
     return rows.map((r: any) => ({ providerId: r.provider_id, inputTokens: r.i, outputTokens: r.o, calls: r.n }));
   }

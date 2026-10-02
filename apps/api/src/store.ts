@@ -4,6 +4,8 @@ import type { CandidateContent, RequirementItem, RequirementType, ScoredEvaluati
 export interface Org {
   id: string;
   name: string;
+  /** 組織全体の月間トークン上限（入力＋出力）。null は上限なし */
+  monthlyTokenLimit: number | null;
   createdAt: string;
 }
 
@@ -18,7 +20,20 @@ export interface ProviderCredential {
   encryptedKey: string | null;
   keyLast4: string | null;
   isLocal: boolean;
+  /** このAIの月間トークン上限。null は上限なし */
+  monthlyTokenLimit: number | null;
   createdAt: string;
+  updatedAt: string | null;
+}
+
+/** 登録後に変更できる項目（種類は変更不可） */
+export type CredentialPatch = Partial<Pick<ProviderCredential, "model" | "label" | "endpoint" | "encryptedKey" | "keyLast4" | "monthlyTokenLimit">>;
+
+export interface UsageRow {
+  providerId: string;
+  inputTokens: number;
+  outputTokens: number;
+  calls: number;
 }
 
 export interface AIConfig {
@@ -101,9 +116,11 @@ export interface UmlModelRecord {
 export interface Store {
   createOrg(name: string): Promise<Org>;
   getOrg(id: string): Promise<Org | null>;
+  setOrgLimit(id: string, monthlyTokenLimit: number | null): Promise<Org | null>;
 
-  addCredential(c: Omit<ProviderCredential, "id" | "createdAt">): Promise<ProviderCredential>;
+  addCredential(c: Omit<ProviderCredential, "id" | "createdAt" | "updatedAt">): Promise<ProviderCredential>;
   listCredentials(orgId: string): Promise<ProviderCredential[]>;
+  updateCredential(orgId: string, id: string, patch: CredentialPatch): Promise<ProviderCredential | null>;
   deleteCredential(orgId: string, id: string): Promise<boolean>;
 
   createProject(p: Omit<Project, "id" | "createdAt" | "phaseKey">): Promise<Project>;
@@ -128,7 +145,8 @@ export interface Store {
   latestUmlModel(projectId: string): Promise<UmlModelRecord | null>;
 
   addUsage(u: Omit<UsageRecord, "at">): Promise<void>;
-  usageSummary(orgId: string): Promise<Array<{ providerId: string; inputTokens: number; outputTokens: number; calls: number }>>;
+  /** since 以降（省略時は全期間）の利用量をAIごとに集計する */
+  usageSummary(orgId: string, since?: Date): Promise<UsageRow[]>;
 }
 
 export function usageOf(u: Usage): { inputTokens: number; outputTokens: number } {
@@ -149,20 +167,33 @@ export class MemoryStore implements Store {
   private umls: UmlModelRecord[] = [];
 
   async createOrg(name: string) {
-    const o = { id: randomUUID(), name, createdAt: now() };
+    const o: Org = { id: randomUUID(), name, monthlyTokenLimit: null, createdAt: now() };
     this.orgs.set(o.id, o);
     return o;
   }
   async getOrg(id: string) {
     return this.orgs.get(id) ?? null;
   }
-  async addCredential(c: Omit<ProviderCredential, "id" | "createdAt">) {
-    const r = { ...c, id: randomUUID(), createdAt: now() };
+  async setOrgLimit(id: string, monthlyTokenLimit: number | null) {
+    const o = this.orgs.get(id);
+    if (!o) return null;
+    o.monthlyTokenLimit = monthlyTokenLimit;
+    return o;
+  }
+  async addCredential(c: Omit<ProviderCredential, "id" | "createdAt" | "updatedAt">) {
+    const r: ProviderCredential = { ...c, id: randomUUID(), createdAt: now(), updatedAt: null };
     this.creds.set(r.id, r);
     return r;
   }
   async listCredentials(orgId: string) {
     return [...this.creds.values()].filter((c) => c.orgId === orgId);
+  }
+  async updateCredential(orgId: string, id: string, patch: CredentialPatch) {
+    const c = this.creds.get(id);
+    if (!c || c.orgId !== orgId) return null;
+    const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    Object.assign(c, defined, { updatedAt: now() });
+    return c;
   }
   async deleteCredential(orgId: string, id: string) {
     const c = this.creds.get(id);
@@ -237,9 +268,10 @@ export class MemoryStore implements Store {
   async addUsage(u: Omit<UsageRecord, "at">) {
     this.usage.push({ ...u, at: now() });
   }
-  async usageSummary(orgId: string) {
-    const m = new Map<string, { providerId: string; inputTokens: number; outputTokens: number; calls: number }>();
-    for (const u of this.usage.filter((x) => x.orgId === orgId)) {
+  async usageSummary(orgId: string, since?: Date) {
+    const m = new Map<string, UsageRow>();
+    const from = since?.toISOString() ?? "";
+    for (const u of this.usage.filter((x) => x.orgId === orgId && x.at >= from)) {
       const s = m.get(u.providerId) ?? { providerId: u.providerId, inputTokens: 0, outputTokens: 0, calls: 0 };
       s.inputTokens += u.inputTokens;
       s.outputTokens += u.outputTokens;
