@@ -1,4 +1,7 @@
 AI要件定義支援システム（要件ナビ）テンプレート
+Copyright 2026 UeEmon and contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 本ソフトウェアは、MIT・Apache-2.0 などのオープンソースソフトウェアを利用しています。
 利用しているソフトウェアの一覧と著作権表示・ライセンス本文は、コンテナイメージ内の

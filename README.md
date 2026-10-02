@@ -104,4 +104,8 @@ npm run init:project -- --name "顧客管理システム" --slug crm-system
 
 ## ライセンス
 
-本リポジトリ自体のライセンスは未定です（[未決事項](docs/requirements.md#6-未決事項)）。利用OSSの表示は [NOTICE](NOTICE) を参照してください。
+[Apache License 2.0](LICENSE)。利用しているOSSの表示は [NOTICE](NOTICE) を参照してください。
+
+## コントリビューション
+
+Issue・プルリクエストを歓迎します。[CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。脆弱性の報告は [SECURITY.md](SECURITY.md) の手順でお願いします。

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "画面（静的ファイル）。APIコンテナから配信する。mermaid はビルド時に public/vendor へコピーし、オフラインでも図を描画できるようにする",
+  "license": "Apache-2.0",
   "dependencies": {
     "mermaid": "^11.4.1"
   }

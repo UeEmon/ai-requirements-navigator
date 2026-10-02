@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AWS CDK（Apache-2.0）による AWS 環境の構築。ルートのワークスペースには含めず、必要なときだけ npm install する",
+  "license": "Apache-2.0",
   "scripts": {
     "synth": "cdk synth",
     "diff": "cdk diff",
@@ -17,6 +18,7 @@
   "devDependencies": {
     "aws-cdk": "^2.170.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.0"
   }
 }

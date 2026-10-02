@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "AIとの対話で要求分析から要件定義までを支援し、UMLと仕様書を出力するWebシステムのテンプレート",
+  "license": "Apache-2.0",
   "workspaces": [
     "packages/*",
     "apps/*"
