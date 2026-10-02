@@ -427,6 +427,7 @@ function renderAdmin(){
   $("#projPanel").innerHTML = `<h2>プロジェクト</h2>
     ${S.project?`<p>現在: <b>${esc(S.project.name)}</b> <span class="mono">${esc(S.project.id)}</span></p>`:""}
     <div class="row"><label class="f" style="flex:1">既存のプロジェクトIDを開く<input id="jOpen" placeholder="プロジェクトID"></label><button class="btn ghost" id="jOpenGo">開く</button></div>
+    ${canEdit()?`<div class="note" style="background:var(--accent-soft)">使い方を見るには、本システム自身の要求事項を題材にした<b>サンプル事例</b>を読み込めます（資料・分析・EARSの要件・非機能要件シート入り。AIは呼び出しません）。<button class="btn sm ghost" id="jSample" style="margin-left:6px">サンプル事例を読み込む</button></div>`:""}
     <h3 style="margin-top:16px">新規作成</h3>
     <div style="display:flex;flex-direction:column;gap:10px">
       <label class="f">名称<input id="jN" placeholder="例：美容室のWeb予約システム"></label>
@@ -439,6 +440,10 @@ function renderAdmin(){
     </div>`;
   $("#jMode").onchange=()=>{$("#jEvW").hidden=$("#jMode").value==="single"};
   $("#jOpenGo").onclick=()=>openProject($("#jOpen").value.trim());
+  if($("#jSample")) $("#jSample").onclick=async()=>{
+    try{ const r=await api(`/api/orgs/${S.orgId}/samples`,{method:"POST",body:{}}); await openProject(r.project.id); toast(`サンプル事例を読み込みました（要件 ${r.requirements}件）`); switchTab("reqs") }
+    catch(e){ $("#jMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
   $("#jGo").onclick=async()=>{
     const mode=$("#jMode").value; const ids=[...document.querySelectorAll('input[name=g]:checked')].map(i=>i.value);
     const body={name:$("#jN").value.trim(), purpose:$("#jP").value.trim(), confidential:$("#jC").checked,

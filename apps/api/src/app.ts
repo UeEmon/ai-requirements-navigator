@@ -33,6 +33,7 @@ import { maskKey, type KeyEncryptor } from "./crypto.js";
 import { designAndChange } from "./design-change.js";
 import { discovery } from "./discovery.js";
 import { nfrSheet } from "./nfr-sheet.js";
+import { loadSample, SAMPLES } from "./samples.js";
 import { implementation, type ImplementationContext } from "./implementation.js";
 import { JobError, JobRunner, type JobRunnerOptions } from "./jobs.js";
 import { buildSpec, CONTENT_TYPE, PdfFontMissingError, renderDocx, renderMarkdown, renderPdf, type SpecFormat, type SpecImage } from "./spec.js";
@@ -502,6 +503,31 @@ export function createApp(deps: AppDeps) {
       detail: { name: project.name, confidential: project.confidential, aiConfig: project.aiConfig },
     });
     return c.json(project, 201);
+  });
+
+  /** サンプル事例（本システム自身の要求事項）をプロジェクトとして読み込む。AIは呼び出さない */
+  app.post("/api/orgs/:orgId/samples", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "editor");
+    const input = await body(c, z.object({ sample: z.enum(Object.keys(SAMPLES) as [keyof typeof SAMPLES]).default("requirements-navigator") }));
+    // プロジェクトのAIの構成は、組織に登録済みのAIから決める（3つ以上: 複数AI＋評価AI、2つ: 複数AI、1つ: 単一AI）
+    const creds = (await store.listCredentials(orgId)).filter((x) => x.vendor !== "mock" || deps.allowMock);
+    if (!creds.length) throw new HTTPException(400, { message: "先に「AI設定」でAIを登録してください（サンプルの読み込みではAIを呼び出しません）" });
+    const ids = creds.map((x) => x.id);
+    const aiConfig =
+      ids.length >= 2
+        ? { mode: "multi" as const, generatorIds: ids.slice(0, 2), evaluatorId: ids[2] ?? null }
+        : { mode: "single" as const, generatorIds: ids.slice(0, 1), evaluatorId: null };
+    const r = await loadSample(store, { orgId, aiConfig, actor: actorOf(c) });
+    await audit(store, {
+      orgId,
+      actor: actorOf(c),
+      action: "project.create",
+      targetType: "project",
+      targetId: r.project.id,
+      detail: { name: r.project.name, sample: input.sample, requirements: r.requirements, documents: r.documents, aiConfig },
+    });
+    return c.json({ ...r, project: r.project }, 201);
   });
 
   app.get("/api/projects/:id", async (c) => {

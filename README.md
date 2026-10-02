@@ -36,6 +36,8 @@ http://localhost:8787 を開き、次の順に操作します。
 8. 「変更管理」で要件定義を確定。以後の変更は変更要求として登録し、影響分析の結果を見て判断（[画面と変更管理](docs/screens-and-changes.md)）
 9. 「実装連携」で「AIでタスクに分解する」→ CSV で出力するか、管理者が登録した GitHub・Jira・Backlog に課題として登録（[連携の設定](docs/integrations.md)）
 
+本システム自身の要求事項を題材にした **サンプル事例**（資料の分析・EARSの要件65件・非機能要件シート入り）を「AI設定・プロジェクト」から読み込めます。内容は [docs/sample/requirements-navigator.md](docs/sample/requirements-navigator.md) で読めます。
+
 APIキーなしで画面の流れだけを見たい場合は http://localhost:8787/demo.html を開いてください（応答はすべて模擬）。
 
 ローカルLLMを使う場合: `docker compose --profile local-llm up --build` で Ollama も起動し、
