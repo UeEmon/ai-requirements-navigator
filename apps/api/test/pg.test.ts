@@ -120,9 +120,9 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
         encryptedSecret: "enc",
         secretLast4: "1234",
       });
-      const upd = await store.updateIntegration(org.id, integ.id, { config: { owner: "acme", repo: "web" }, label: "GH2" });
-      expect(upd).toMatchObject({ label: "GH2", config: { owner: "acme", repo: "web" }, encryptedSecret: "enc" });
-      expect(upd!.updatedAt).not.toBeNull();
+      const updI = await store.updateIntegration(org.id, integ.id, { config: { owner: "acme", repo: "web" }, label: "GH2" });
+      expect(updI).toMatchObject({ label: "GH2", config: { owner: "acme", repo: "web" }, encryptedSecret: "enc" });
+      expect(updI!.updatedAt).not.toBeNull();
       expect(await store.updateIntegration("00000000-0000-0000-0000-000000000000", integ.id, { label: "x" })).toBeNull();
       const plan = {
         epics: [{ key: "E1", title: "e", description: "", requirementCodes: ["FR-01"], stories: [] }],

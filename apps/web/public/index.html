@@ -94,6 +94,7 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
 .steps{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:13px}
 .steps li{display:flex;gap:8px;align-items:baseline}
 .steps .st{font-family:var(--f-mono);font-size:11.5px;min-width:5.5em}
+span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.good{color:var(--good)}span.st.warn{color:var(--warn)}span.st.bad{color:var(--bad)}
 .steps .running{color:var(--accent)}.steps .done{color:var(--good)}.steps .failed{color:var(--bad)}
 .who{font-size:12.5px;color:var(--ink-2)}
 .chk{display:flex;flex-wrap:wrap;gap:6px}
@@ -115,6 +116,7 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
     <button role="tab" data-tab="reqs" aria-selected="false" id="t-reqs">要件一覧</button>
     <button role="tab" data-tab="uml" aria-selected="false" id="t-uml">UML</button>
     <button role="tab" data-tab="spec" aria-selected="false" id="t-spec">仕様書</button>
+    <button role="tab" data-tab="impl" aria-selected="false" id="t-impl">実装連携</button>
     <button role="tab" data-tab="admin" aria-selected="false" id="t-admin">AI設定・プロジェクト</button>
   </nav>
 
@@ -138,10 +140,24 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
       <button class="btn sm ghost" id="copySpec">Markdownをコピー</button>
       <span class="hint" id="specMsg"></span></div>
     <pre class="code" id="spec" style="white-space:pre-wrap"></pre></div></section>
+  <section class="view" id="v-impl">
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div><h2 style="margin:0">実装タスク</h2><p class="hint" id="implInfo" style="margin:4px 0 0"></p></div>
+      <div class="row"><button class="btn" id="implGen">AIでタスクに分解する</button></div></div>
+      <div id="implMsg"></div>
+      <div class="row" id="implFiles" style="margin-top:10px" hidden><span class="hint">ファイルで出力：</span>
+        <button class="btn sm ghost" data-tfile="md">Markdown</button><button class="btn sm ghost" data-tfile="jira.csv">Jira用CSV</button>
+        <button class="btn sm ghost" data-tfile="backlog.csv">Backlog用CSV</button><button class="btn sm ghost" data-tfile="json">JSON</button></div>
+      <div id="implPlan"></div>
+      <div id="implReg"></div></div>
+    <div class="panel"><h2 style="margin:0">トレーサビリティ（要件 → ストーリー → 課題）</h2>
+      <p class="hint" style="margin:4px 0 0">機能要件・非機能要件が、どのストーリーで実装され、どの課題として登録されたかを確認できます。</p>
+      <div id="trace"></div></div>
+  </section>
   <section class="view" id="v-admin"><div class="grid2">
     <div class="panel" id="provPanel"></div>
     <div class="panel" id="projPanel"></div>
-  </div><div class="panel" id="usagePanel" hidden></div><div class="panel" id="auditPanel" hidden></div></section>
+  </div><div class="panel" id="integPanel"></div><div class="panel" id="usagePanel" hidden></div><div class="panel" id="auditPanel" hidden></div></section>
 </div>
 <div class="toast" id="toast" hidden></div>
 
@@ -308,7 +324,7 @@ async function createOrg(){
 function switchTab(t){
   document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-selected", b.dataset.tab===t));
   document.querySelectorAll("section.view").forEach(v=>v.classList.toggle("on", v.id==="v-"+t));
-  ({reqs:loadReqs, uml:loadUml, spec:loadSpec, admin:renderAdmin}[t]||(()=>{}))();
+  ({reqs:loadReqs, uml:loadUml, spec:loadSpec, impl:loadImpl, admin:renderAdmin}[t]||(()=>{}))();
 }
 document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 
@@ -387,13 +403,15 @@ function renderAdmin(){
     try{ const p=await api(`/api/orgs/${S.orgId}/projects`,{method:"POST",body}); await openProject(p.id); switchTab("hear"); }
     catch(e){ $("#jMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   };
+  loadIntegrations();
   if (isAdmin) { loadUsage(); auditState.entries=[]; auditState.next=null; loadAudit(); }
   else { $("#usagePanel").hidden=true; $("#auditPanel").hidden=true; }
 }
 /* ---------- 監査ログ ---------- */
 const ACTION={"org.create":"組織の作成","org.limits.update":"組織の上限変更","provider.create":"AIの登録","provider.update":"AIの変更","provider.delete":"AIの削除",
   "project.create":"プロジェクト作成","project.phase":"フェーズ移動","ai.round":"AIで案を生成","ai.guide":"AIで質問を作成","ai.uml":"AIでUML生成",
-  "decision.create":"案の採用","uml.adopt":"UML案の採用","requirement.update":"要件の編集","requirement.delete":"要件の削除","spec.export":"仕様書の出力","auth.login":"ログイン"};
+  "decision.create":"案の採用","uml.adopt":"UML案の採用","requirement.update":"要件の編集","requirement.delete":"要件の削除","spec.export":"仕様書の出力","auth.login":"ログイン",
+  "ai.tasks":"AIでタスク分解","tasks.export":"課題の登録","integration.create":"連携先の登録","integration.update":"連携先の変更","integration.delete":"連携先の削除"};
 const auditState={entries:[], next:null, action:""};
 function auditSummary(e){
   const d=e.detail||{};
@@ -409,6 +427,9 @@ function auditSummary(e){
     case "org.limits.update": return `${d.before??"上限なし"} → ${d.after??"上限なし"}`;
     case "project.phase": return `${d.from} → ${d.to}`;
     case "spec.export": return `${d.format}${d.images?`（図${d.images}件）`:""}`;
+    case "ai.tasks": return `要件${d.sent?.requirements??0}件／${(d.generators||[]).map(g=>g.label).join("、")}${d.uncovered?.length?`／未対応：${d.uncovered.join(", ")}`:""}`;
+    case "tasks.export": return `${d.integration?.label||""}（${d.integration?.target||""}）：登録${d.created}・済${d.skipped}・失敗${d.failed}`;
+    case "integration.create": case "integration.update": case "integration.delete": return `${d.label||d.after?.label||""}${d.tokenChanged?"、トークン":""}`;
     default: return d.name || d.role || "";
   }
 }
@@ -419,7 +440,7 @@ async function loadAudit(more=false){
     auditState.entries = more ? auditState.entries.concat(r.entries) : r.entries; auditState.next=r.next;
     $("#auditPanel").hidden=false;
     $("#auditPanel").innerHTML=`<div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">監査ログ</h2>
-      <label class="f">種類<select id="auF"><option value="">すべて</option>${[["ai.","AIの呼び出し"],["provider.","AIの登録・変更"],["requirement.","要件の手直し"],["decision.","案の採用"],["auth.","ログイン"],["spec.","仕様書の出力"],["org.","組織"]].map(([v,l])=>`<option value="${v}" ${auditState.action===v?"selected":""}>${l}</option>`).join("")}</select></label></div>
+      <label class="f">種類<select id="auF"><option value="">すべて</option>${[["ai.","AIの呼び出し"],["provider.","AIの登録・変更"],["requirement.","要件の手直し"],["decision.","案の採用"],["auth.","ログイン"],["spec.","仕様書の出力"],["tasks.","課題の登録"],["integration.","連携先"],["org.","組織"]].map(([v,l])=>`<option value="${v}" ${auditState.action===v?"selected":""}>${l}</option>`).join("")}</select></label></div>
       <p class="hint">誰が・いつ・何をしたかと、AIに送った内容の要約を記録しています。APIキーは記録しません。保持期間を過ぎたものは自動で削除されます。</p>
       <div class="scroll"><table class="t"><thead><tr><th>日時</th><th>利用者</th><th>操作</th><th>内容</th></tr></thead><tbody>
       ${auditState.entries.map(e=>`<tr><td class="mono">${e.at.slice(0,19).replace("T"," ")}</td><td class="mono">${esc(e.actor)}</td><td>${esc(ACTION[e.action]||e.action)}</td>
@@ -778,6 +799,171 @@ document.querySelectorAll("[data-fmt]").forEach(b=>b.onclick=async()=>{
   }catch(e){ msg.textContent=e.message }
   finally{ document.querySelectorAll("[data-fmt]").forEach(x=>x.disabled=false) }
 });
+
+/* ---------- 実装連携 ---------- */
+const ITOOL={github:"GitHub Issues", jira:"Jira", backlog:"Backlog"};
+const TASK_KIND={frontend:"画面",backend:"サーバー",db:"データベース",infra:"基盤",test:"テスト",doc:"文書",other:"その他"};
+const TRACE_ST={registered:["登録済み","good"],planned:["未登録","warn"],uncovered:["ストーリーなし","bad"],context:["対象外（文脈）",""],no_plan:["未分解",""]};
+const safeHref=u=>/^https:\/\//.test(u||"")?u:"";
+const linkHtml=l=>safeHref(l.url)?`<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" class="mono">${esc(l.externalKey||"開く")}</a>`:esc(l.externalKey||"");
+const implState={plan:null, trace:null, integrations:[], result:null, unchecked:new Set()};
+async function loadImpl(){
+  if(!S.project){ $("#implInfo").textContent="プロジェクトを開いてください"; $("#implPlan").innerHTML=""; $("#implReg").innerHTML=""; $("#trace").innerHTML=""; return }
+  $("#implGen").hidden=!canEdit();
+  try{
+    const [plan, trace, integs]=await Promise.all([api(`/api/projects/${S.project.id}/tasks`), api(`/api/projects/${S.project.id}/trace`), api(`/api/orgs/${S.orgId}/integrations`).catch(()=>[])]);
+    implState.plan=plan; implState.trace=trace; implState.integrations=integs;
+    renderImpl();
+  }catch(e){ $("#implMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+}
+function storyLinks(){
+  const m={};
+  for(const r of implState.trace?.rows||[]) for(const s of r.stories) if(s.links?.length) m[s.key]=s.links;
+  for(const it of implState.result?.items||[]) if(it.type==="story"&&it.url){ (m[it.key] ||= []); if(!m[it.key].some(l=>l.url===it.url)) m[it.key].push({url:it.url, externalKey:it.externalKey}) }
+  return m;
+}
+function renderImpl(){
+  const v=implState.plan;
+  $("#implFiles").hidden=!v;
+  if(!v){
+    $("#implInfo").textContent="確定した要件（と採用したUML）から、エピック・ストーリー・作業タスクに分解します。";
+    $("#implPlan").innerHTML=""; $("#implReg").innerHTML=""; renderTrace(); return;
+  }
+  $("#implInfo").textContent=`${v.provider} が ${v.createdAt.slice(0,16).replace("T"," ")} に作成／エピック ${v.stats.epics}・ストーリー ${v.stats.stories}・タスク ${v.stats.tasks}・見積り ${v.stats.points}ポイント`;
+  const warns=[];
+  if(v.stale) warns.push(`分解した後に要件が変わっています（${v.changed.map(esc).join(", ")}）。必要なら分解し直してください。`);
+  if(v.plan.uncovered.length) warns.push(`次の要件に対応するストーリーがありません：${v.plan.uncovered.map(esc).join(", ")}`);
+  const links=storyLinks();
+  $("#implPlan").innerHTML=warns.map(w=>`<div class="note warn">${w}</div>`).join("")+v.plan.epics.map(e=>`
+    <h3 style="margin:16px 0 4px">${esc(e.key)} ${esc(e.title)} <span class="tag">${esc(e.requirementCodes.join(", "))}</span></h3>
+    ${e.description?`<p class="cmt" style="margin:0 0 6px">${esc(e.description)}</p>`:""}
+    <div class="scroll"><table class="t"><thead><tr><th><input type="checkbox" data-epic="${esc(e.key)}" ${e.stories.every(s=>implState.unchecked.has(s.key))?"":"checked"} aria-label="${esc(e.key)}をすべて選ぶ"></th><th>キー</th><th>ストーリー</th><th>見積り</th><th>要件</th><th>課題</th></tr></thead><tbody>
+    ${e.stories.map(s=>`<tr><td><input type="checkbox" name="story" value="${esc(s.key)}" data-of="${esc(e.key)}" ${implState.unchecked.has(s.key)?"":"checked"} aria-label="${esc(s.key)}"></td><td class="mono">${esc(s.key)}</td>
+      <td>${esc(s.title)}<details><summary class="hint">受け入れ条件 ${s.acceptanceCriteria.length}件・タスク ${s.tasks.length}件</summary>
+        ${s.description?`<p class="cmt">${esc(s.description)}</p>`:""}
+        ${s.acceptanceCriteria.length?`<b class="cmt">受け入れ条件</b><ul class="cmt">${s.acceptanceCriteria.map(a=>`<li>${esc(a)}</li>`).join("")}</ul>`:""}
+        ${s.tasks.length?`<b class="cmt">タスク</b><ul class="cmt">${s.tasks.map(t=>`<li>[${esc(TASK_KIND[t.kind]||t.kind)}] ${esc(t.title)}</li>`).join("")}</ul>`:""}</details></td>
+      <td class="mono">${esc(s.estimate)}</td><td class="mono">${esc(s.requirementCodes.join(", "))||"―"}</td>
+      <td>${(links[s.key]||[]).map(linkHtml).join(" ")||'<span class="hint">―</span>'}</td></tr>`).join("")}</tbody></table></div>`).join("");
+  const remember=()=>{ implState.unchecked=new Set([...document.querySelectorAll("input[name=story]:not(:checked)")].map(x=>x.value)) };
+  document.querySelectorAll("[data-epic]").forEach(cb=>cb.onchange=()=>{ document.querySelectorAll(`input[name=story][data-of="${cb.dataset.epic}"]`).forEach(x=>x.checked=cb.checked); remember() });
+  document.querySelectorAll("input[name=story]").forEach(cb=>cb.onchange=remember);
+  const ints=implState.integrations;
+  $("#implReg").innerHTML=`<h3 style="margin:18px 0 6px">課題管理ツールに登録</h3>
+    ${ints.length?`<div class="row" style="align-items:flex-end"><label class="f">登録先<select id="regTo">${ints.map(i=>`<option value="${esc(i.id)}">${esc(i.label)}（${esc(ITOOL[i.kind]||i.kind)}：${esc(i.target)}）</option>`).join("")}</select></label>
+      <button class="btn" id="regGo" ${canEdit()?"":"disabled"}>選んだストーリーを登録</button></div>
+      <p class="hint">エピックは親の課題、ストーリーは子の課題として登録し、作業タスクと受け入れ条件は本文のチェックリストにします。登録済みのものは飛ばすため、失敗した分だけをやり直せます。</p>`
+      :`<p class="hint">連携先がまだありません。「AI設定・プロジェクト」タブで管理者が GitHub・Jira・Backlog の接続を登録してください。ファイル（CSV）で出力して取り込むこともできます。</p>`}
+    <div id="regOut"></div>`;
+  if($("#regGo")) $("#regGo").onclick=registerIssues;
+  if(implState.result) renderRegResult();
+  renderTrace();
+}
+function renderRegResult(){
+  const r=implState.result, out=$("#regOut"); if(!out) return;
+  const ST2={created:["登録","good"],skipped:["登録済み",""],failed:["失敗","bad"]};
+  out.innerHTML=`<div class="note ${r.summary.failed?"warn":""}" style="${r.summary.failed?"":"background:var(--accent-soft)"}">${esc(r.target)}：登録 ${r.summary.created}件・登録済み ${r.summary.skipped}件・失敗 ${r.summary.failed}件${r.summary.failed?"。もう一度登録すると失敗した分だけを登録します。":""}</div>
+    <div class="scroll"><table class="t"><thead><tr><th>キー</th><th>件名</th><th>結果</th><th>課題</th></tr></thead><tbody>
+    ${r.items.map(it=>`<tr><td class="mono">${esc(it.key)}</td><td>${esc(it.title)}${it.note&&it.status!=="skipped"?`<br><span class="cmt">${esc(it.note)}</span>`:""}${it.error?`<br><span class="cmt" style="color:var(--bad)">${esc(it.error)}</span>`:""}</td>
+      <td><span class="st ${ST2[it.status]?.[1]||""}">${ST2[it.status]?.[0]||esc(it.status)}</span></td><td>${it.url?linkHtml(it):""}</td></tr>`).join("")}</tbody></table></div>`;
+}
+async function registerIssues(){
+  const keys=[...document.querySelectorAll("input[name=story]:checked")].map(x=>x.value);
+  if(!keys.length){ toast("ストーリーを選んでください"); return }
+  const b=$("#regGo"); b.disabled=true; $("#regOut").innerHTML='<p class="hint" id="regProg">登録しています…</p>';
+  try{
+    implState.result=await runJob(`/api/projects/${S.project.id}/tasks/register`, {integrationId:$("#regTo").value, planId:implState.plan.id, storyKeys:keys}, p=>{const el=$("#regProg"); if(el&&p.message) el.textContent=p.message});
+    implState.trace=await api(`/api/projects/${S.project.id}/trace`);
+    renderImpl(); toast("登録しました");
+  }catch(e){ $("#regOut").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  finally{ if($("#regGo")) $("#regGo").disabled=false }
+}
+function renderTrace(){
+  const t=implState.trace; if(!t){ $("#trace").innerHTML=""; return }
+  const sm=t.summary;
+  $("#trace").innerHTML=`${sm?`<div class="row" style="margin:10px 0;gap:18px"><span>対象の要件 <b class="mono">${sm.targets}</b></span><span>ストーリーあり <b class="mono">${sm.covered}</b></span><span>課題に登録済み <b class="mono">${sm.registered}</b></span></div>`:'<p class="hint">まだタスクに分解していません。</p>'}
+    ${t.removed?.length?`<div class="note warn">分解した後に削除された要件：${t.removed.map(esc).join(", ")}</div>`:""}
+    <div class="scroll"><table class="t"><thead><tr><th>要件</th><th>内容</th><th>ストーリー</th><th>課題</th><th>状態</th></tr></thead><tbody>
+    ${t.rows.map(r=>{const [lab,cls]=TRACE_ST[r.status]||[r.status,""]; return `<tr style="${r.target?"":"opacity:.7"}"><td class="mono">${esc(r.code)}${r.changed?'<br><span class="tag">分解後に変更</span>':""}</td><td>${esc(r.title)}</td>
+      <td>${r.stories.map(s=>`<span class="mono">${esc(s.key)}</span> ${esc(s.title)}`).join("<br>")||'<span class="hint">―</span>'}</td>
+      <td>${r.stories.flatMap(s=>s.links||[]).map(linkHtml).join(" ")||'<span class="hint">―</span>'}</td>
+      <td><span class="st ${cls}">${lab}</span></td></tr>`}).join("")||'<tr><td colspan="5" class="hint">要件がまだありません</td></tr>'}</tbody></table></div>`;
+}
+$("#implGen").onclick=async()=>{
+  if(!S.project) return;
+  if(implState.plan && !confirm("今の分解結果を置き換えて、新しく分解します。登録済みの課題との対応は今の分解結果に残ります。よろしいですか？")) return;
+  const b=$("#implGen"); b.disabled=true; implState.result=null; implState.unchecked=new Set();
+  $("#implMsg").innerHTML='<p class="hint">AIが要件をタスクに分解しています…</p><div id="implProg"></div>';
+  try{
+    const r=await runJob(`/api/projects/${S.project.id}/tasks/generate`, {}, p=>{const el=$("#implProg"); if(el) el.innerHTML=stepsHtml(p)});
+    // 未対応の要件は分解結果の上に表示するので、ここでは出さない
+    $("#implMsg").innerHTML=(r.warnings||[]).filter(w=>!w.startsWith("次の要件に対応する")).map(w=>`<div class="note warn">${esc(w)}</div>`).join("")+(r.failures||[]).map(f=>`<div class="note warn">${esc(f.provider)}：${esc(f.reason)}</div>`).join("");
+    await loadImpl();
+  }catch(e){ $("#implMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  finally{ b.disabled=false }
+};
+document.querySelectorAll("[data-tfile]").forEach(b=>b.onclick=async()=>{
+  if(!S.project) return;
+  const f=b.dataset.tfile;
+  try{
+    const res=await fetch(`/api/projects/${S.project.id}/tasks/file/${f}`,{headers:authHeaders()});
+    if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.error||`HTTP ${res.status}`) }
+    saveBlob(await res.blob(), `${fileSafe(S.project.name)}_実装タスク.${f}`);
+  }catch(e){ toast(e.message) }
+});
+
+/* ---------- 連携先（課題管理ツール） ---------- */
+const INTEG_FIELDS={
+  github:[["owner","所有者（ユーザー名・組織名）","例：acme"],["repo","リポジトリ名","例：booking-app"],["labels","付けるラベル（カンマ区切り）","requirements-navigator"],["apiBase","APIのURL（GitHub Enterprise のみ）","https://api.github.com"]],
+  jira:[["baseUrl","JiraのURL","https://example.atlassian.net"],["email","メールアドレス（Jira Cloud）","空欄なら個人用アクセストークン（Data Center）"],["projectKey","プロジェクトキー","例：APP"],["epicType","エピックの課題タイプ名","Epic"],["storyType","ストーリーの課題タイプ名","Story"]],
+  backlog:[["spaceUrl","スペースのURL","https://example.backlog.jp"],["projectKey","プロジェクトキー","例：APP"],["issueType","種別名","タスク"]],
+};
+const TOKEN_LABEL={github:"個人用アクセストークン（Issues の読み書き）",jira:"APIトークン",backlog:"APIキー"};
+async function loadIntegrations(){
+  const panel=$("#integPanel"); if(!S.orgId && !S.token){ panel.innerHTML=""; return }
+  const isAdmin=S.role==="admin";
+  const list=await api(`/api/orgs/${S.orgId}/integrations`).catch(()=>[]);
+  const fields=(kind, cfg={}, pre="n")=>INTEG_FIELDS[kind].map(([k,l,ph])=>`<label class="f">${l}<input id="${pre}-${k}" value="${esc(cfg[k]??"")}" placeholder="${esc(ph)}"></label>`).join("");
+  panel.innerHTML=`<h2>課題管理ツールとの連携（組織の管理者）</h2>
+    <p class="hint">実装タスクを GitHub Issues・Jira・Backlog に直接登録するための接続です。トークンは暗号化して保存し、表示は末尾4桁のみです。必要最小限の権限（課題の作成）のトークンを使ってください。</p>
+    <div class="scroll"><table class="t"><thead><tr><th>名前</th><th>種類</th><th>登録先</th><th>トークン</th><th></th></tr></thead><tbody>
+    ${list.map(i=>`<tr><td>${esc(i.label)}</td><td>${esc(ITOOL[i.kind]||i.kind)}</td><td class="mono">${esc(i.target)}</td><td class="mono">${esc(i.token||"―")}</td>
+      <td style="white-space:nowrap">${isAdmin?`<button class="btn sm ghost" data-itest="${i.id}">接続確認</button> <button class="btn sm ghost" data-iedit="${i.id}">変更</button> <button class="btn sm danger" data-idel="${i.id}">削除</button>`:""}</td></tr>
+      ${isAdmin?`<tr id="ie-${i.id}" hidden><td colspan="5"><div class="row"><label class="f">表示名<input id="e${i.id}-label" value="${esc(i.label)}"></label>${fields(i.kind, i.config, "e"+i.id)}
+        <label class="f">新しい${TOKEN_LABEL[i.kind]}<input id="e${i.id}-token" type="password" autocomplete="off" placeholder="空欄なら変更しない"></label>
+        <button class="btn sm" data-isave="${i.id}">保存</button></div><div id="ieMsg-${i.id}"></div></td></tr>`:""}`).join("")||'<tr><td colspan="5" class="hint">まだ登録されていません</td></tr>'}
+    </tbody></table></div><div id="iMsg"></div>
+    ${isAdmin?`<h3 style="margin-top:14px">新しく登録</h3><div class="row"><label class="f">種類<select id="iKind">${Object.entries(ITOOL).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label><label class="f">表示名<input id="n-label" placeholder="任意"></label></div>
+      <div class="row" id="iFields"></div>
+      <div class="row"><label class="f" id="iTokW">トークン<input id="n-token" type="password" autocomplete="off"></label><button class="btn" id="iAdd">登録</button></div><div id="iAddMsg"></div>`:""}`;
+  const collect=(kind, pre)=>Object.fromEntries(INTEG_FIELDS[kind].map(([k])=>[k, document.getElementById(`${pre}-${k}`).value.trim()]).filter(([,v])=>v!==""));
+  if($("#iKind")){
+    const sync=()=>{ const k=$("#iKind").value; $("#iFields").innerHTML=fields(k); $("#iTokW").firstChild.textContent=TOKEN_LABEL[k]; };
+    $("#iKind").onchange=sync; sync();
+    $("#iAdd").onclick=async()=>{
+      const kind=$("#iKind").value, body={kind, config:collect(kind,"n"), token:$("#n-token").value};
+      if($("#n-label").value.trim()) body.label=$("#n-label").value.trim();
+      try{ await api(`/api/orgs/${S.orgId}/integrations`,{method:"POST",body}); toast("登録しました"); loadIntegrations() }
+      catch(e){ $("#iAddMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+    };
+  }
+  panel.querySelectorAll("[data-iedit]").forEach(b=>b.onclick=()=>{const r=$("#ie-"+b.dataset.iedit); r.hidden=!r.hidden});
+  panel.querySelectorAll("[data-idel]").forEach(b=>b.onclick=async()=>{ if(!confirm("この連携先を削除しますか？（登録済みの課題との対応記録は残ります）")) return; try{ await api(`/api/orgs/${S.orgId}/integrations/${b.dataset.idel}`,{method:"DELETE"}); toast("削除しました"); loadIntegrations() }catch(e){ toast(e.message) } });
+  panel.querySelectorAll("[data-itest]").forEach(b=>b.onclick=async()=>{
+    b.disabled=true;
+    try{ const r=await api(`/api/orgs/${S.orgId}/integrations/${b.dataset.itest}/test`,{method:"POST"}); $("#iMsg").innerHTML=`<div class="note ${r.ok?"":"err"}" style="${r.ok?"background:var(--accent-soft)":""}">${esc(r.message)}</div>` }
+    catch(e){ $("#iMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+    finally{ b.disabled=false }
+  });
+  panel.querySelectorAll("[data-isave]").forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.isave, i=list.find(x=>x.id===id), pre="e"+id;
+    const config=Object.fromEntries(INTEG_FIELDS[i.kind].map(([k])=>[k, document.getElementById(`${pre}-${k}`).value.trim()]).filter(([k,v])=>v!==""||k==="labels"||k==="email"));
+    const body={label:$(`#${pre}-label`).value.trim(), config};
+    if($(`#${pre}-token`).value) body.token=$(`#${pre}-token`).value;
+    try{ await api(`/api/orgs/${S.orgId}/integrations/${id}`,{method:"PATCH",body}); toast("変更しました"); loadIntegrations() }
+    catch(e){ $("#ieMsg-"+id).innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  });
+}
 
 /* ---------- 起動 ---------- */
 async function reload(){
