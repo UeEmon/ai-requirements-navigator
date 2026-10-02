@@ -38,10 +38,10 @@ describe("非専門家向けの支援・要件の手直し・非同期実行・�
   async function project(mode: "multi" | "single" = "multi") {
     const ids: string[] = [];
     for (const label of ["Claude役", "GPT役", "評価役"]) {
-      ids.push((await (await req(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor: "mock", model: "mock", label }))))).json()).id);
+      ids.push((await (await req(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor: "mock", model: "mock", label })))).json()).id);
     }
     const aiConfig = mode === "multi" ? { mode, generatorIds: [ids[0], ids[1]], evaluatorId: ids[2] } : { mode, generatorIds: [ids[0]] };
-    return (await (await req(`/api/orgs/${orgId}/projects`, as("editor", json({ name: "予約", aiConfig }))))).json());
+    return (await req(`/api/orgs/${orgId}/projects`, as("editor", json({ name: "予約", aiConfig })))).json();
   }
   async function decide(projectId: string, answer = "電話予約を減らしたい", advancePhase = false) {
     const round = await (await req(`/api/projects/${projectId}/rounds`, as("editor", json({ answer })))).json();
