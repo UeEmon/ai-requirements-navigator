@@ -110,7 +110,7 @@ jobs:
           NADD=$(curl -fs -X POST localhost:8787/api/projects/$PJ/nfr/requirements "${H[@]}" -d '{"systemName":"予約システム"}' | jq '.added | length')
           [ "$NADD" -gt 5 ] && echo "::notice::非機能要件シートOK（EARSの非機能要件 $NADD 件）"
           curl -fs localhost:8787/api/projects/$PJ/nfr "${H[@]}" | jq -c '.evaluation | {coverage, findings: [.findings[].severity]}'
- → 変更要求の影響分析（非同期）→ 変更
+          # 画面イメージ → 要件定義の確定 → 変更要求の影響分析（非同期）→ 変更
           SC=$(curl -fs -X POST localhost:8787/api/projects/$PJ/screens/generate "${H[@]}" -d '{}' | jq -r .screens.revision)
           [ "$SC" = 1 ] && echo "::notice::画面イメージOK"
           curl -fs localhost:8787/api/projects/$PJ/screens/prototype.html "${H[@]}" | grep -q 'ワイヤーフレーム'
