@@ -38,10 +38,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          npm test > /tmp/test.log 2>&1
+          NO_COLOR=1 FORCE_COLOR=0 npm test > /tmp/test.log 2>&1
           ec=$?
           cat /tmp/test.log
-          if [ $ec -ne 0 ]; then grep -v '^\s*$' /tmp/test.log | tail -60 | while IFS= read -r l; do echo "::error::$l"; done; fi
+          # 注釈は1ステップ10件までなので、失敗に関係する行だけを出す
+          if [ $ec -ne 0 ]; then grep -E "FAIL|×|Error|expected|❯ .*test\.ts|Unhandled|Timeout" /tmp/test.log | grep -v "^\s*$" | head -10 | while IFS= read -r l; do echo "::error::$l"; done; fi
           exit $ec
       - name: License check (production dependencies)
         run: npm run licenses
