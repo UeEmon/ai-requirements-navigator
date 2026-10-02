@@ -270,7 +270,8 @@ function mockImpact(prompt: string): string {
   const ref = (section: string, re: RegExp) =>
     ((prompt.split(`# ${section}`)[1] ?? "").split("\n# ")[0] ?? "")
       .split("\n")
-      .filter((l) => code && l.includes(code))
+      // NFR-01 の中の FR-01 を拾わない
+      .filter((l) => code && new RegExp(`(?<![A-Z])${code}(?!\\d)`).test(l))
       .map((l) => l.match(re)?.[1])
       .filter((x): x is string => !!x);
   return JSON.stringify({

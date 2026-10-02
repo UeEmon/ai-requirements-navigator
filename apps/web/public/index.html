@@ -115,8 +115,10 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
     <button role="tab" data-tab="hear" aria-selected="true" id="t-hear">ヒアリング</button>
     <button role="tab" data-tab="reqs" aria-selected="false" id="t-reqs">要件一覧</button>
     <button role="tab" data-tab="uml" aria-selected="false" id="t-uml">UML</button>
+    <button role="tab" data-tab="screens" aria-selected="false" id="t-screens">画面</button>
     <button role="tab" data-tab="spec" aria-selected="false" id="t-spec">仕様書</button>
     <button role="tab" data-tab="impl" aria-selected="false" id="t-impl">実装連携</button>
+    <button role="tab" data-tab="change" aria-selected="false" id="t-change">変更管理</button>
     <button role="tab" data-tab="admin" aria-selected="false" id="t-admin">AI設定・プロジェクト</button>
   </nav>
 
@@ -140,6 +142,15 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
       <button class="btn sm ghost" id="copySpec">Markdownをコピー</button>
       <span class="hint" id="specMsg"></span></div>
     <pre class="code" id="spec" style="white-space:pre-wrap"></pre></div></section>
+  <section class="view" id="v-screens">
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div><h2 style="margin:0">画面イメージ</h2><p class="hint" id="scrInfo" style="margin:4px 0 0"></p></div>
+      <div class="row"><button class="btn ghost sm" id="scrDl" hidden>HTMLで保存</button><button class="btn" id="scrGen">AIで画面を作る</button></div></div>
+      <div class="verdict" style="margin-top:10px"><b>この段階で確認すること：</b>必要な情報と操作がそろっているか、画面のつながりに無理がないか。
+        色・文字の大きさ・配置・言葉づかいは<b>設計工程で決めます</b>。見た目への意見は「申し送り」として記録し、ここでは作り直しに使いません。</div>
+      <div id="scrMsg"></div>
+      <div id="scrBody"></div></div>
+  </section>
   <section class="view" id="v-impl">
     <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
       <div><h2 style="margin:0">実装タスク</h2><p class="hint" id="implInfo" style="margin:4px 0 0"></p></div>
@@ -153,6 +164,12 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
     <div class="panel"><h2 style="margin:0">トレーサビリティ（要件 → ストーリー → 課題）</h2>
       <p class="hint" style="margin:4px 0 0">機能要件・非機能要件が、どのストーリーで実装され、どの課題として登録されたかを確認できます。</p>
       <div id="trace"></div></div>
+  </section>
+  <section class="view" id="v-change">
+    <div class="panel" id="basePanel"></div>
+    <div class="panel" id="crForm"></div>
+    <div class="panel"><h2 style="margin:0">変更要求</h2><div id="crList"></div></div>
+    <div class="panel" id="crDetail" hidden></div>
   </section>
   <section class="view" id="v-admin"><div class="grid2">
     <div class="panel" id="provPanel"></div>
@@ -324,7 +341,7 @@ async function createOrg(){
 function switchTab(t){
   document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-selected", b.dataset.tab===t));
   document.querySelectorAll("section.view").forEach(v=>v.classList.toggle("on", v.id==="v-"+t));
-  ({reqs:loadReqs, uml:loadUml, spec:loadSpec, impl:loadImpl, admin:renderAdmin}[t]||(()=>{}))();
+  ({reqs:loadReqs, uml:loadUml, screens:loadScreens, spec:loadSpec, impl:loadImpl, change:loadChange, admin:renderAdmin}[t]||(()=>{}))();
 }
 document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 
@@ -478,7 +495,7 @@ async function loadUsage(){
 }
 async function openProject(id){
   if(!id) return;
-  try{ S.project = await api(`/api/projects/${id}`); store.set("projectId", id); S.round=null; S.guide=null; renderHear(); loadGuide(); toast("プロジェクトを開きました") }
+  try{ S.project = await api(`/api/projects/${id}`); store.set("projectId", id); S.round=null; S.guide=null; await loadBaselineState(); renderHear(); loadGuide(); toast("プロジェクトを開きました") }
   catch(e){ toast(e.message) }
 }
 
@@ -508,7 +525,8 @@ function renderHear(){
   const ph=phases[ci], g=S.guide && S.guide.phaseKey===ph.key ? S.guide : null;
   const q = g?.question || ph.question, hint = g?.hint ?? ph.hint, options = g?.options?.length ? g.options : (ph.defaultOptions||[]), glossary = g?.glossary || [];
   const covered = new Set(g?.covered||[]), pct = Math.round((g?.coverage||0)*100);
-  el.innerHTML=`<div class="panel">${strip}<div class="lbl">${esc(S.project.name)} ・ ${S.project.aiConfig.mode==="multi"?"複数AI＋評価AI":"単一AI"} ・ ${esc(ph.name)}</div>
+  const baseNote = S.baseline ? `<div class="note warn" style="margin:0 0 10px">要件定義は確定済みです（確定版 v${S.baseline.version}）。ここで採用した案は要件に直接加えず、「変更管理」で影響を確認する変更要求になります。</div>` : "";
+  el.innerHTML=`<div class="panel">${baseNote}${strip}<div class="lbl">${esc(S.project.name)} ・ ${S.project.aiConfig.mode==="multi"?"複数AI＋評価AI":"単一AI"} ・ ${esc(ph.name)}</div>
     <p class="q" id="q">${gloss(q, glossary)}</p>${hint?`<p class="hint" style="margin-top:-6px">${gloss(hint, glossary)}</p>`:""}
     <div class="chips" id="opts">${options.map(o=>`<button type="button">${esc(o)}</button>`).join("")}</div>
     <textarea id="ans" rows="3" placeholder="思いつくままに書いてください。上の候補を押すと入力できます"></textarea>
@@ -617,7 +635,8 @@ async function decide(pick){
   if(!idx.length){toast("採用する項目を1つ以上チェックしてください");return}
   try{
     const res=await api(`/api/rounds/${S.round.id}/decision`,{method:"POST",body:{pick,itemIndexes:idx,reason:$("#reason").value,advancePhase:false}});
-    toast(`${res.added.length}件を要件に追加しました（${Object.entries(res.mapping).map(([l,n])=>l+"="+n).join(" / ")}）`);
+    if(res.changeRequests?.length) toast(`確定済みのため、${res.changeRequests.length}件を変更要求（${res.changeRequests.map(x=>x.code).join("、")}）にしました。「変更管理」で影響を確認してください`);
+    else toast(`${res.added.length}件を要件に追加しました（${Object.entries(res.mapping).map(([l,n])=>l+"="+n).join(" / ")}）`);
     S.round=null; S.project=await api(`/api/projects/${S.project.id}`); renderHear(); refreshGuide(false);
   }catch(e){ $("#decMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
@@ -627,11 +646,11 @@ const TYPE={BR:"目的",AC:"利用者",FR:"機能",NFR:"非機能",CN:"制約"},
 async function loadReqs(){
   if(!S.project){$("#reqs").innerHTML='<p class="hint">プロジェクトを開いてください</p>';$("#decs").innerHTML="";return}
   const [reqs,decs]=await Promise.all([api(`/api/projects/${S.project.id}/requirements`),api(`/api/projects/${S.project.id}/decisions`)]);
-  const ed=canEdit();
-  $("#reqs").innerHTML=`<table class="t"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>優先度</th><th>根拠</th>${ed?"<th></th>":""}</tr></thead><tbody>
+  const ed=canEdit(), locked=!!S.baseline;
+  $("#reqs").innerHTML=(locked?`<div class="note warn" style="margin:0 0 10px">要件定義は確定済みです（確定版 v${S.baseline.version}）。変更・削除は「変更要求」から行い、後の工程への影響を確認してから決めます。</div>`:"")+`<table class="t"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>優先度</th><th>根拠</th>${ed?"<th></th>":""}</tr></thead><tbody>
     ${reqs.map(r=>`<tr id="rq-${r.id}"><td class="mono">${r.code}${r.version>1?`<br><span class="tag">v${r.version}</span>`:""}</td><td>${TYPE[r.type]}</td>
       <td>${esc(r.title)}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}<div id="rh-${r.id}"></div></td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td>
-      ${ed?`<td style="white-space:nowrap"><button class="btn sm ghost" data-redit="${r.id}">編集</button> <button class="btn sm ghost" data-rhist="${r.id}">履歴</button> <button class="btn sm danger" data-rdel="${r.id}">削除</button></td>`:""}</tr>
+      ${ed?`<td style="white-space:nowrap">${locked?`<button class="btn sm ghost" data-rcr="${r.id}">変更要求</button>`:`<button class="btn sm ghost" data-redit="${r.id}">編集</button>`} <button class="btn sm ghost" data-rhist="${r.id}">履歴</button> ${locked?"":`<button class="btn sm danger" data-rdel="${r.id}">削除</button>`}</td>`:""}</tr>
       ${ed?`<tr id="re-${r.id}" hidden><td colspan="6"><div style="display:flex;flex-direction:column;gap:8px">
         <label class="f">内容<textarea id="reT-${r.id}" rows="2">${esc(r.title)}</textarea></label>
         <label class="f">補足<textarea id="reD-${r.id}" rows="2">${esc(r.description)}</textarea></label>
@@ -641,6 +660,7 @@ async function loadReqs(){
         <div id="reM-${r.id}"></div></div></td></tr>`:""}`).join("")||'<tr><td colspan="6" class="hint">まだありません</td></tr>'}</tbody></table>`;
   const q=k=>document.getElementById(k);
   document.querySelectorAll("[data-redit]").forEach(b=>b.onclick=()=>{const r=q("re-"+b.dataset.redit); r.hidden=!r.hidden});
+  document.querySelectorAll("[data-rcr]").forEach(b=>b.onclick=()=>{ changeState.prefill={kind:"modify", requirementId:b.dataset.rcr}; switchTab("change") });
   document.querySelectorAll("[data-rcancel]").forEach(b=>b.onclick=()=>{q("re-"+b.dataset.rcancel).hidden=true});
   document.querySelectorAll("[data-rsave]").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.rsave;
@@ -661,7 +681,7 @@ async function loadReqs(){
 }
 /* ---------- UML ---------- */
 let mmReady=false, umlCache=null;
-const KIND={usecase:"ユースケース",class:"クラス",sequence:"シーケンス",state:"状態遷移",activity:"アクティビティ"};
+const KIND={usecase:"ユースケース",class:"クラス",sequence:"シーケンス",state:"状態遷移",activity:"アクティビティ",screen:"画面遷移"};
 function isDark(){const t=document.documentElement.dataset.theme;return t?t==="dark":matchMedia("(prefers-color-scheme: dark)").matches}
 function initMermaid(){
   if(mmReady||!window.mermaid) return !!window.mermaid;
@@ -965,12 +985,197 @@ async function loadIntegrations(){
   });
 }
 
+/* ---------- 画面（ワイヤーフレーム） ---------- */
+const scrState={view:null, html:"", show:null};
+async function loadScreens(){
+  if(!S.project){ $("#scrInfo").textContent="プロジェクトを開いてください"; $("#scrBody").innerHTML=""; return }
+  $("#scrGen").hidden=!canEdit();
+  try{
+    scrState.view=await api(`/api/projects/${S.project.id}/screens`);
+    scrState.html=scrState.view.screens?await api(`/api/projects/${S.project.id}/screens/prototype.html`):"";
+    renderScreens();
+  }catch(e){ $("#scrMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+}
+function protoDoc(key){
+  // 最初に表示する画面だけを差し替える（ワイヤーフレームはスクリプトなし）
+  const first=scrState.view.screens.model.screens[0]?.key;
+  return key&&first ? scrState.html.replace(`body:not(:has(.scr:target)) #${first}{`, `body:not(:has(.scr:target)) #${key}{`) : scrState.html;
+}
+function renderScreens(){
+  const v=scrState.view, sc=v.screens;
+  $("#scrDl").hidden=!sc;
+  $("#scrGen").textContent = !sc ? "AIで画面を作る" : v.open.length ? `意見（${v.open.length}件）を反映して作り直す` : "作り直す";
+  if(!sc){ $("#scrInfo").textContent="確定した機能要件から、画面の一覧とつながりを作ります。"; $("#scrBody").innerHTML=""; return }
+  $("#scrInfo").textContent=`${sc.provider} が ${sc.createdAt.slice(0,16).replace("T"," ")} に作成（${sc.revision}回目）／画面 ${sc.model.screens.length}`;
+  const warns=[];
+  if(v.nudge) warns.push(v.nudge);
+  if(sc.stale) warns.push(`画面を作った後に要件が変わっています（${sc.changed.map(esc).join(", ")}）。必要なら作り直してください。`);
+  if(sc.model.uncovered.length) warns.push(`次の機能要件に対応する画面がありません：${sc.model.uncovered.map(esc).join(", ")}`);
+  const fbItem=f=>`<li><span class="mono">${esc(f.screenKey||"全体")}</span> ${esc(f.text)}</li>`;
+  $("#scrBody").innerHTML=warns.map(w=>`<div class="note warn">${w}</div>`).join("")+`
+    <div class="row" style="margin:12px 0 6px;align-items:center"><span class="hint">画面：</span>${sc.model.screens.map(s=>`<button class="btn sm ${scrState.show===s.key?"":"ghost"}" data-scr="${esc(s.key)}">${esc(s.key)} ${esc(s.name)}</button>`).join("")}</div>
+    <iframe id="proto" title="画面イメージ" sandbox style="width:100%;height:640px;border:1px solid var(--rule);border-radius:6px;background:#fff"></iframe>
+    <h3 style="margin:16px 0 6px">画面への意見</h3>
+    ${canEdit()?`<div class="row" style="align-items:flex-end"><label class="f">対象<select id="fbKey"><option value="">全体</option>${sc.model.screens.map(s=>`<option value="${esc(s.key)}" ${scrState.show===s.key?"selected":""}>${esc(s.key)} ${esc(s.name)}</option>`).join("")}</select></label>
+      <label class="f" style="flex:1">意見<input id="fbText" placeholder="例：予約の確認画面に、電話番号の入力欄が足りない"></label><button class="btn" id="fbSend">送る</button></div>
+      <p class="hint">「足りない情報」「できない操作」「戻れない」など、要件に関わる点を書いてください。見た目の指摘は設計工程への申し送りになります。</p><div id="fbMsg"></div>`:""}
+    <div class="grid2" style="margin-top:8px">
+      <div><b class="cmt">次の作り直しで反映（${v.open.length}）</b><ul class="cmt">${v.open.map(fbItem).join("")||"<li>なし</li>"}</ul>
+        <b class="cmt">反映済み（${v.applied.length}）</b><ul class="cmt">${v.applied.map(fbItem).join("")||"<li>なし</li>"}</ul></div>
+      <div><b class="cmt">設計工程への申し送り（${v.notes.length}）</b><ul class="cmt">${v.notes.map(fbItem).join("")||"<li>なし</li>"}</ul></div></div>`;
+  $("#proto").srcdoc=protoDoc(scrState.show);
+  document.querySelectorAll("[data-scr]").forEach(b=>b.onclick=()=>{ scrState.show=b.dataset.scr; renderScreens() });
+  if($("#fbSend")) $("#fbSend").onclick=async()=>{
+    const text=$("#fbText").value.trim(); if(!text) return;
+    try{
+      const r=await api(`/api/projects/${S.project.id}/screens/feedback`,{method:"POST",body:{screenKey:$("#fbKey").value||null,text}});
+      scrState.view=await api(`/api/projects/${S.project.id}/screens`); renderScreens();
+      $("#fbMsg").innerHTML=`<div class="note ${r.feedback.level==="detail"?"warn":""}" style="${r.feedback.level==="detail"?"":"background:var(--accent-soft)"}">${esc(r.guidance)}</div>`;
+    }catch(e){ $("#fbMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+}
+$("#scrGen").onclick=async()=>{
+  if(!S.project) return;
+  const b=$("#scrGen"); b.disabled=true;
+  $("#scrMsg").innerHTML='<p class="hint">AIが画面の一覧を作成しています…</p><div id="scrProg"></div>';
+  try{
+    const r=await runJob(`/api/projects/${S.project.id}/screens/generate`, {applyFeedback:true}, p=>{const el=$("#scrProg"); if(el) el.innerHTML=stepsHtml(p)});
+    $("#scrMsg").innerHTML=(r.warnings||[]).filter(w=>!w.startsWith("次の機能要件")).map(w=>`<div class="note warn">${esc(w)}</div>`).join("");
+    scrState.show=null; await loadScreens();
+  }catch(e){ $("#scrMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  finally{ b.disabled=false }
+};
+$("#scrDl").onclick=()=>{ if(scrState.html) saveBlob(new Blob([scrState.html],{type:"text/html"}), `${fileSafe(S.project.name)}_画面イメージ.html`) };
+
+/* ---------- 確定・変更管理 ---------- */
+const changeState={list:[], selected:null, prefill:null, reqs:[]};
+const CR_KIND={modify:"変更",add:"追加",delete:"削除"}, CR_ST={open:["分析待ち","warn"],analyzed:["判断待ち","warn"],approved:["変更済み","good"],deferred:["保留",""],rejected:["変更しない",""]};
+const SCALE={small:"小",medium:"中",large:"大"};
+async function loadBaselineState(){
+  S.baseline=null;
+  if(!S.project) return;
+  try{ S.baselineInfo=await api(`/api/projects/${S.project.id}/baseline`); S.baseline=S.baselineInfo.current }catch(e){ S.baselineInfo=null }
+}
+async function loadChange(){
+  if(!S.project){ $("#basePanel").innerHTML='<p class="hint">プロジェクトを開いてください</p>'; $("#crForm").innerHTML=""; $("#crList").innerHTML=""; return }
+  await loadBaselineState();
+  const [list, reqs]=await Promise.all([api(`/api/projects/${S.project.id}/changes`), api(`/api/projects/${S.project.id}/requirements`)]);
+  changeState.list=list; changeState.reqs=reqs;
+  renderBaseline(); renderCrForm(); renderCrList();
+  if(changeState.selected) renderCrDetail(changeState.list.find(x=>x.id===changeState.selected)); else $("#crDetail").hidden=true;
+}
+function renderBaseline(){
+  const b=S.baseline, info=S.baselineInfo||{history:[]};
+  $("#basePanel").innerHTML=`<h2 style="margin:0">要件定義の確定</h2>`+(b?`
+    <p style="margin:8px 0">確定版 <b class="mono">v${b.version}</b>（${b.createdAt.slice(0,16).replace("T"," ")}・${esc(b.createdBy)}）・要件 ${b.snapshot.length}件　<span class="hint">判断待ち ${info.pending}件・保留 ${info.deferred}件</span></p>
+    <details><summary class="hint">確定版の履歴</summary><ul class="cmt">${info.history.map(h=>`<li>v${h.version} ${h.createdAt.slice(0,10)} ${esc(h.reason)}（要件 ${h.requirements}件）</li>`).join("")}</ul></details>`:`
+    <p class="hint">要件がそろったら確定します。確定後の変更・追加は「変更要求」として登録し、設計・画面・実装タスク・登録済みの課題への影響を確認してから、変更するかどうかを決めます。</p>
+    ${canEdit()?`<div class="row" style="align-items:flex-end"><label class="f" style="flex:1">確定の理由・メモ（任意）<input id="bReason" placeholder="例：関係者の確認が完了"></label><button class="btn" id="bGo">要件定義を確定する</button></div><div id="bMsg"></div>`:""}`);
+  if($("#bGo")) $("#bGo").onclick=async()=>{
+    if(!confirm("要件定義を確定します。以後、要件の変更・追加・削除は変更要求として行います。よろしいですか？")) return;
+    try{ await api(`/api/projects/${S.project.id}/baseline`,{method:"POST",body:{reason:$("#bReason").value.trim()}}); toast("要件定義を確定しました"); loadChange() }
+    catch(e){ $("#bMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+}
+function renderCrForm(){
+  const el=$("#crForm");
+  if(!S.baseline||!canEdit()){ el.hidden=true; return }
+  el.hidden=false;
+  const pf=changeState.prefill||{kind:"modify"}; changeState.prefill=null;
+  const reqs=changeState.reqs;
+  el.innerHTML=`<h2 style="margin:0">変更要求を登録</h2>
+    <div class="row" style="margin-top:8px"><label class="f">種類<select id="crKind">${Object.entries(CR_KIND).map(([k,v])=>`<option value="${k}" ${k===pf.kind?"selected":""}>${v}</option>`).join("")}</select></label>
+      <label class="f" id="crReqW" style="flex:1">対象の要件<select id="crReq">${reqs.map(r=>`<option value="${esc(r.id)}" ${r.id===pf.requirementId?"selected":""}>${esc(r.code)} ${esc(r.title.slice(0,40))}</option>`).join("")}</select></label>
+      <label class="f" id="crTypeW">区分<select id="crType">${Object.entries(TYPE).map(([k,v])=>`<option value="${k}" ${k==="FR"?"selected":""}>${v}</option>`).join("")}</select></label></div>
+    <div id="crBodyW" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+      <label class="f">内容（変更後）<textarea id="crTitle" rows="2"></textarea></label>
+      <label class="f">補足<textarea id="crDesc" rows="2"></textarea></label>
+      <label class="f" style="max-width:12em">優先度<select id="crPri">${Object.entries(PRI).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label></div>
+    <div class="row" style="margin-top:8px;align-items:flex-end"><label class="f" style="flex:1">理由<input id="crReason" placeholder="例：日時の変更の問い合わせが多い"></label><button class="btn" id="crAdd">登録して影響を分析する</button></div><div id="crMsg"></div>`;
+  const fill=()=>{ const r=reqs.find(x=>x.id===$("#crReq").value); if(!r) return; $("#crTitle").value=r.title; $("#crDesc").value=r.description||""; $("#crPri").value=r.priority };
+  const sync=()=>{ const k=$("#crKind").value; $("#crReqW").hidden=k==="add"; $("#crTypeW").hidden=k!=="add"; $("#crBodyW").hidden=k==="delete"; if(k==="modify") fill(); if(k==="add"){ $("#crTitle").value=""; $("#crDesc").value=""; $("#crPri").value="should" } };
+  $("#crKind").onchange=sync; $("#crReq").onchange=()=>{ if($("#crKind").value==="modify") fill() }; sync();
+  $("#crAdd").onclick=async()=>{
+    const k=$("#crKind").value, body={kind:k, reason:$("#crReason").value.trim()};
+    if(k!=="add") body.requirementId=$("#crReq").value;
+    if(k!=="delete"){ body.title=$("#crTitle").value.trim(); body.description=$("#crDesc").value.trim(); body.priority=$("#crPri").value }
+    if(k==="add") body.type=$("#crType").value;
+    try{ const cr=await api(`/api/projects/${S.project.id}/changes`,{method:"POST",body}); changeState.selected=cr.id; await loadChange(); analyzeChange(cr.id) }
+    catch(e){ $("#crMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+}
+function crTarget(x){ return `${x.requirementCode?`<span class="mono">${esc(x.requirementCode)}</span> `:""}${x.proposal?esc(x.proposal.title):""}` }
+function renderCrList(){
+  const l=changeState.list;
+  $("#crList").innerHTML=!S.baseline?'<p class="hint">要件定義を確定すると、ここで変更要求を扱います。</p>':`<div class="scroll"><table class="t"><thead><tr><th>番号</th><th>種類</th><th>内容</th><th>状態</th><th></th></tr></thead><tbody>
+    ${l.map(x=>{const [lab,cls]=CR_ST[x.status]||[x.status,""]; return `<tr${x.id===changeState.selected?' style="background:var(--accent-soft)"':""}><td class="mono">${esc(x.code)}</td><td>${CR_KIND[x.kind]}${x.source==="hearing"?'<br><span class="tag">ヒアリング</span>':""}</td><td>${crTarget(x)}</td>
+      <td><span class="st ${cls}">${lab}</span>${x.impact?`<br><span class="tag">影響 ${SCALE[x.impact.scale]}</span>`:""}</td><td><button class="btn sm ghost" data-crsel="${x.id}">開く</button></td></tr>`}).join("")||'<tr><td colspan="5" class="hint">まだありません</td></tr>'}</tbody></table></div>`;
+  document.querySelectorAll("[data-crsel]").forEach(b=>b.onclick=()=>{ changeState.selected=b.dataset.crsel; renderCrList(); renderCrDetail(changeState.list.find(x=>x.id===b.dataset.crsel)) });
+}
+async function analyzeChange(id){
+  $("#crDetail").hidden=false;
+  $("#crDetail").innerHTML='<h2 style="margin:0">影響分析</h2><p class="hint">設計・画面・実装タスク・登録済みの課題への影響を調べています…</p><div id="crProg"></div>';
+  try{
+    await runJob(`/api/changes/${id}/analyze`, {}, p=>{const el=$("#crProg"); if(el) el.innerHTML=stepsHtml(p)});
+    await loadChange();
+  }catch(e){ $("#crDetail").innerHTML+=`<div class="note err">${esc(e.message)}</div>` }
+}
+function votes(v, n){ return `${v.traced?'<span class="tag">トレース</span> ':""}${n?`<span class="tag">AI ${v.votes}/${n}</span>`:""}` }
+function renderCrDetail(x){
+  const el=$("#crDetail"); if(!x){ el.hidden=true; return }
+  el.hidden=false;
+  const i=x.impact, n=i?.analysts||0, req=changeState.reqs.find(r=>r.id===x.requirementId);
+  const before=x.kind!=="add"&&req?`<div class="cmt">変更前：${esc(req.title)}${req.description?`／${esc(req.description)}`:""}（${PRI[req.priority]||req.priority}）</div>`:"";
+  const after=x.proposal?`<div>${x.kind==="add"?`追加（${TYPE[x.proposal.type]}）`:"変更後"}：<b>${esc(x.proposal.title)}</b>${x.proposal.description?`／${esc(x.proposal.description)}`:""}（${PRI[x.proposal.priority]||x.proposal.priority}）</div>`:(x.kind==="delete"?`<div><b>削除</b>：${esc(x.requirementCode||"")}</div>`:"");
+  const list=(title, items, fmt)=>items.length?`<div><b class="cmt">${title}（${items.length}）</b><ul class="cmt">${items.map(fmt).join("")}</ul></div>`:"";
+  const decided=x.status==="approved"||x.status==="rejected";
+  el.innerHTML=`<h2 style="margin:0">${esc(x.code)} ${CR_KIND[x.kind]}の影響分析</h2>
+    <div style="margin:8px 0">${before}${after}<div class="cmt">理由：${esc(x.reason||"（未記入）")}</div></div>
+    ${!i?`<p class="hint">まだ分析していません。</p>`:`
+      <div class="row" style="gap:18px;margin:6px 0 10px"><span>影響の大きさ <b>${SCALE[i.scale]}</b></span><span>追加の工数の目安 <b class="mono">${esc(i.effort)}</b></span><span>見直すストーリー <b class="mono">${i.points}</b> ポイント分</span><span class="hint">分析したAI ${n}件・${(i.analyzedAt||"").slice(0,16).replace("T"," ")}</span></div>
+      ${(i.warnings||[]).map(w=>`<div class="note warn">${esc(w)}</div>`).join("")}
+      ${i.summaries.map(s=>`<div class="verdict"><b>${esc(s.provider)}：</b>${esc(s.summary)}</div>`).join("")}
+      ${(i.failures||[]).map(f=>`<div class="note warn">${esc(f.provider)}：${esc(f.reason)}</div>`).join("")}
+      <div class="grid2" style="margin-top:10px">
+        ${list("見直しが必要な要件", i.requirements, v=>`<li><span class="mono">${esc(v.item.code)}</span> ${esc(v.item.title)} ${votes(v,n)}</li>`)}
+        ${list("設計（UML）", i.design, v=>`<li>${esc(v.item.name)} ${votes(v,n)}</li>`)}
+        ${list("画面", i.screens, v=>`<li><span class="mono">${esc(v.item.key)}</span> ${esc(v.item.name)} ${votes(v,n)}</li>`)}
+        ${list("実装タスク（ストーリー）", i.stories, v=>`<li><span class="mono">${esc(v.item.key)}</span> ${esc(v.item.title)}（${v.item.points}pt） ${votes(v,n)}</li>`)}
+        ${list("登録済みの課題", i.issues, v=>`<li><span class="mono">${esc(v.storyKey)}</span> ${linkHtml(v)} <span class="hint">${esc(v.integration||"")}</span></li>`)}
+        ${list("リスク", i.risks, r=>`<li>${esc(r)}</li>`)}
+      </div>
+      ${i.alternatives.length?`<div><b class="cmt">代替案</b><ul class="cmt">${i.alternatives.map(a=>`<li><b>${esc(a.title)}</b>（${esc(a.provider||"")}）：${esc(a.description)}</li>`).join("")}</ul></div>`:""}`}
+    ${x.decision?`<div class="note" style="background:var(--accent-soft)">判断：${esc(({apply:"変更する",alternative:"代替案で変更",defer:"保留",reject:"変更しない"})[x.decision.option])}（${esc(x.decision.by)}・${x.decision.at.slice(0,16).replace("T"," ")}）${x.decision.reason?`／${esc(x.decision.reason)}`:""}${x.decision.baselineVersion?`／確定版 v${x.decision.baselineVersion}`:""}${x.decision.requirementCode?`／${esc(x.decision.requirementCode)}`:""}</div>`:""}
+    ${!decided&&canEdit()?`
+      <div class="row" style="margin-top:12px"><button class="btn sm ghost" id="crAnalyze">${i?"分析し直す":"影響を分析する"}</button></div>
+      ${i?`<h3 style="margin:16px 0 6px">どうしますか</h3>
+        <div class="grid2">${i.options.map(o=>`<div class="cand" style="padding:10px 12px"><b>${esc(o.label)}</b><p class="cmt" style="margin:6px 0 8px">${esc(o.consequence)}</p><button class="btn sm ${o.key==="apply"?"":"ghost"}" data-opt="${o.key}">これにする</button></div>`).join("")}</div>
+        <label class="f" style="margin-top:10px">判断の理由（記録に残ります）<input id="crDecReason" placeholder="例：問い合わせ削減の効果が大きいため"></label>`
+        :`<div class="row" style="margin-top:8px"><button class="btn sm ghost" data-opt="defer">保留する</button><button class="btn sm ghost" data-opt="reject">変更しない</button></div>`}
+      <div id="crDecMsg"></div>`:""}`;
+  if($("#crAnalyze")) $("#crAnalyze").onclick=()=>analyzeChange(x.id);
+  el.querySelectorAll("[data-opt]").forEach(b=>b.onclick=async()=>{
+    const opt=b.dataset.opt;
+    if((opt==="apply"||opt==="alternative") && !confirm("要件定義を変更し、確定版の版を上げます。よろしいですか？")) return;
+    try{
+      const r=await api(`/api/changes/${x.id}/decide`,{method:"POST",body:{option:opt, reason:($("#crDecReason")?.value||"").trim()}});
+      toast(r.change.status==="approved"?`確定版 v${r.change.decision.baselineVersion} にしました`:"記録しました");
+      await loadChange();
+      if(r.followUps){
+        const f=r.followUps, items=[f.design.length?`設計（UML）${f.design.length}か所`:"", f.screens.length?`画面 ${f.screens.length}件（「画面」タブで作り直し）`:"", f.stories.length?`ストーリー ${f.stories.length}件（「実装連携」で分解し直し）`:"", f.issues.length?`登録済みの課題 ${f.issues.length}件（課題管理ツールで更新）`:""].filter(Boolean);
+        $("#crDetail").insertAdjacentHTML("beforeend", `<div class="note warn"><b>次に見直すもの：</b>${items.length?items.map(esc).join("、"):"影響は見つかっていません"}</div>`);
+      }
+    }catch(e){ $("#crDecMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  });
+}
+
 /* ---------- 起動 ---------- */
 async function reload(){
   if(isOidc() && !S.token){ signedOut(); return; }
   await loadProviders();
   const pid=store.get("projectId");
   if(pid && (!S.project || S.project.id!==pid)) { try{ S.project=await api(`/api/projects/${pid}`) }catch(e){ S.project=null } }
+  await loadBaselineState();
   renderHear(); loadGuide();
   if($("#v-admin").classList.contains("on")) renderAdmin();
 }

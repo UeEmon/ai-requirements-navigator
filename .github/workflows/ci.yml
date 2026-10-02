@@ -94,6 +94,17 @@ jobs:
           curl -fs localhost:8787/api/projects/$PJ/tasks/file/jira.csv "${H[@]}" | head -2
           curl -fs localhost:8787/api/projects/$PJ/trace "${H[@]}" | jq -ce '.summary | select(.covered == .targets)'
           curl -fs -X POST localhost:8787/api/orgs/$ORG/integrations "${H[@]}" -d '{"kind":"github","config":{"owner":"acme","repo":"app"},"token":"ghp_dummy1234"}' | jq -ce 'select(.token == "••••1234") | {target, token}'
+          # 画面イメージ → 要件定義の確定 → 変更要求の影響分析（非同期）→ 変更
+          SC=$(curl -fs -X POST localhost:8787/api/projects/$PJ/screens/generate "${H[@]}" -d '{}' | jq -r .screens.revision)
+          [ "$SC" = 1 ] && echo "::notice::画面イメージOK"
+          curl -fs localhost:8787/api/projects/$PJ/screens/prototype.html "${H[@]}" | grep -q 'ワイヤーフレーム'
+          curl -fs -X POST localhost:8787/api/projects/$PJ/screens/feedback "${H[@]}" -d '{"text":"ボタンの色を青にしてほしい"}' | jq -ce 'select(.feedback.level == "detail") | .guidance'
+          curl -fs -X POST localhost:8787/api/projects/$PJ/baseline "${H[@]}" -d '{"reason":"CI"}' | jq -c '{version}'
+          RQ1=$(curl -fs localhost:8787/api/projects/$PJ/requirements "${H[@]}" | jq -r '[.[] | select(.type == "FR")][0].id')
+          CR=$(curl -fs -X POST localhost:8787/api/projects/$PJ/changes "${H[@]}" -d "{\"kind\":\"modify\",\"requirementId\":\"$RQ1\",\"title\":\"変更後の要件\",\"reason\":\"CI\"}" | jq -r .id)
+          IJ=$(curl -fs -X POST "localhost:8787/api/changes/$CR/analyze?async=1" "${H[@]}" | jq -r .jobId)
+          for i in $(seq 1 30); do S=$(curl -fs localhost:8787/api/jobs/$IJ "${H[@]}" | jq -r .status); [ "$S" = done ] && break; [ "$S" = failed ] && exit 1; sleep 1; done
+          curl -fs -X POST localhost:8787/api/changes/$CR/decide "${H[@]}" -d '{"option":"apply","reason":"CI"}' | jq -ce 'select(.change.decision.baselineVersion == 2) | {status: .change.status, stories: (.followUps.stories | length)}' && echo "::notice::変更管理OK（確定版 v2）"
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"docx"}' -o spec.docx && file spec.docx
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"pdf"}' -o spec.pdf && head -c 5 spec.pdf | grep -q '%PDF-'
           grep -a -q 'NotoSansCJK' spec.pdf && echo "::notice::PDFに日本語フォント(Noto Sans CJK)が埋め込まれています ($(stat -c%s spec.pdf) bytes)"
