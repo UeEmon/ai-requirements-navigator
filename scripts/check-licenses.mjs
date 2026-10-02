@@ -135,7 +135,11 @@ if (noticesFile) {
 
 if (bad.length) {
   console.error("\n許可されていないライセンスのパッケージがあります:");
-  for (const e of bad) console.error(`  ${e.name}@${e.version}: ${e.license}`);
+  for (const e of bad) {
+    console.error(`  ${e.name}@${e.version}: ${e.license}`);
+    // GitHub Actions では注釈として表示する
+    if (process.env.GITHUB_ACTIONS) console.log(`::error title=License::${e.name}@${e.version} (${e.license}) at ${e.dir.replace(ROOT + "/", "")}`);
+  }
   console.error("docs/oss-policy.md の方針に従い、代替パッケージを検討してください。");
   process.exit(1);
 }
