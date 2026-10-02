@@ -69,7 +69,8 @@ jobs:
           curl -fs -X POST localhost:8787/api/projects/$PJ/uml/generate "${H[@]}" | jq -c '[.diagrams[].kind]'
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"docx"}' -o spec.docx && file spec.docx
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"pdf"}' -o spec.pdf && head -c 5 spec.pdf | grep -q '%PDF-'
-          pdffonts spec.pdf 2>/dev/null || true
+          grep -a -q 'NotoSansCJK' spec.pdf && echo "::notice::PDFに日本語フォント(Noto Sans CJK)が埋め込まれています ($(stat -c%s spec.pdf) bytes)"
+          unzip -l spec.docx | grep -q 'word/document.xml' && echo "::notice::Word出力OK ($(stat -c%s spec.docx) bytes)"
           ls -la spec.docx spec.pdf
           curl -fs localhost:8787/ | grep -q '要件ナビ'
           curl -fs localhost:8787/vendor/mermaid.min.js > /dev/null

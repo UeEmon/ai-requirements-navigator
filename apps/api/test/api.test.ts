@@ -273,6 +273,7 @@ describe("API", () => {
     const buf = Buffer.from(await r.arrayBuffer());
     expect(buf.subarray(0, 5).toString()).toBe("%PDF-");
     expect(buf.length).toBeGreaterThan(5000);
+    expect(buf.includes(Buffer.from("NotoSansCJK"))).toBe(true); // 日本語フォントが埋め込まれている
     expect(t.storage.files.size).toBe(0);
   }, 30_000);
 
