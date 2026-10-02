@@ -4,6 +4,11 @@ import type { RequirementItem } from "@arn/ai-core";
 import type { Guide, UmlModel } from "@arn/ai-core";
 import type {
   AuditEntry,
+  Baseline,
+  ChangeRequest,
+  ChangeRequestPatch,
+  ScreenFeedback,
+  ScreenRecord,
   CredentialPatch,
   Decision,
   ExportItem,
@@ -175,6 +180,56 @@ const toExport = (r: any): TaskExport => ({
   items: r.items as ExportItem[],
   createdBy: r.created_by,
   createdAt: iso(r.created_at),
+});
+
+const toScreens = (r: any): ScreenRecord => ({
+  id: r.id,
+  projectId: r.project_id,
+  model: r.model,
+  providerId: r.provider_id,
+  basis: r.basis,
+  revision: r.revision,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+});
+const toFeedback = (r: any): ScreenFeedback => ({
+  id: r.id,
+  projectId: r.project_id,
+  screenKey: r.screen_key,
+  text: r.text,
+  level: r.level,
+  detailHits: r.detail_hits,
+  requirementHits: r.requirement_hits,
+  status: r.status,
+  revision: r.revision,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+});
+const toBaseline = (r: any): Baseline => ({
+  id: r.id,
+  projectId: r.project_id,
+  version: r.version,
+  snapshot: r.snapshot,
+  reason: r.reason,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+});
+const toChange = (r: any): ChangeRequest => ({
+  id: r.id,
+  projectId: r.project_id,
+  code: r.code,
+  kind: r.kind,
+  requirementId: r.requirement_id,
+  requirementCode: r.requirement_code,
+  proposal: r.proposal,
+  reason: r.reason,
+  status: r.status,
+  impact: r.impact,
+  decision: r.decision,
+  source: r.source,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+  updatedAt: r.updated_at ? iso(r.updated_at) : null,
 });
 
 /** PostgreSQL（ローカルDockerの postgres / AWS RDS）に保存する */
@@ -535,6 +590,88 @@ export class PgStore implements Store {
   async listTaskExports(planId: string) {
     const { rows } = await this.pool.query("SELECT * FROM task_exports WHERE plan_id = $1 ORDER BY created_at DESC, id", [planId]);
     return rows.map(toExport);
+  }
+
+  async saveScreens(r: Omit<ScreenRecord, "id" | "createdAt">) {
+    const { rows } = await this.pool.query(
+      "INSERT INTO screen_models(project_id, model, provider_id, basis, revision, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+      [r.projectId, JSON.stringify(r.model), r.providerId, JSON.stringify(r.basis), r.revision, r.createdBy],
+    );
+    return toScreens(rows[0]);
+  }
+  async latestScreens(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM screen_models WHERE project_id = $1 ORDER BY created_at DESC, revision DESC LIMIT 1", [projectId]);
+    return rows[0] ? toScreens(rows[0]) : null;
+  }
+  async addScreenFeedback(f: Omit<ScreenFeedback, "id" | "createdAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO screen_feedback(project_id, screen_key, text, level, detail_hits, requirement_hits, status, revision, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [f.projectId, f.screenKey, f.text, f.level, JSON.stringify(f.detailHits), JSON.stringify(f.requirementHits), f.status, f.revision, f.createdBy],
+    );
+    return toFeedback(rows[0]);
+  }
+  async listScreenFeedback(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM screen_feedback WHERE project_id = $1 ORDER BY created_at, id", [projectId]);
+    return rows.map(toFeedback);
+  }
+  async setScreenFeedbackStatus(ids: string[], status: ScreenFeedback["status"]) {
+    if (!ids.length) return;
+    await this.pool.query("UPDATE screen_feedback SET status = $2 WHERE id = ANY($1::uuid[])", [ids, status]);
+  }
+
+  async addBaseline(b: Omit<Baseline, "id" | "createdAt" | "version">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO baselines(project_id, version, snapshot, reason, created_by)
+       VALUES ($1, (SELECT coalesce(max(version), 0) + 1 FROM baselines WHERE project_id = $1), $2, $3, $4) RETURNING *`,
+      [b.projectId, JSON.stringify(b.snapshot), b.reason, b.createdBy],
+    );
+    return toBaseline(rows[0]);
+  }
+  async latestBaseline(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM baselines WHERE project_id = $1 ORDER BY version DESC LIMIT 1", [projectId]);
+    return rows[0] ? toBaseline(rows[0]) : null;
+  }
+  async listBaselines(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM baselines WHERE project_id = $1 ORDER BY version DESC", [projectId]);
+    return rows.map(toBaseline);
+  }
+
+  async addChangeRequest(c: Omit<ChangeRequest, "id" | "code" | "createdAt" | "updatedAt" | "status" | "impact" | "decision">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO change_requests(project_id, code, kind, requirement_id, requirement_code, proposal, reason, status, source, created_by)
+       VALUES ($1, (SELECT 'CR-' || lpad((count(*) + 1)::text, 3, '0') FROM change_requests WHERE project_id = $1), $2, $3, $4, $5, $6, 'open', $7, $8)
+       RETURNING *`,
+      [c.projectId, c.kind, c.requirementId, c.requirementCode, c.proposal ? JSON.stringify(c.proposal) : null, c.reason, c.source, c.createdBy],
+    );
+    return toChange(rows[0]);
+  }
+  async getChangeRequest(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM change_requests WHERE id = $1", [id]);
+    return rows[0] ? toChange(rows[0]) : null;
+  }
+  async listChangeRequests(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM change_requests WHERE project_id = $1 ORDER BY created_at DESC, code DESC", [projectId]);
+    return rows.map(toChange);
+  }
+  async updateChangeRequest(id: string, patch: ChangeRequestPatch) {
+    const sets: string[] = [];
+    const vals: unknown[] = [id];
+    if (patch.status !== undefined) {
+      vals.push(patch.status);
+      sets.push(`status = $${vals.length}`);
+    }
+    if (patch.impact !== undefined) {
+      vals.push(patch.impact === null ? null : JSON.stringify(patch.impact));
+      sets.push(`impact = $${vals.length}`);
+    }
+    if (patch.decision !== undefined) {
+      vals.push(patch.decision === null ? null : JSON.stringify(patch.decision));
+      sets.push(`decision = $${vals.length}`);
+    }
+    sets.push("updated_at = now()");
+    const { rows } = await this.pool.query(`UPDATE change_requests SET ${sets.join(", ")} WHERE id = $1 RETURNING *`, vals);
+    return rows[0] ? toChange(rows[0]) : null;
   }
 
   async addUsage(u: Omit<UsageRecord, "at">) {

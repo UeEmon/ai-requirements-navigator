@@ -55,6 +55,8 @@ export function defaultMockHandler(id: string): MockHandler {
     }
     if (req.system.includes("インタビュアー")) return mockGuide(prompt);
     if (req.system.includes("テックリード")) return mockTaskPlan(prompt);
+    if (req.system.includes("画面設計者")) return mockScreens(prompt);
+    if (req.system.includes("変更管理の担当者")) return mockImpact(prompt);
 
     if (req.system.includes("レビュアー")) {
       const labels = [...prompt.matchAll(/### 案([A-D])/g)].map((m) => m[1]!);
@@ -229,4 +231,56 @@ function mockTaskPlan(prompt: string): string {
     });
   }
   return JSON.stringify({ epics });
+}
+
+/** 機能要件を2つずつ1画面にまとめ、前後の画面へ遷移する */
+function mockScreens(prompt: string): string {
+  const frs = [...prompt.matchAll(/^- (FR-\d+) \[FR\] (.+)$/gm)].map((m) => ({ code: m[1]!, title: m[2]! }));
+  const groups: Array<typeof frs> = [];
+  for (let i = 0; i < frs.length; i += 2) groups.push(frs.slice(i, i + 2));
+  if (!groups.length) groups.push([]);
+  const screens = groups.map((g, i) => ({
+    id: `s${i + 1}`,
+    name: i === 0 ? "トップ" : `画面${i + 1}`,
+    purpose: g.map((r) => r.title).join("、") || "利用を始める",
+    actor: "利用者",
+    requirementCodes: g.map((r) => r.code),
+    // 見た目の項目（color など）は返しても捨てられる
+    elements: [
+      { kind: "heading", label: i === 0 ? "ようこそ" : `手続き${i + 1}`, color: "red" },
+      { kind: "field", label: "日時" },
+      { kind: "list", label: "一覧" },
+      { kind: "button", label: "保存" },
+    ],
+    actions: [
+      ...(i + 1 < groups.length ? [{ label: "次へ", to: `s${i + 2}` }] : []),
+      ...(i > 0 ? [{ label: "戻る", to: `s${i}` }] : []),
+      { label: "存在しない画面へ", to: "nowhere" },
+    ],
+  }));
+  if (prompt.includes("# 利用者からの意見")) screens[0]!.elements.push({ kind: "field", label: "意見を反映した項目" } as never);
+  return JSON.stringify({ screens });
+}
+
+/** 変更対象の要件と、それを参照するストーリー・画面を影響ありとする */
+function mockImpact(prompt: string): string {
+  const target = prompt.match(/対象の要件: (\S+)/)?.[1];
+  const firstFr = prompt.match(/^- (FR-\d+) \[FR\]/m)?.[1];
+  const code = target ?? firstFr ?? "";
+  const ref = (section: string, re: RegExp) =>
+    ((prompt.split(`# ${section}`)[1] ?? "").split("\n# ")[0] ?? "")
+      .split("\n")
+      .filter((l) => code && l.includes(code))
+      .map((l) => l.match(re)?.[1])
+      .filter((x): x is string => !!x);
+  return JSON.stringify({
+    summary: `${code || "既存の機能"}に関係する画面と実装タスクの見直しが必要です。`,
+    relatedRequirementCodes: code ? [code, "FR-99"] : [],
+    designElements: ["Reservation", "存在しない要素"],
+    screens: ref("画面", /^- (S\d+)/),
+    stories: ref("実装タスク（ストーリー）", /^- (E\d+-S\d+)/),
+    effort: "m",
+    risks: ["登録済みのデータの移行が必要になる可能性があります", "関連する機能のテストのやり直しが必要です"],
+    alternative: { title: "運用で対応する", description: "当面は管理者が手作業で対応し、次の段階で機能として追加します。" },
+  });
 }

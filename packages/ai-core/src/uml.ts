@@ -15,7 +15,7 @@ export interface UmlRequirement {
   title: string;
 }
 
-export type DiagramKind = "usecase" | "class" | "sequence" | "state" | "activity";
+export type DiagramKind = "usecase" | "class" | "sequence" | "state" | "activity" | "screen";
 
 export interface Diagram {
   kind: DiagramKind;

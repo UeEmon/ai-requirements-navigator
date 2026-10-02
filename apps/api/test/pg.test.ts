@@ -149,6 +149,32 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       expect(await store.listIntegrations(org.id)).toHaveLength(0);
       // 連携先を削除しても登録の履歴は残る
       expect(await store.listTaskExports(tp.id)).toHaveLength(1);
+
+      // 画面・意見・確定版・変更要求
+      const sr = await store.saveScreens({ projectId: project.id, model: { screens: [], uncovered: [], dropped: 0 }, providerId: cred.id, basis: [], revision: 1, createdBy: "u1" });
+      await store.saveScreens({ projectId: project.id, model: { screens: [], uncovered: ["FR-01"], dropped: 0 }, providerId: cred.id, basis: [], revision: 2, createdBy: "u1" });
+      expect((await store.latestScreens(project.id))!.revision).toBe(2);
+      expect(sr.revision).toBe(1);
+      const fb1 = await store.addScreenFeedback({ projectId: project.id, screenKey: "S01", text: "色", level: "detail", detailHits: ["色"], requirementHits: [], status: "noted", revision: 1, createdBy: "u1" });
+      const fb2 = await store.addScreenFeedback({ projectId: project.id, screenKey: null, text: "項目", level: "requirement", detailHits: [], requirementHits: ["入力する情報"], status: "open", revision: 1, createdBy: "u1" });
+      await store.setScreenFeedbackStatus([fb2.id], "applied");
+      expect((await store.listScreenFeedback(project.id)).map((f) => [f.id, f.status])).toEqual([
+        [fb1.id, "noted"],
+        [fb2.id, "applied"],
+      ]);
+      const bl1 = await store.addBaseline({ projectId: project.id, snapshot: [{ code: "FR-01", type: "FR", title: "t", description: "", priority: "must", version: 1 }], reason: "初版", createdBy: "u1" });
+      const bl2 = await store.addBaseline({ projectId: project.id, snapshot: [], reason: "CR-001", createdBy: "u1" });
+      expect([bl1.version, bl2.version]).toEqual([1, 2]);
+      expect((await store.latestBaseline(project.id))!.version).toBe(2);
+      expect((await store.listBaselines(project.id)).map((b) => b.version)).toEqual([2, 1]);
+      const cr1 = await store.addChangeRequest({ projectId: project.id, kind: "add", requirementId: null, requirementCode: null, proposal: { title: "t", description: "", priority: "should", type: "FR" }, reason: "r", source: "manual", createdBy: "u1" });
+      const cr2 = await store.addChangeRequest({ projectId: project.id, kind: "delete", requirementId: null, requirementCode: "FR-01", proposal: null, reason: "", source: "hearing", createdBy: "u1" });
+      expect([cr1.code, cr2.code, cr1.status]).toEqual(["CR-001", "CR-002", "open"]);
+      const crU = await store.updateChangeRequest(cr1.id, { status: "approved", decision: { option: "apply", reason: "", by: "u1", at: new Date().toISOString(), baselineVersion: 2 } });
+      expect(crU).toMatchObject({ status: "approved", decision: { option: "apply", baselineVersion: 2 }, proposal: { title: "t" } });
+      expect(crU!.updatedAt).not.toBeNull();
+      expect((await store.listChangeRequests(project.id)).map((x) => x.code)).toEqual(["CR-002", "CR-001"]);
+      expect((await store.getChangeRequest(cr2.id))!.source).toBe("hearing");
     } finally {
       await store.pool.end();
     }

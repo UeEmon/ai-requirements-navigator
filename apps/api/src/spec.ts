@@ -18,6 +18,10 @@ export interface Spec {
   sections: Array<{ title: string; rows: Requirement[] }>;
   diagrams: Diagram[];
   decisions: Decision[];
+  /** 確定版の表示（例: 確定版 v2） */
+  baseline?: string;
+  /** 決定記録の後に続く節（画面一覧・申し送り・変更履歴など） */
+  extras?: Array<{ title: string; lines: string[] }>;
 }
 
 /** 画面で描画した図の画像（PNG）。title で図と対応づける */
@@ -42,8 +46,16 @@ const mapping = (d: Decision) =>
     .map(([l, p]) => `${l}=${p}`)
     .join(" / ");
 
-export function buildSpec(project: Project, reqs: Requirement[], decisions: Decision[], diagrams: Diagram[], date = new Date()): Spec {
+export function buildSpec(
+  project: Project,
+  reqs: Requirement[],
+  decisions: Decision[],
+  diagrams: Diagram[],
+  date = new Date(),
+  more: { baseline?: string; extras?: Spec["extras"] } = {},
+): Spec {
   return {
+    ...more,
     title: `${project.name} 要件定義書`,
     date: date.toISOString().slice(0, 10),
     purpose: project.purpose,
@@ -62,7 +74,7 @@ const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
 
 export function renderMarkdown(spec: Spec): string {
   const out: string[] = [`# ${spec.title}`, ""];
-  out.push(`作成日: ${spec.date}　要件: ${spec.counts.requirements}件　決定: ${spec.counts.decisions}回`, "");
+  out.push(`作成日: ${spec.date}　要件: ${spec.counts.requirements}件　決定: ${spec.counts.decisions}回${spec.baseline ? `　${spec.baseline}` : ""}`, "");
   if (spec.purpose) out.push(`> ${spec.purpose}`, "");
   for (const s of spec.sections) {
     out.push(`## ${s.title}`, "");
@@ -86,6 +98,10 @@ export function renderMarkdown(spec: Spec): string {
     out.push(`- ${d.createdAt.slice(0, 10)} ${d.pick}を採用：${d.reason || "（理由未入力）"}${m ? `（${m}）` : ""}`);
   }
   out.push("");
+  for (const ex of spec.extras ?? []) {
+    out.push(`## ${ex.title}`, "");
+    out.push(...(ex.lines.length ? ex.lines.map((l) => `- ${l}`) : ["（まだありません）"]), "");
+  }
   return out.join("\n");
 }
 
@@ -126,7 +142,7 @@ export async function renderDocx(spec: Spec, images: SpecImage[] = []): Promise<
 
   const children: Array<InstanceType<typeof d.Paragraph> | InstanceType<typeof d.Table>> = [
     new d.Paragraph({ text: spec.title, heading: d.HeadingLevel.TITLE }),
-    p(`作成日: ${spec.date}　要件: ${spec.counts.requirements}件　決定: ${spec.counts.decisions}回`, { color: "55636F" }),
+    p(`作成日: ${spec.date}　要件: ${spec.counts.requirements}件　決定: ${spec.counts.decisions}回${spec.baseline ? `　${spec.baseline}` : ""}`, { color: "55636F" }),
   ];
   if (spec.purpose) children.push(p(spec.purpose));
 
@@ -179,6 +195,11 @@ export async function renderDocx(spec: Spec, images: SpecImage[] = []): Promise<
         children: [new d.TextRun(`${dc.createdAt.slice(0, 10)} ${dc.pick}を採用：${dc.reason || "（理由未入力）"}${m ? `（${m}）` : ""}`)],
       }),
     );
+  }
+  for (const ex of spec.extras ?? []) {
+    children.push(h(ex.title, d.HeadingLevel.HEADING_1));
+    if (!ex.lines.length) children.push(p("（まだありません）"));
+    for (const line of ex.lines) children.push(new d.Paragraph({ bullet: { level: 0 }, children: [new d.TextRun(line)] }));
   }
 
   const doc = new d.Document({
@@ -257,7 +278,7 @@ export async function renderPdf(spec: Spec, images: SpecImage[] = [], font: PdfF
 
   const content: any[] = [
     { text: spec.title, style: "title" },
-    { text: `作成日: ${spec.date}　要件: ${spec.counts.requirements}件　決定: ${spec.counts.decisions}回`, style: "meta" },
+    { text: `作成日: ${spec.date}　要件: ${spec.counts.requirements}件　決定: ${spec.counts.decisions}回${spec.baseline ? `　${spec.baseline}` : ""}`, style: "meta" },
   ];
   if (spec.purpose) content.push({ text: spec.purpose, margin: [0, 0, 0, 8] });
 
@@ -306,6 +327,10 @@ export async function renderPdf(spec: Spec, images: SpecImage[] = [], font: PdfF
         }
       : { text: "（まだありません）", style: "meta" },
   );
+  for (const ex of spec.extras ?? []) {
+    content.push({ text: ex.title, style: "h1" });
+    content.push(ex.lines.length ? { ul: ex.lines, fontSize: 9 } : { text: "（まだありません）", style: "meta" });
+  }
 
   const docDefinition = {
     info: { title: spec.title, creator: "要件ナビ" },

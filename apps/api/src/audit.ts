@@ -25,6 +25,12 @@ export type AuditAction =
   | "integration.create"
   | "integration.update"
   | "integration.delete"
+  | "ai.screens"
+  | "screen.feedback"
+  | "baseline.create"
+  | "change.create"
+  | "ai.impact"
+  | "change.decide"
   | "auth.login";
 
 export interface AuditInput {

@@ -28,7 +28,7 @@ import type { ExportItem, Integration, JobProgress, Project, Requirement, Store,
 import { usageOf } from "./store.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-type AnyContext = Context<any>;
+export type AnyContext = Context<any>;
 
 export interface ImplementationContext {
   store: Store;
@@ -82,11 +82,11 @@ export function publicIntegration(i: Integration) {
   };
 }
 
-const toTaskReqs = (rs: Requirement[]): TaskRequirement[] =>
+export const toTaskReqs = (rs: Requirement[]): TaskRequirement[] =>
   rs.map((r) => ({ code: r.code, type: r.type, title: r.title, description: r.description, priority: r.priority }));
 
 /** 分解したときの要件と今の要件を比べ、変わった要件コードを返す */
-function changedSince(rec: TaskPlanRecord, current: Requirement[]): string[] {
+export function changedSince(rec: { basis: Array<{ code: string; version: number }> }, current: Requirement[]): string[] {
   const before = new Map(rec.basis.map((b) => [b.code, b.version]));
   const now = new Map(current.map((r) => [r.code, r.version]));
   const out = new Set<string>();
@@ -96,7 +96,7 @@ function changedSince(rec: TaskPlanRecord, current: Requirement[]): string[] {
 }
 
 /** 登録先ごとに最新の結果を集める（古い順に重ね、新しいもので上書きする） */
-function latestItems(exports: TaskExport[], integrationId?: string): Map<string, ExportItem & { integrationId: string; kind: string; target: string }> {
+export function latestItems(exports: TaskExport[], integrationId?: string): Map<string, ExportItem & { integrationId: string; kind: string; target: string }> {
   const m = new Map<string, ExportItem & { integrationId: string; kind: string; target: string }>();
   for (const ex of [...exports].reverse()) {
     if (integrationId && ex.integrationId !== integrationId) continue;

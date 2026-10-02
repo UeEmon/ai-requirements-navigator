@@ -1,6 +1,7 @@
 import {
   buildDiagrams,
   compareUmlModels,
+  screenFlowDiagram,
   createProvider,
   defaultGuide,
   detectAmbiguity,
@@ -25,7 +26,8 @@ import { z } from "zod";
 import { audit, clip } from "./audit.js";
 import { hasRole, type Authenticator, type OidcClient, type Principal, type Role, type TokenSet } from "./auth.js";
 import { maskKey, type KeyEncryptor } from "./crypto.js";
-import { implementation } from "./implementation.js";
+import { designAndChange } from "./design-change.js";
+import { implementation, type ImplementationContext } from "./implementation.js";
 import { JobError, JobRunner, type JobRunnerOptions } from "./jobs.js";
 import { buildSpec, CONTENT_TYPE, PdfFontMissingError, renderDocx, renderMarkdown, renderPdf, type SpecFormat, type SpecImage } from "./spec.js";
 import type { ArtifactStorage } from "./storage.js";
@@ -702,7 +704,10 @@ export function createApp(deps: AppDeps) {
   const diagramsOf = async (p: Project) => {
     const reqs = await reqsForUml(p);
     const rec = await store.latestUmlModel(p.id);
-    return { diagrams: buildDiagrams(p.name, reqs, rec?.model), rec, reqs };
+    const screens = await store.latestScreens(p.id);
+    const diagrams = buildDiagrams(p.name, reqs, rec?.model);
+    if (screens) diagrams.push(screenFlowDiagram(screens.model));
+    return { diagrams, rec, reqs };
   };
   const umlStats = (m: UmlModel) => ({
     classes: m.classes.length,
@@ -834,7 +839,7 @@ export function createApp(deps: AppDeps) {
   /* 非同期ジョブ                                                         */
   /* ------------------------------------------------------------------ */
 
-  const impl = implementation({
+  const moduleCtx: ImplementationContext = {
     store,
     encryptor: deps.encryptor,
     fetchImpl: deps.fetchImpl ?? fetch,
@@ -847,7 +852,9 @@ export function createApp(deps: AppDeps) {
     budget,
     providersOf,
     labelsOf,
-  });
+  };
+  const impl = implementation(moduleCtx);
+  const dc = designAndChange(moduleCtx);
 
   const asJobError = (e: unknown): never => {
     if (e instanceof HTTPException) throw new JobError(e.message, e.status);
@@ -877,6 +884,12 @@ export function createApp(deps: AppDeps) {
         if (!p) throw new JobError("プロジェクトが見つかりません", 404);
         return impl.jobHandlers.export(p, job.input, job.createdBy, report).catch(asJobError);
       },
+      screens: async ({ job, report }) => {
+        const p = await store.getProject(job.projectId!);
+        if (!p) throw new JobError("プロジェクトが見つかりません", 404);
+        return dc.jobHandlers.screens(p, job.input, job.createdBy, report).catch(asJobError);
+      },
+      impact: async ({ job, report }) => dc.jobHandlers.impact(job.input, job.createdBy, report).catch(asJobError),
     },
     deps.jobs,
   );
@@ -889,6 +902,17 @@ export function createApp(deps: AppDeps) {
   };
   const wantsAsync = (c: Context) => c.req.query("async") === "1" || c.req.query("async") === "true";
   impl.routes(app, { wantsAsync, enqueue });
+  dc.routes(app, { wantsAsync, enqueue });
+
+  /** 確定後は要件を直接変えられない（変更要求で行う） */
+  const assertNotBaselined = async (p: Project) => {
+    const b = await dc.baselineOf(p.id);
+    if (b) {
+      throw new HTTPException(409, {
+        message: `要件定義は確定済みです（確定版 v${b.version}）。「変更管理」で変更要求として登録し、影響を確認してから変更してください`,
+      });
+    }
+  };
 
   app.get("/api/jobs/:id", async (c) => {
     const job = await store.getJob(c.req.param("id"));
@@ -947,6 +971,37 @@ export function createApp(deps: AppDeps) {
     const labels = await labelsOf(project.orgId);
     const mapping = Object.fromEntries(round.candidates.map((x) => [x.label, labels.get(x.providerId) ?? x.providerId]));
     const pickName = input.pick === "merged" ? "統合案" : `案${input.pick}`;
+
+    // 確定後のヒアリングで採用した項目は、要件に直接加えず「追加」の変更要求にする
+    if (await dc.baselineOf(project.id)) {
+      const changeRequests = [];
+      for (const it of picked) {
+        changeRequests.push(
+          await store.addChangeRequest({
+            projectId: project.id,
+            kind: "add",
+            requirementId: null,
+            requirementCode: null,
+            proposal: { title: it.title, description: it.description, priority: it.priority, type: it.type },
+            reason: `ヒアリングで${pickName}を採用${input.reason ? `：${input.reason}` : ""}`,
+            source: "hearing",
+            createdBy: actorOf(c),
+          }),
+        );
+      }
+      const decision = await store.addDecision({ projectId: project.id, roundId: round.id, pick: pickName, reason: input.reason, mapping });
+      await store.markRoundDecided(round.id);
+      await audit(store, {
+        orgId: project.orgId,
+        actor: actorOf(c),
+        action: "decision.create",
+        targetType: "round",
+        targetId: round.id,
+        detail: { projectId: project.id, pick: pickName, reason: input.reason, mapping, changeRequests: changeRequests.map((x) => x.code) },
+      });
+      return c.json({ added: [], changeRequests, decision, mapping, nextPhase: project.phaseKey }, 201);
+    }
+
     const added = await store.addRequirements(
       project.id,
       picked.map((it) => ({ ...it, roundId: round.id, source: pickName, phaseKey: round.phaseKey })),
@@ -1034,6 +1089,7 @@ export function createApp(deps: AppDeps) {
   /** 要件の手直し。変更前の内容は版として残る */
   app.patch("/api/requirements/:id", async (c) => {
     const { r, p } = await loadRequirement(c, c.req.param("id"), "editor");
+    await assertNotBaselined(p);
     const input = await body(c, RequirementPatchInput);
     const { reason, ...patch } = input;
     if (!Object.values(patch).some((v) => v !== undefined)) throw new HTTPException(400, { message: "変更する項目がありません" });
@@ -1059,6 +1115,7 @@ export function createApp(deps: AppDeps) {
   /** 要件の削除（論理削除。番号は再利用しない） */
   app.delete("/api/requirements/:id", async (c) => {
     const { r, p } = await loadRequirement(c, c.req.param("id"), "editor");
+    await assertNotBaselined(p);
     await store.deleteRequirement(r.id);
     await audit(store, {
       orgId: p.orgId,
@@ -1101,7 +1158,8 @@ export function createApp(deps: AppDeps) {
 
   const renderSpec = async (p: Project, format: SpecFormat, images: SpecImage[]) => {
     const { diagrams } = await diagramsOf(p);
-    const spec = buildSpec(p, await store.listRequirements(p.id), await store.listDecisions(p.id), diagrams);
+    const more = await dc.specMore(p);
+    const spec = buildSpec(p, await store.listRequirements(p.id), await store.listDecisions(p.id), diagrams, new Date(), { baseline: more.baseline, extras: more.extras });
     try {
       if (format === "docx") return await renderDocx(spec, images);
       if (format === "pdf") return await renderPdf(spec, images);

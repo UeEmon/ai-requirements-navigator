@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CandidateContent, Guide, RequirementItem, RequirementType, ScoredEvaluation, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
+import type { CandidateContent, ChangeKind, Guide, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
 export interface Org {
   id: string;
@@ -114,7 +114,7 @@ export interface AuditEntry {
   at: string;
 }
 
-export type JobKind = "round" | "uml" | "tasks" | "export";
+export type JobKind = "round" | "uml" | "tasks" | "export" | "screens" | "impact";
 export type JobStatus = "queued" | "running" | "done" | "failed";
 export interface JobProgress {
   steps?: Array<{ key: string; label: string; status: "waiting" | "running" | "done" | "failed"; reason?: string }>;
@@ -232,6 +232,77 @@ export interface TaskExport {
   createdAt: string;
 }
 
+/** 画面一覧（ワイヤーフレーム）。作り直すたびに revision が上がる */
+export interface ScreenRecord {
+  id: string;
+  projectId: string;
+  model: ScreenModel;
+  providerId: string;
+  basis: Array<{ code: string; version: number }>;
+  revision: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** 画面への意見。detail（見た目の細部）は設計工程への申し送りになる */
+export interface ScreenFeedback {
+  id: string;
+  projectId: string;
+  screenKey: string | null;
+  text: string;
+  level: "detail" | "requirement" | "mixed";
+  detailHits: string[];
+  requirementHits: string[];
+  /** open: 次の作り直しで反映 / applied: 反映済み / noted: 申し送りとして記録 */
+  status: "open" | "applied" | "noted";
+  revision: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** 要件定義の確定版（その時点の要件の写し） */
+export interface Baseline {
+  id: string;
+  projectId: string;
+  version: number;
+  snapshot: Array<{ code: string; type: string; title: string; description: string; priority: string; version: number }>;
+  reason: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export type ChangeStatus = "open" | "analyzed" | "approved" | "deferred" | "rejected";
+/** 確定後の変更要求 */
+export interface ChangeRequest {
+  id: string;
+  projectId: string;
+  /** CR-001 など */
+  code: string;
+  kind: ChangeKind;
+  requirementId: string | null;
+  requirementCode: string | null;
+  /** 変更後（modify / add） */
+  proposal: { title: string; description: string; priority: RequirementItem["priority"]; type: RequirementType } | null;
+  reason: string;
+  status: ChangeStatus;
+  impact: ImpactReport | null;
+  decision: {
+    option: ImpactOptionKey;
+    reason: string;
+    by: string;
+    at: string;
+    /** 変更・追加した要件と、その結果の確定版 */
+    requirementCode?: string;
+    baselineVersion?: number;
+  } | null;
+  /** どこから作られたか（manual / hearing） */
+  source: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string | null;
+}
+export type ChangeRequestPatch = Partial<Pick<ChangeRequest, "status" | "impact" | "decision">>;
+
 export interface Store {
   createOrg(name: string): Promise<Org>;
   getOrg(id: string): Promise<Org | null>;
@@ -303,6 +374,25 @@ export interface Store {
   /** 新しい順 */
   listTaskExports(planId: string): Promise<TaskExport[]>;
 
+  saveScreens(r: Omit<ScreenRecord, "id" | "createdAt">): Promise<ScreenRecord>;
+  latestScreens(projectId: string): Promise<ScreenRecord | null>;
+  addScreenFeedback(f: Omit<ScreenFeedback, "id" | "createdAt">): Promise<ScreenFeedback>;
+  /** 古い順 */
+  listScreenFeedback(projectId: string): Promise<ScreenFeedback[]>;
+  setScreenFeedbackStatus(ids: string[], status: ScreenFeedback["status"]): Promise<void>;
+
+  addBaseline(b: Omit<Baseline, "id" | "createdAt" | "version">): Promise<Baseline>;
+  latestBaseline(projectId: string): Promise<Baseline | null>;
+  /** 新しい順 */
+  listBaselines(projectId: string): Promise<Baseline[]>;
+
+  /** code（CR-001）はプロジェクトごとの連番 */
+  addChangeRequest(c: Omit<ChangeRequest, "id" | "code" | "createdAt" | "updatedAt" | "status" | "impact" | "decision">): Promise<ChangeRequest>;
+  getChangeRequest(id: string): Promise<ChangeRequest | null>;
+  /** 新しい順 */
+  listChangeRequests(projectId: string): Promise<ChangeRequest[]>;
+  updateChangeRequest(id: string, patch: ChangeRequestPatch): Promise<ChangeRequest | null>;
+
   addUsage(u: Omit<UsageRecord, "at">): Promise<void>;
   /** since 以降（省略時は全期間）の利用量をAIごとに集計する */
   usageSummary(orgId: string, since?: Date): Promise<UsageRow[]>;
@@ -332,6 +422,10 @@ export class MemoryStore implements Store {
   private integrations = new Map<string, Integration>();
   private plans: TaskPlanRecord[] = [];
   private exports: TaskExport[] = [];
+  private screenRecs: ScreenRecord[] = [];
+  private feedback: ScreenFeedback[] = [];
+  private baselines: Baseline[] = [];
+  private changes: ChangeRequest[] = [];
   private seq = 0;
 
   async createOrg(name: string) {
@@ -583,6 +677,56 @@ export class MemoryStore implements Store {
   }
   async listTaskExports(planId: string) {
     return this.exports.filter((x) => x.planId === planId).reverse();
+  }
+  async saveScreens(r: Omit<ScreenRecord, "id" | "createdAt">) {
+    const x: ScreenRecord = { ...r, id: randomUUID(), createdAt: now() };
+    this.screenRecs.push(x);
+    return x;
+  }
+  async latestScreens(projectId: string) {
+    return this.screenRecs.filter((x) => x.projectId === projectId).at(-1) ?? null;
+  }
+  async addScreenFeedback(f: Omit<ScreenFeedback, "id" | "createdAt">) {
+    const x: ScreenFeedback = { ...f, id: randomUUID(), createdAt: now() };
+    this.feedback.push(x);
+    return { ...x };
+  }
+  async listScreenFeedback(projectId: string) {
+    return this.feedback.filter((x) => x.projectId === projectId).map((x) => ({ ...x }));
+  }
+  async setScreenFeedbackStatus(ids: string[], status: ScreenFeedback["status"]) {
+    for (const f of this.feedback) if (ids.includes(f.id)) f.status = status;
+  }
+  async addBaseline(b: Omit<Baseline, "id" | "createdAt" | "version">) {
+    const version = this.baselines.filter((x) => x.projectId === b.projectId).length + 1;
+    const x: Baseline = { ...b, id: randomUUID(), version, createdAt: now() };
+    this.baselines.push(x);
+    return x;
+  }
+  async latestBaseline(projectId: string) {
+    return this.baselines.filter((x) => x.projectId === projectId).at(-1) ?? null;
+  }
+  async listBaselines(projectId: string) {
+    return this.baselines.filter((x) => x.projectId === projectId).reverse();
+  }
+  async addChangeRequest(c: Omit<ChangeRequest, "id" | "code" | "createdAt" | "updatedAt" | "status" | "impact" | "decision">) {
+    const n = this.changes.filter((x) => x.projectId === c.projectId).length + 1;
+    const x: ChangeRequest = { ...c, id: randomUUID(), code: `CR-${String(n).padStart(3, "0")}`, status: "open", impact: null, decision: null, createdAt: now(), updatedAt: null };
+    this.changes.push(x);
+    return { ...x };
+  }
+  async getChangeRequest(id: string) {
+    const x = this.changes.find((c) => c.id === id);
+    return x ? { ...x } : null;
+  }
+  async listChangeRequests(projectId: string) {
+    return this.changes.filter((x) => x.projectId === projectId).reverse().map((x) => ({ ...x }));
+  }
+  async updateChangeRequest(id: string, patch: ChangeRequestPatch) {
+    const x = this.changes.find((c) => c.id === id);
+    if (!x) return null;
+    Object.assign(x, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)), { updatedAt: now() });
+    return { ...x };
   }
   async addUsage(u: Omit<UsageRecord, "at">) {
     this.usage.push({ ...u, at: now() });
