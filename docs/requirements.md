@@ -59,6 +59,8 @@
 | F5-2 | 要件の編集・削除と版の履歴 | 必須 | 済（差分表示は今後） | `PATCH/DELETE /api/requirements/:id`、`GET .../versions` |
 | F5-3 | トレーサビリティ（要件 → 案・決定 → ストーリー → 課題） | 推奨 | 済 | `requirements.round_id`、`GET /api/projects/:id/trace` |
 | F5-4 | レビュー・承認 | 推奨 | 未 | ― |
+| F5-5 | 要件定義の確定（確定版の保存。確定後は要件を直接編集できない） | 推奨 | 済 | `POST /api/projects/:id/baseline` |
+| F5-6 | 確定後の変更要求と影響分析（トレース＋複数AI）、変更する／代替案／保留／変更しないの選択 | 推奨 | 済 | `ai-core/src/impact.ts`、`POST /api/changes/:id/analyze`・`/decide` |
 | F6-1 | UML生成（ユースケース・クラス・シーケンス・状態遷移・アクティビティ） | 必須 | 済 | `ai-core/src/uml.ts`、`POST /api/projects/:id/uml/generate` |
 | F6-2 | 仕様書生成 | 必須 | 済（Markdown / Word / PDF） | `apps/api/src/spec.ts` |
 | F6-3 | エクスポート（Markdown / Word / PDF、図の画像埋め込み）・版の保存 | 必須 | 済 | `apps/api/src/spec.ts`、`POST /api/projects/:id/exports` |
@@ -69,6 +71,8 @@
 | F8-5 | ログイン画面（OIDC 認可コード＋PKCE、Cognito / Keycloak） | 推奨 | 済 | `apps/api/src/auth.ts`、[auth.md](./auth.md) |
 | F8-6 | AI処理の非同期実行と進み具合の表示 | 推奨 | 済 | `apps/api/src/jobs.ts`、`GET /api/jobs/:id` |
 | F6-4 | UML生成の複数AI比較（匿名評価して選択） | 推奨 | 済 | `compareUmlModels`、`POST /api/uml-rounds/:id/adopt` |
+| F6-5 | 画面設計（画面一覧・画面遷移図。見た目の情報は持たない） | 推奨 | 済 | `ai-core/src/screens.ts`、`POST /api/projects/:id/screens/generate` |
+| F6-6 | プロトタイプ（クリックで移動できるワイヤーフレーム）と、見た目の指摘を申し送りにする仕組み | 推奨 | 済 | `GET .../screens/prototype.html`、`POST .../screens/feedback` |
 | F7-1 | タスク分解（エピック・ストーリー・作業タスク、受け入れ条件、見積り、未対応要件の検出） | 推奨 | 済 | `ai-core/src/tasks.ts`、`POST /api/projects/:id/tasks/generate` |
 | F7-2 | GitHub / Jira / Backlog 連携（直接登録・CSV出力・再実行で続きから） | 任意 | 済 | `apps/api/src/integrations.ts`、[integrations.md](./integrations.md) |
 

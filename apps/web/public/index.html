@@ -997,9 +997,9 @@ async function loadScreens(){
   }catch(e){ $("#scrMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
 function protoDoc(key){
-  // 最初に表示する画面だけを差し替える（ワイヤーフレームはスクリプトなし）
-  const first=scrState.view.screens.model.screens[0]?.key;
-  return key&&first ? scrState.html.replace(`body:not(:has(.scr:target)) #${first}{`, `body:not(:has(.scr:target)) #${key}{`) : scrState.html;
+  // 最初に表示する画面だけを差し替える（ワイヤーフレームはスクリプトなし。画面の切り替えはラジオボタン）
+  if(!key) return scrState.html;
+  return scrState.html.replace(/(<input type="radio" name="scr" id="go-[^"]+" class="r") checked>/, "$1>").replace(`id="go-${key}" class="r">`, `id="go-${key}" class="r" checked>`);
 }
 function renderScreens(){
   const v=scrState.view, sc=v.screens;
@@ -1073,7 +1073,7 @@ function renderBaseline(){
     ${canEdit()?`<div class="row" style="align-items:flex-end"><label class="f" style="flex:1">確定の理由・メモ（任意）<input id="bReason" placeholder="例：関係者の確認が完了"></label><button class="btn" id="bGo">要件定義を確定する</button></div><div id="bMsg"></div>`:""}`);
   if($("#bGo")) $("#bGo").onclick=async()=>{
     if(!confirm("要件定義を確定します。以後、要件の変更・追加・削除は変更要求として行います。よろしいですか？")) return;
-    try{ await api(`/api/projects/${S.project.id}/baseline`,{method:"POST",body:{reason:$("#bReason").value.trim()}}); toast("要件定義を確定しました"); loadChange() }
+    try{ await api(`/api/projects/${S.project.id}/baseline`,{method:"POST",body:{reason:$("#bReason").value.trim()}}); toast("要件定義を確定しました"); await loadChange(); renderHear() }
     catch(e){ $("#bMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   };
 }
@@ -1160,7 +1160,7 @@ function renderCrDetail(x){
     try{
       const r=await api(`/api/changes/${x.id}/decide`,{method:"POST",body:{option:opt, reason:($("#crDecReason")?.value||"").trim()}});
       toast(r.change.status==="approved"?`確定版 v${r.change.decision.baselineVersion} にしました`:"記録しました");
-      await loadChange();
+      await loadChange(); renderHear();
       if(r.followUps){
         const f=r.followUps, items=[f.design.length?`設計（UML）${f.design.length}か所`:"", f.screens.length?`画面 ${f.screens.length}件（「画面」タブで作り直し）`:"", f.stories.length?`ストーリー ${f.stories.length}件（「実装連携」で分解し直し）`:"", f.issues.length?`登録済みの課題 ${f.issues.length}件（課題管理ツールで更新）`:""].filter(Boolean);
         $("#crDetail").insertAdjacentHTML("beforeend", `<div class="note warn"><b>次に見直すもの：</b>${items.length?items.map(esc).join("、"):"影響は見つかっていません"}</div>`);

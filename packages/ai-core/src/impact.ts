@@ -191,7 +191,11 @@ export function buildImpactReport(
   const issues = stories.flatMap((s) => (storyBy.get(s.item.key)?.links ?? []).map((l) => ({ storyKey: s.item.key, ...l })));
   const effort = analyses.reduce<Estimate>((m, a) => (EFFORT_ORDER.indexOf(a.content.effort) > EFFORT_ORDER.indexOf(m) ? a.content.effort : m), "S");
   const risks = [...new Set(analyses.flatMap((a) => a.content.risks.map((r) => r.trim())))].slice(0, 10);
-  const alternatives = analyses.filter((a) => a.content.alternative).map((a) => ({ providerId: a.providerId, ...a.content.alternative! }));
+  // 同じ代替案（題名が同じもの）は1つにまとめる
+  const alternatives = analyses
+    .filter((a) => a.content.alternative)
+    .map((a) => ({ providerId: a.providerId, ...a.content.alternative! }))
+    .filter((a, i, all) => all.findIndex((x) => x.title.trim() === a.title.trim()) === i);
   const points = stories.reduce((a, s) => a + s.item.points, 0);
   const touched = stories.length + screens.length + design.length + issues.length;
   const scale = effort === "L" || touched >= 10 ? "large" : effort === "M" || touched >= 4 ? "medium" : "small";

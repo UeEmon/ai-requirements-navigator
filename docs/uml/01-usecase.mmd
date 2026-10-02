@@ -23,6 +23,9 @@ flowchart LR
         UC14((課題管理ツールに登録する))
         UC15((トレーサビリティを確認する))
         UC16((連携先を登録する))
+        UC17((画面イメージを確認し意見を出す))
+        UC18((要件定義を確定する))
+        UC19((変更要求を出し影響を見て判断する))
     end
     ITS[[GitHub / Jira / Backlog]]
 
@@ -41,6 +44,10 @@ flowchart LR
     RV --- UC15
     UC14 -.include.-> UC12
     UC14 --- ITS
+    U --- UC17
+    PM --- UC18
+    PM --- UC19
+    UC19 -.include.-> UC15
     UC3 -.include.-> UC5
     UC4 -.extend.-> UC3
     UC5 -.include.-> UC6

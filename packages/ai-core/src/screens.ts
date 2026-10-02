@@ -293,15 +293,17 @@ function elementHtml(e: ScreenElement): string {
  */
 export function renderPrototypeHtml(model: ScreenModel, projectName: string, reqs: ScreenRequirement[] = []): string {
   const title = new Map(reqs.map((r) => [r.code, r.title]));
-  const first = model.screens[0]?.key ?? "S01";
-  const nav = model.screens.map((s) => `<a href="#${s.key}">${s.key} ${esc(s.name)}</a>`).join("");
+  // 画面の切り替えはラジオボタンとCSSで行う（スクリプトを使わず、埋め込み表示でもページ移動しない）
+  const radios = model.screens.map((s, i) => `<input type="radio" name="scr" id="go-${s.key}" class="r"${i === 0 ? " checked" : ""}>`).join("");
+  const nav = model.screens.map((s) => `<label for="go-${s.key}">${s.key} ${esc(s.name)}</label>`).join("");
+  const show = model.screens.map((s) => `#go-${s.key}:checked~main #${s.key}{display:flex}#go-${s.key}:checked~nav label[for=go-${s.key}]{background:#ddd}`).join("\n");
   const screens = model.screens
     .map(
       (s) => `<section id="${s.key}" class="scr">
   <div class="frame">
     <div class="bar"><b>${s.key}</b> ${esc(s.name)}</div>
     <div class="body">${s.elements.map(elementHtml).join("\n")}
-      <div class="acts">${s.actions.map((a) => `<a class="b go" href="#${a.to}">${esc(a.label)} →</a>`).join("")}</div>
+      <div class="acts">${s.actions.map((a) => `<label class="b go" for="go-${a.to}">${esc(a.label)} →</label>`).join("")}</div>
     </div>
   </div>
   <aside class="memo">
@@ -323,10 +325,10 @@ body{margin:0;font-family:"Comic Sans MS","Segoe Print","Hiragino Maru Gothic Pr
 .note{background:#333;color:#fff;padding:10px 16px;font-size:13px;line-height:1.6}
 .note b{display:block;font-size:14px}
 nav{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;border-bottom:1px dashed #999;font-size:12.5px}
-nav a{color:#333;border:1px dashed #888;border-radius:12px;padding:2px 9px;text-decoration:none}
+nav label{color:#333;border:1px dashed #888;border-radius:12px;padding:2px 9px;cursor:pointer}
+.r{position:absolute;opacity:0;pointer-events:none}
 .scr{display:none;padding:18px 16px;gap:18px;flex-wrap:wrap;align-items:flex-start}
-.scr:target{display:flex}
-body:not(:has(.scr:target)) #${first}{display:flex}
+${show}
 .frame{width:min(380px,100%);min-height:520px;border:2px solid #555;border-radius:14px;background:#fff;position:relative;overflow:hidden}
 .frame::after{content:"イメージ";position:absolute;right:-30px;bottom:30px;transform:rotate(-30deg);font-size:40px;color:rgba(0,0,0,.06);pointer-events:none}
 .bar{border-bottom:2px solid #555;padding:10px 12px;font-size:14px}
@@ -341,7 +343,7 @@ body:not(:has(.scr:target)) #${first}{display:flex}
 .msg{border:1.5px dashed #999;padding:6px 8px;border-radius:6px}
 .b{display:inline-block;border:2px solid #555;border-radius:18px;padding:5px 14px;text-align:center;color:#333;text-decoration:none}
 .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
-.go{background:#eee}
+.go{background:#eee;cursor:pointer}
 .memo{flex:1;min-width:220px;max-width:420px;font-size:13px;line-height:1.6;border-left:3px solid #ccc;padding-left:12px}
 .memo p{margin:0 0 8px}.memo b{display:block;font-size:11.5px;color:#777}
 .code{font-family:monospace;border:1px solid #bbb;border-radius:3px;padding:0 4px}
@@ -349,8 +351,11 @@ body:not(:has(.scr:target)) #${first}{display:flex}
 <body>
 <div class="note"><b>画面イメージ（ワイヤーフレーム）</b>
 色・文字の大きさ・配置・言葉づかいは、設計工程で決めます。ここで確認するのは「必要な情報と操作がそろっているか」「画面のつながりに無理がないか」です。ボタンを押すと次の画面に移ります。</div>
+${radios}
 <nav>${nav}</nav>
+<main>
 ${screens}
+</main>
 </body></html>
 `;
 }

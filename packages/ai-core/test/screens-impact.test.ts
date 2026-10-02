@@ -45,7 +45,8 @@ describe("画面設計・プロトタイプ", () => {
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("default-src 'none'");
     expect(html).toContain("色・文字の大きさ・配置・言葉づかいは、設計工程で決めます");
-    expect(html).toContain('href="#S02"');
+    expect(html).toContain('<label class="b go" for="go-S02">次へ →</label>');
+    expect(html).toContain('id="go-S01" class="r" checked');
     expect(screenFlowMermaid(model)).toContain("S01 -->|次へ| S02");
   });
 
@@ -99,6 +100,7 @@ describe("影響分析", () => {
     expect(report.effort).toBe("M");
     expect(report.risks).toHaveLength(2);
     expect(report.options.map((o) => o.key)).toEqual(["apply", "alternative", "defer", "reject"]);
+    expect(report.alternatives).toHaveLength(1); // 2つのAIの同じ代替案はまとめる
     expect(report.options[0]!.consequence).toContain("ストーリー 1件（5ポイント分）");
     expect(report.options[0]!.consequence).toContain("登録済みの課題 1件");
   });
