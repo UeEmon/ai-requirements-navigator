@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, NfrDecision, NfrProfile, NfrSuggestion, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
+import type { AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, NfrDecision, NfrProfile, NfrSuggestion, SizingSuggestion, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
 export interface Org {
   id: string;
@@ -116,7 +116,7 @@ export interface AuditEntry {
   at: string;
 }
 
-export type JobKind = "round" | "uml" | "tasks" | "export" | "screens" | "impact" | "analysis" | "nfr";
+export type JobKind = "round" | "uml" | "tasks" | "export" | "screens" | "impact" | "analysis" | "nfr" | "nfrReview";
 export type JobStatus = "queued" | "running" | "done" | "failed";
 export interface JobProgress {
   steps?: Array<{ key: string; label: string; status: "waiting" | "running" | "done" | "failed"; reason?: string }>;
@@ -353,6 +353,8 @@ export interface NfrSheet {
   decisions: Record<string, NfrDecision>;
   /** 最新のAIの提案（AIの名前は表示名で保存） */
   suggestions: { items: Array<NfrSuggestion & { proposals: Array<NfrSuggestion["proposals"][number] & { provider: string }> }>; at: string; failures: Array<{ provider: string; reason: string }> } | null;
+  /** 最新のAIによる適正化の見直し（過大な水準の指摘） */
+  review?: { items: Array<SizingSuggestion & { reasons: Array<SizingSuggestion["reasons"][number] & { provider: string }> }>; at: string; analysts: number; failures: Array<{ provider: string; reason: string }> } | null;
   updatedAt: string | null;
 }
 
@@ -461,6 +463,8 @@ export interface Store {
   /** なければ null */
   getNfrSheet(projectId: string): Promise<NfrSheet | null>;
   saveNfrSheet(sheet: Omit<NfrSheet, "updatedAt">): Promise<NfrSheet>;
+  /** 組織内のすべての非機能要件シート（事例として比べるため） */
+  listNfrSheets(orgId: string): Promise<Array<NfrSheet & { projectName: string; projectPurpose: string }>>;
 
   addUsage(u: Omit<UsageRecord, "at">): Promise<void>;
   /** since 以降（省略時は全期間）の利用量をAIごとに集計する */
@@ -843,6 +847,12 @@ export class MemoryStore implements Store {
     const s: NfrSheet = JSON.parse(JSON.stringify({ ...sheet, updatedAt: now() }));
     this.nfr.set(sheet.projectId, s);
     return s;
+  }
+  async listNfrSheets(orgId: string) {
+    return [...this.nfr.values()]
+      .map((s) => ({ s, p: this.projects.get(s.projectId) }))
+      .filter((x) => x.p?.orgId === orgId)
+      .map(({ s, p }) => ({ ...(JSON.parse(JSON.stringify(s)) as NfrSheet), projectName: p!.name, projectPurpose: p!.purpose }));
   }
   async addUsage(u: Omit<UsageRecord, "at">) {
     this.usage.push({ ...u, at: now() });

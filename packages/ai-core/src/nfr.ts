@@ -23,7 +23,19 @@ import type { AIProvider, Usage } from "./types.js";
 export const PROFILE_QUESTIONS = {
   users: {
     question: "主に誰が使いますか？",
-    options: ["社内の一部の人（数十人まで）", "社内の多くの人・取引先", "社外の顧客・一般の人"],
+    options: ["社内の一部の部署の人", "社内の多くの人・取引先", "社外の顧客・一般の人"],
+  },
+  scale: {
+    question: "利用者（アカウント）の人数は？",
+    options: ["50人まで", "50〜1,000人", "1,000人を超える"],
+  },
+  purpose: {
+    question: "システムの主な目的は？",
+    options: ["社内の業務を効率化する", "顧客・住民へのサービスを提供する", "事業の中核（止まると事業そのものが止まる）"],
+  },
+  budget: {
+    question: "予算の規模感は？",
+    options: ["小さい（数百万円まで）", "中くらい（数千万円まで）", "大きい（それ以上）"],
   },
   impact: {
     question: "システムが止まると、どうなりますか？",
@@ -59,16 +71,21 @@ export const GRADE_LABELS = ["社会的影響がほとんどないシステム",
 export function gradesOf(p: NfrProfile): Record<NfrCategory, 0 | 1 | 2> & { overall: 0 | 1 | 2 } {
   const v = (k: ProfileKey) => p[k] ?? 1;
   const max = (...xs: number[]) => Math.max(...xs) as 0 | 1 | 2;
-  return {
-    overall: v("impact") as 0 | 1 | 2,
-    availability: max(v("impact"), v("hours")),
-    performance: v("users") as 0 | 1 | 2,
+  // 予算が小さいときは、費用のかかる大項目（性能・環境・使いやすさ）の重要度を「中」までにする（情報の保護は下げない）
+  const cap = (g: 0 | 1 | 2) => (p.budget === 0 ? (Math.min(g, 1) as 0 | 1 | 2) : g);
+  const raw = {
+    overall: max(v("impact"), p.purpose === 2 ? 2 : 0),
+    // 長時間使うだけでは「止まると困る」とは限らないため、利用時間で上げるのは「中」まで
+    availability: max(v("impact"), Math.min(v("hours"), 1), p.purpose === 2 ? 2 : 0),
+    // 規模を答えていればそれを、なければ利用者の種類から推定する
+    performance: (p.scale ?? v("users")) as 0 | 1 | 2,
     operation: max(v("impact"), v("hours") === 2 ? 1 : 0),
-    migration: 1,
+    migration: 1 as const,
     security: max(v("data"), v("users") === 2 ? 1 : 0),
     environment: max(v("users"), v("data") === 2 ? 1 : 0),
     usability: v("users") as 0 | 1 | 2,
   };
+  return { ...raw, performance: cap(raw.performance), environment: cap(raw.environment), usability: cap(raw.usability) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -100,6 +117,8 @@ export interface NfrItem {
   levels: NfrLevel[];
   /** 重要度（0〜2）ごとの推奨水準の番号 */
   recommended: [number, number, number];
+  /** 大項目の重要度ではなく、特定の質問の答えで推奨を決める（例: 運用時間は「いつ使うか」） */
+  driver?: ProfileKey;
   /** 値を入れて要件文を作るひな形（水準ごとの ears がないとき・自由入力のとき） */
   template?: (v: string) => EarsPart;
   /** システムではなく体制・計画の要件（要件にはせず、シートと仕様書に残す） */
@@ -118,6 +137,7 @@ export const NFR_ITEMS: NfrItem[] = [
     why: "使う時間が長いほど、止めて作業できる時間が減り、運用の体制と費用が増えます。",
     levels: [L("L1", "平日の業務時間（9〜18時など）", "平日の業務時間", 1), L("L2", "毎日、朝から夜まで（7〜23時など）", "毎日7時から23時", 2), L("L3", "24時間365日", "24時間365日", 3)],
     recommended: [0, 1, 2],
+    driver: "hours",
     template: (v) => ({ pattern: "ubiquitous", response: `${v}の間、利用者が利用できる状態を保たなければならない` }),
   },
   {
@@ -449,7 +469,7 @@ export const NFR_ITEMS: NfrItem[] = [
 export const NFR_ITEM_BY_KEY = new Map(NFR_ITEMS.map((i) => [i.key, i]));
 
 export function recommendedLevel(item: NfrItem, profile: NfrProfile): NfrLevel {
-  const g = gradesOf(profile)[item.category];
+  const g = item.driver ? (profile[item.driver] ?? 1) : gradesOf(profile)[item.category];
   return item.levels[Math.min(item.recommended[g], item.levels.length - 1)]!;
 }
 
@@ -518,6 +538,21 @@ export function evaluateNfr(profile: NfrProfile, decisions: Record<string, NfrDe
     if (at("sc.auth") === 0) add("warning", ["sc.auth"], "社外の人が使うシステムで、ログインがIDとパスワードだけです。多要素認証を検討してください。");
     if (at("ev.devices") === 0) add("warning", ["ev.devices"], "社外の人が使うのに、会社のパソコンだけに対応する設定です。");
     if (at("sc.vuln") === 0) add("warning", ["sc.vuln"], "社外に公開するシステムは、定期的に脆弱性を修正してください。");
+  }
+  // 過大の可能性（推奨・業務の実態より高い水準）
+  if (profile.hours === 0 && at("av.hours") === 2)
+    add("warning", ["av.hours"], "使うのは平日の業務時間なのに、24時間365日の運用になっています。夜間・休日も使う必要があるか確認してください。");
+  if (profile.impact === 0 && (at("av.rto") >= 2 || at("av.disaster") === 2))
+    add("warning", ["av.rto", "av.disaster"].filter((k) => at(k) >= 0), "止まっても手作業で代わりができるシステムにしては、復旧・災害対策の水準が高めです。費用に見合うか確認してください。");
+  if (profile.users === 0 && at("us.access") === 2) add("warning", ["us.access"], "社内の一部の人だけが使うシステムに、公共サイト並みのアクセシビリティ（適合レベルAA）を求めています。利用者に必要な配慮に絞れないか確認してください。");
+  if ((profile.scale ?? 2) === 0 && at("pf.users") === 2) add("warning", ["pf.users"], "利用者は50人までなのに、同時に1,000人の利用を見込んでいます。");
+  // 推奨より高い水準は、業務上の根拠がなければ過大の可能性。2段以上高いのに理由がなければエラー
+  for (const item of NFR_ITEMS) {
+    const i = at(item.key);
+    if (i < 0) continue;
+    const rec = item.levels.indexOf(recommendedLevel(item, profile));
+    if (i - rec >= 2 && !d(item.key)!.rationale.trim()) add("error", [item.key], `「${item.name}」が推奨より大きく高い水準です（過大の可能性）。必要な業務上の理由を記録するか、水準を見直してください。`);
+    else if (i - rec === 1 && !d(item.key)!.rationale.trim()) add("warning", [item.key], `「${item.name}」が推奨より高い水準です。費用が増えるため、必要な理由を記録してください。`);
   }
   // 推奨より2段以上低い水準は、理由がなければエラー
   for (const item of NFR_ITEMS) {
@@ -588,17 +623,31 @@ export const NfrSuggestionContent = z.object({
 export const NFR_SYSTEM = `あなたは非機能要件の専門家です。システム開発に詳しくない利用者のために、非機能要件の各項目について、業務に見合った水準を提案します。
 - 項目ごとに、選択肢の中から level（L1 など）を1つ選ぶ。どれにも当てはまらないときだけ level を null にして value に具体的な値を書く
 - rationale には、その水準を選んだ理由を業務の言葉で1〜2文で書く。高すぎる水準は費用が増えることも考える
+- 非機能要件は過大になりやすい。システムの規模・目的・予算に見合う水準を選び、「念のため」の高い水準は避ける。目安や似た事例より高い水準を選ぶのは、業務上の明確な理由があるときだけにし、その理由を rationale に書く
 - 判断に必要な情報が足りないときは question に利用者への確認を書く
 - 出力は次の形のJSONのみ。説明文やコードフェンスは付けない
 { "items": [{ "key": "av.rate", "level": "L2", "value": "", "rationale": "...", "question": "" }] }`;
 
-export function buildNfrPrompt(input: { projectName: string; purpose: string; profile: NfrProfile; requirements: Array<{ code: string; type: string; title: string }>; keys?: string[] }): string {
+export function buildNfrPrompt(input: {
+  projectName: string;
+  purpose: string;
+  profile: NfrProfile;
+  requirements: Array<{ code: string; type: string; title: string }>;
+  keys?: string[];
+  /** 似た規模・目的のシステムの事例（項目ごとの水準） */
+  cases?: Array<{ name: string; levels: Record<string, string> }>;
+}): string {
   const g = gradesOf(input.profile);
   const prof = (Object.keys(PROFILE_QUESTIONS) as ProfileKey[])
     .map((k) => `- ${PROFILE_QUESTIONS[k].question} ${input.profile[k] === undefined ? "（未回答）" : PROFILE_QUESTIONS[k].options[input.profile[k]!]}`)
     .join("\n");
   const items = NFR_ITEMS.filter((i) => !input.keys || input.keys.includes(i.key))
-    .map((i) => `## ${i.key} ${i.name}（${NFR_CATEGORIES[i.category]}）\n質問: ${i.question}\n${i.levels.map((l) => `- ${l.id}: ${l.label}`).join("\n")}\n目安: ${recommendedLevel(i, input.profile).id}`)
+    .map(
+      (i) =>
+        `## ${i.key} ${i.name}（${NFR_CATEGORIES[i.category]}）\n質問: ${i.question}\n${i.levels.map((l) => `- ${l.id}: ${l.label}`).join("\n")}${
+          input.cases?.length ? `\n似た事例: ${input.cases.map((c) => `${c.name}=${c.levels[i.key] ?? "?"}`).join(" / ")}` : ""
+        }\n目安: ${recommendedLevel(i, input.profile).id}`,
+    )
     .join("\n\n");
   return `# プロジェクト
 名称: ${input.projectName}

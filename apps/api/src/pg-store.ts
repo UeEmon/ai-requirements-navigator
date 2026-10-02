@@ -264,6 +264,15 @@ const toAnalysis = (r: any): AnalysisRecord => ({
   createdAt: iso(r.created_at),
 });
 
+const toNfr = (r: any): NfrSheet => ({
+  projectId: r.project_id,
+  profile: r.profile,
+  decisions: r.decisions,
+  suggestions: r.suggestions,
+  review: r.review ?? null,
+  updatedAt: r.updated_at ? iso(r.updated_at) : null,
+});
+
 /** PostgreSQL（ローカルDockerの postgres / AWS RDS）に保存する */
 export class PgStore implements Store {
   constructor(readonly pool: pg.Pool) {}
@@ -765,17 +774,29 @@ export class PgStore implements Store {
   async getNfrSheet(projectId: string) {
     const { rows } = await this.pool.query("SELECT * FROM nfr_sheets WHERE project_id = $1", [projectId]);
     const r = rows[0];
-    return r ? { projectId: r.project_id, profile: r.profile, decisions: r.decisions, suggestions: r.suggestions, updatedAt: r.updated_at ? iso(r.updated_at) : null } : null;
+    return r ? toNfr(r) : null;
+  }
+  async listNfrSheets(orgId: string) {
+    const { rows } = await this.pool.query(
+      "SELECT s.*, p.name AS project_name, p.purpose AS project_purpose FROM nfr_sheets s JOIN projects p ON p.id = s.project_id WHERE p.org_id = $1 ORDER BY s.updated_at DESC",
+      [orgId],
+    );
+    return rows.map((r: any) => ({ ...toNfr(r), projectName: r.project_name, projectPurpose: r.project_purpose }));
   }
   async saveNfrSheet(sheet: Omit<NfrSheet, "updatedAt">): Promise<NfrSheet> {
     const { rows } = await this.pool.query(
-      `INSERT INTO nfr_sheets(project_id, profile, decisions, suggestions, updated_at) VALUES ($1,$2,$3,$4, now())
-       ON CONFLICT (project_id) DO UPDATE SET profile = EXCLUDED.profile, decisions = EXCLUDED.decisions, suggestions = EXCLUDED.suggestions, updated_at = now()
+      `INSERT INTO nfr_sheets(project_id, profile, decisions, suggestions, review, updated_at) VALUES ($1,$2,$3,$4,$5, now())
+       ON CONFLICT (project_id) DO UPDATE SET profile = EXCLUDED.profile, decisions = EXCLUDED.decisions, suggestions = EXCLUDED.suggestions, review = EXCLUDED.review, updated_at = now()
        RETURNING *`,
-      [sheet.projectId, JSON.stringify(sheet.profile), JSON.stringify(sheet.decisions), sheet.suggestions ? JSON.stringify(sheet.suggestions) : null],
+      [
+        sheet.projectId,
+        JSON.stringify(sheet.profile),
+        JSON.stringify(sheet.decisions),
+        sheet.suggestions ? JSON.stringify(sheet.suggestions) : null,
+        sheet.review ? JSON.stringify(sheet.review) : null,
+      ],
     );
-    const r = rows[0];
-    return { projectId: r.project_id, profile: r.profile, decisions: r.decisions, suggestions: r.suggestions, updatedAt: iso(r.updated_at) };
+    return toNfr(rows[0]);
   }
 
   async addUsage(u: Omit<UsageRecord, "at">) {

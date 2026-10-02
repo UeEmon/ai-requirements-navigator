@@ -55,6 +55,7 @@ export function defaultMockHandler(id: string): MockHandler {
     }
     if (req.system.includes("インタビュアー")) return mockGuide(prompt);
     if (req.system.includes("非機能要件の専門家")) return mockNfr(prompt, id);
+    if (req.system.includes("費用対効果の専門家")) return mockSizing(prompt);
     if (req.system.includes("業務改善コンサルタント")) return mockAnalysis(prompt, id);
     if (req.system.includes("分析レビュアー")) {
       const labels = [...prompt.matchAll(/### 案([A-F])/g)].map((m) => m[1]!);
@@ -366,5 +367,13 @@ function mockNfr(prompt: string, id: string): string {
     if (m[1] === "av.rate" && seed(id) % 2 === 1) level = `L${Math.min(4, Number(level.slice(1)) + 1)}`;
     return { key: m[1]!, level, value: "", rationale: "業務への影響と費用のバランスから選びました", question: m[1] === "pf.peak" ? "月末に利用が増えますか？" : "" };
   });
+  return JSON.stringify({ items });
+}
+
+/** 理由が書かれていない L3 以上の水準を、1段下げるよう提案する */
+function mockSizing(prompt: string): string {
+  const items = [...prompt.matchAll(/^## (\S+) .+\n決めた水準: L(\d).*\n.*\n理由: (.*)$/gm)]
+    .filter((m) => Number(m[2]) >= 3 && m[3] === "（なし）")
+    .map((m) => ({ key: m[1]!, level: `L${Number(m[2]) - 1}`, reason: "規模と目的に比べて高い水準です", risk: "障害時の復旧に少し時間がかかります" }));
   return JSON.stringify({ items });
 }

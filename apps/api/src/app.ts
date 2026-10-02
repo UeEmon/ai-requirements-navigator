@@ -901,6 +901,11 @@ export function createApp(deps: AppDeps) {
         return dc.jobHandlers.screens(p, job.input, job.createdBy, report).catch(asJobError);
       },
       impact: async ({ job, report }) => dc.jobHandlers.impact(job.input, job.createdBy, report).catch(asJobError),
+      nfrReview: async ({ job, report }) => {
+        const p = await store.getProject(job.projectId!);
+        if (!p) throw new JobError("プロジェクトが見つかりません", 404);
+        return nfr.reviewJobHandler(p, job.createdBy, report).catch(asJobError);
+      },
       nfr: async ({ job, report }) => {
         const p = await store.getProject(job.projectId!);
         if (!p) throw new JobError("プロジェクトが見つかりません", 404);

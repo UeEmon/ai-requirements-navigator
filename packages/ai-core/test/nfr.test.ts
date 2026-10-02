@@ -34,7 +34,10 @@ describe("非機能要件", () => {
     const low = { users: 0, impact: 0, data: 0, hours: 0 } as const;
     const high = { users: 2, impact: 2, data: 2, hours: 2 } as const;
     expect(gradesOf(low).availability).toBe(0);
-    expect(gradesOf({ impact: 0, hours: 2 }).availability).toBe(2);
+    // 長時間使うだけでは可用性の重要度は「中」まで（止まると困るかどうかで決まる）
+    expect(gradesOf({ impact: 0, hours: 2 }).availability).toBe(1);
+    expect(gradesOf({ impact: 2, hours: 0 }).availability).toBe(2);
+    expect(recommendedLevel(item("av.hours"), { impact: 0, hours: 2 }).id).toBe("L3");
     expect(gradesOf({}).overall).toBe(1); // 未回答は中
     expect(recommendedLevel(item("av.rate"), low).value).toBe("95%");
     expect(recommendedLevel(item("av.rate"), high).value).toBe("99.9%");

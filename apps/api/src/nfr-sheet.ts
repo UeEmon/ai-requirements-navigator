@@ -17,6 +17,11 @@ import {
   PROFILE_QUESTIONS,
   recommendedLevel,
   suggestNfr,
+  BUILTIN_CASES,
+  orgCaseFrom,
+  reviewSizing,
+  reviewSizingWithAi,
+  type NfrCase,
   type NfrDecision,
   type NfrProfile,
 } from "@arn/ai-core";
@@ -29,7 +34,7 @@ import type { JobProgress, NfrSheet, Project } from "./store.js";
 import { usageOf } from "./store.js";
 
 const choice = z.union([z.literal(0), z.literal(1), z.literal(2)]).optional();
-const ProfileInput = z.object({ users: choice, impact: choice, data: choice, hours: choice }).strict();
+const ProfileInput = z.object({ users: choice, impact: choice, data: choice, hours: choice, scale: choice, purpose: choice, budget: choice }).strict();
 const ItemInput = z
   .object({
     status: z.enum(["undecided", "decided", "na", "deferred"]),
@@ -48,12 +53,28 @@ const empty = (): NfrDecision => ({ status: "undecided", level: null, value: "",
 export function nfrSheet(ctx: ImplementationContext) {
   const { store } = ctx;
   const load = async (projectId: string): Promise<Omit<NfrSheet, "updatedAt"> & { updatedAt: string | null }> =>
-    (await store.getNfrSheet(projectId)) ?? { projectId, profile: {}, decisions: {}, suggestions: null, updatedAt: null };
+    (await store.getNfrSheet(projectId)) ?? { projectId, profile: {}, decisions: {}, suggestions: null, review: null, updatedAt: null };
+
+  /** 比べる事例: 参考類型と、同じ組織の他のプロジェクトのシート */
+  const casesFor = async (p: Project): Promise<NfrCase[]> => {
+    const org = (await store.listNfrSheets(p.orgId))
+      .filter((x) => x.projectId !== p.id)
+      .map((x) => orgCaseFrom(x.projectId, x.projectName, x.projectPurpose, x.profile, x.decisions))
+      .filter((x): x is NfrCase => x !== null);
+    return [...org, ...BUILTIN_CASES];
+  };
+  /** 検討状況（矛盾・過大の可能性を含む） */
+  const assess = async (p: Project, s: { profile: NfrProfile; decisions: Record<string, NfrDecision> }) => {
+    const ev = evaluateNfr(s.profile, s.decisions);
+    const sizing = reviewSizing(s.profile, s.decisions, await casesFor(p), { chosenCost: ev.cost.chosen });
+    return { ev: { ...ev, findings: [...ev.findings, ...sizing.findings] }, sizing };
+  };
 
   const view = async (p: Project) => {
     const s = await load(p.id);
     const g = gradesOf(s.profile);
-    const ev = evaluateNfr(s.profile, s.decisions);
+    const { ev, sizing } = await assess(p, s);
+    const rev = new Map((s.review?.items ?? []).map((x) => [x.key, x]));
     const reqs = new Map((await store.listRequirements(p.id)).map((r) => [r.id, r]));
     const sug = new Map((s.suggestions?.items ?? []).map((x) => [x.key, x]));
     return {
@@ -77,9 +98,21 @@ export function nfrSheet(ctx: ImplementationContext) {
           decision: d,
           requirement: r && !r.deletedAt ? { id: r.id, code: r.code, title: r.title } : null,
           suggestion: sug.get(i.key) ?? null,
+          /** 似た事例の水準 */
+          cases: sizing.perItem[i.key] ?? null,
+          /** AIによる適正化の見直し（下げる提案） */
+          review: rev.get(i.key) ?? null,
         };
       }),
       evaluation: ev,
+      sizing: {
+        ready: sizing.ready,
+        typicalCost: sizing.typicalCost,
+        similar: sizing.similar.map((c) => ({ id: c.id, name: c.name, source: c.source, description: c.description, similarity: Math.round(c.similarity * 100) / 100, cost: c.cost, profile: c.profile })),
+      },
+      reviewAt: s.review?.at ?? null,
+      reviewAnalysts: s.review?.analysts ?? 0,
+      reviewFailures: s.review?.failures ?? [],
       suggestionsAt: s.suggestions?.at ?? null,
       suggestionFailures: s.suggestions?.failures ?? [],
       updatedAt: s.updatedAt,
@@ -89,7 +122,7 @@ export function nfrSheet(ctx: ImplementationContext) {
   /** 要件定義の確定前の確認。未検討の項目とエラーの矛盾があれば ok: false */
   async function gate(p: Project) {
     const s = await load(p.id);
-    const ev = evaluateNfr(s.profile, s.decisions);
+    const { ev } = await assess(p, s);
     const undecided = NFR_ITEMS.filter((i) => (s.decisions[i.key]?.status ?? "undecided") === "undecided").map((i) => i.name);
     const errors = ev.findings.filter((f) => f.severity === "error").map((f) => f.message);
     return { ok: undecided.length === 0 && errors.length === 0, undecided, errors, coverage: ev.coverage };
@@ -117,7 +150,14 @@ export function nfrSheet(ctx: ImplementationContext) {
     try {
       r = await suggestNfr(
         providers,
-        { projectName: p.name, purpose: p.purpose, profile: s.profile, requirements: (await store.listRequirements(p.id)).map((x) => ({ code: x.code, type: x.type, title: x.title })), keys },
+        {
+          projectName: p.name,
+          purpose: p.purpose,
+          profile: s.profile,
+          requirements: (await store.listRequirements(p.id)).map((x) => ({ code: x.code, type: x.type, title: x.title })),
+          keys,
+          cases: reviewSizing(s.profile, s.decisions, await casesFor(p)).similar.map((c) => ({ name: c.name, levels: c.levels })),
+        },
         {
           timeoutMs: ctx.timeoutMs,
           onProgress: (id, status, reason) => {
@@ -165,8 +205,24 @@ export function nfrSheet(ctx: ImplementationContext) {
 
   function routes(
     app: Hono<any>,
-    jobs: { wantsAsync: (c: Context) => boolean; enqueue: (c: AnyContext, p: Project, kind: "nfr", input: Record<string, unknown>) => Promise<Response> },
+    jobs: { wantsAsync: (c: Context) => boolean; enqueue: (c: AnyContext, p: Project, kind: "nfr" | "nfrReview", input: Record<string, unknown>) => Promise<Response> },
   ) {
+    /** 似たシステムの事例（参考類型と社内事例）の一覧 */
+    app.get("/api/projects/:id/nfr/cases", async (c) => {
+      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      return c.json((await casesFor(p)).map((x) => ({ id: x.id, name: x.name, source: x.source, description: x.description, profile: x.profile, levels: x.levels })));
+    });
+
+    /** 決めた水準に過大なものがないか、複数AIに見直してもらう */
+    app.post("/api/projects/:id/nfr/review", async (c) => {
+      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      if (jobs.wantsAsync(c)) {
+        await ctx.budget(p.orgId, []);
+        return jobs.enqueue(c, p, "nfrReview", {});
+      }
+      return c.json(await executeReview(p, ctx.actorOf(c)), 201);
+    });
+
     app.get("/api/projects/:id/nfr", async (c) => {
       const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
       return c.json(await view(p));
@@ -305,16 +361,79 @@ export function nfrSheet(ctx: ImplementationContext) {
     });
   }
 
+  async function executeReview(p: Project, actor: string, report?: (pr: JobProgress) => Promise<void>) {
+    const s = await load(p.id);
+    if (!Object.values(s.decisions).some((d) => d.status === "decided" && d.level)) throw new HTTPException(400, { message: "水準を決めた項目がまだありません" });
+    const ids = p.aiConfig.mode === "multi" ? p.aiConfig.generatorIds : p.aiConfig.generatorIds.slice(0, 1);
+    const b = await ctx.budget(p.orgId, ids);
+    const usable = ids.filter((id) => !b.excluded.has(id));
+    if (!usable.length) throw new HTTPException(429, { message: `使えるAIがすべて今月の上限に達しています。${b.warnings.join(" ")}` });
+    const providers = await ctx.providersOf(p.orgId, usable);
+    if (p.confidential && providers.some((x) => !x.isLocal)) throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを使えます" });
+    const labels = await ctx.labelsOf(p.orgId);
+    const steps: NonNullable<JobProgress["steps"]> = usable.map((id) => ({ key: `generator:${id}`, label: `適正化の見直し: ${labels.get(id) ?? id}`, status: "waiting" }));
+    let chain = Promise.resolve();
+    const push = () => {
+      const snap = { steps: steps.map((x) => ({ ...x })) };
+      chain = chain.then(() => report?.(snap)).catch(() => undefined);
+    };
+    push();
+    const similar = reviewSizing(s.profile, s.decisions, await casesFor(p)).similar;
+    let r: Awaited<ReturnType<typeof reviewSizingWithAi>>;
+    try {
+      r = await reviewSizingWithAi(providers, { projectName: p.name, purpose: p.purpose, profile: s.profile, decisions: s.decisions, similar }, {
+        timeoutMs: ctx.timeoutMs,
+        onProgress: (id, status, reason) => {
+          const st = steps.find((x) => x.key === `generator:${id}`);
+          if (!st) return;
+          st.status = status;
+          if (reason) st.reason = reason;
+          push();
+        },
+      });
+    } catch (e) {
+      await chain;
+      throw new HTTPException(502, { message: (e as Error).message });
+    }
+    await chain;
+    for (const u of r.usages) await store.addUsage({ orgId: p.orgId, providerId: u.providerId, projectId: p.id, ...usageOf(u.usage) });
+    await store.saveNfrSheet({
+      ...s,
+      review: {
+        items: r.items.map((x) => ({ ...x, reasons: x.reasons.map((y) => ({ ...y, provider: labels.get(y.providerId) ?? y.providerId })) })),
+        at: new Date().toISOString(),
+        analysts: r.analysts,
+        failures: r.failures.map((f) => ({ provider: labels.get(f.providerId) ?? f.providerId, reason: f.reason })),
+      },
+    });
+    await audit(store, {
+      orgId: p.orgId,
+      actor,
+      action: "ai.nfr",
+      targetType: "project",
+      targetId: p.id,
+      detail: {
+        review: r.items.map((x) => ({ key: x.key, to: x.level, votes: `${x.votes}/${x.analysts}` })),
+        similar: similar.map((c) => c.name),
+        generators: r.usages.map((u) => ({ id: u.providerId, label: labels.get(u.providerId), tokens: usageOf(u.usage) })),
+      },
+    });
+    return view(p);
+  }
+
   /** 仕様書に載せる非機能要件シート */
   async function specMore(p: Project): Promise<Array<{ title: string; lines: string[] }>> {
     const s = await store.getNfrSheet(p.id);
     const g = gradesOf(s?.profile ?? {});
-    const ev = evaluateNfr(s?.profile ?? {}, s?.decisions ?? {});
+    const { ev, sizing } = await assess(p, { profile: s?.profile ?? {}, decisions: s?.decisions ?? {} });
     return [
       {
         title: "13. 非機能要件シート",
         lines: [
           `システムの重要度：${GRADE_LABELS[g.overall]}${s && Object.keys(s.profile).length ? "" : "（システムの性格が未回答のため「中」とみなしています）"}／検討済み ${Math.round(ev.coverage * 100)}%`,
+          ...(sizing.similar.length
+            ? [`比べた事例：${sizing.similar.map((c) => `${c.name}（${c.source === "org" ? "社内" : "参考類型"}、似ている度合い ${Math.round(c.similarity * 100)}%）`).join("、")}／費用・手間の目安 ${ev.cost.chosen}（事例の平均 ${sizing.typicalCost}）`]
+            : []),
           ...ev.findings.map((f) => `${f.severity === "error" ? "【要対応】" : "【確認】"}${f.message}`),
           ...nfrSheetLines(s?.profile ?? {}, s?.decisions ?? {}),
         ],
@@ -327,5 +446,6 @@ export function nfrSheet(ctx: ImplementationContext) {
     gate,
     specMore,
     jobHandler: (p: Project, input: unknown, actor: string, report: (pr: JobProgress) => Promise<void>) => executeSuggest(p, ctx.parseOrThrow(SuggestInput, input), actor, report),
+    reviewJobHandler: (p: Project, actor: string, report: (pr: JobProgress) => Promise<void>) => executeReview(p, actor, report),
   };
 }

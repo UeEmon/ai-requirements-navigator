@@ -15,3 +15,4 @@ export * from "./impact.js";
 export * from "./ears.js";
 export * from "./analysis.js";
 export * from "./nfr.js";
+export * from "./nfr-cases.js";

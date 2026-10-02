@@ -139,4 +139,46 @@ describe("非機能要件シート", () => {
     const log = await (await req(`/api/orgs/${orgId}/audit?action=baseline`, as("admin"))).json();
     expect(log.entries[0].detail.nfr).toMatchObject({ coverage: 1, override: false });
   });
+  it("適正化: 似た規模・目的の事例（参考類型と社内の過去事例）と比べ、過大な水準を示し、AIに見直してもらえる", async () => {
+    const small = { users: 2, impact: 0, data: 2, hours: 2, scale: 0, purpose: 1, budget: 0 };
+    // 同じ組織の過去のプロジェクト（ほぼすべて L1 で決めた）
+    const past = await project();
+    await req(`/api/projects/${past.id}/nfr/profile`, as("editor", json(small, "PUT")));
+    for (const i of NFR_ITEMS) await patch(`/api/projects/${past.id}/nfr/items/${i.key}`, { status: "decided", level: "L1", rationale: "小規模のため" });
+
+    const p = await project();
+    const v = await (await req(`/api/projects/${p.id}/nfr/profile`, as("editor", json(small, "PUT")))).json();
+    expect(v.sizing.ready).toBe(true);
+    const names = v.sizing.similar.map((c: { name: string }) => c.name);
+    expect(names).toContain("社内事例：予約");
+    expect(names).toContain("小規模店舗の予約受付");
+    expect(names).not.toContain("金融機関のオンラインサービス（参考：最上位）");
+    expect(v.items.find((i: { key: string }) => i.key === "av.rate").cases.levels.length).toBe(v.sizing.similar.length);
+    const cases = await (await req(`/api/projects/${p.id}/nfr/cases`, as("viewer"))).json();
+    expect(cases.length).toBeGreaterThanOrEqual(13);
+
+    // 似た事例のどれよりも高い水準・推奨より大きく高い水準は、理由がないと過大の可能性として示す
+    const over = await (await patch(`/api/projects/${p.id}/nfr/items/av.rate`, { status: "decided", level: "L4" })).json();
+    const msgs = over.evaluation.findings.map((f: { message: string }) => f.message).join("\n");
+    expect(msgs).toContain("似た事例");
+    expect(msgs).toContain("過大の可能性");
+    for (const i of NFR_ITEMS.filter((x) => x.key !== "av.rate")) {
+      const rec = v.items.find((x: { key: string }) => x.key === i.key).recommended;
+      await patch(`/api/projects/${p.id}/nfr/items/${i.key}`, { status: "decided", level: rec, rationale: "推奨どおり" });
+    }
+    const gate = await (await post(`/api/projects/${p.id}/baseline`, {})).json();
+    expect(gate.code).toBe("nfr_incomplete");
+    expect(gate.errors.join("\n")).toContain("稼働率（止まってよい時間）」が推奨より大きく高い水準");
+
+    // 複数AIの見直し: 理由のない高い水準を下げる提案
+    const rv = await (await post(`/api/projects/${p.id}/nfr/review`)).json();
+    const item = rv.items.find((i: { key: string }) => i.key === "av.rate");
+    expect(item.review).toMatchObject({ level: "L3", votes: 2, analysts: 2 });
+    expect(item.review.reasons.map((r: { provider: string }) => r.provider).sort()).toEqual(["生成役1", "生成役2"]);
+    expect(rv.reviewAnalysts).toBe(2);
+
+    const md = await (await req(`/api/projects/${p.id}/spec.md`, as("viewer"))).text();
+    expect(md).toContain("比べた事例：");
+    expect(md).toContain("社内事例：予約（社内");
+  });
 });
