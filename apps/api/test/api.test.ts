@@ -52,6 +52,23 @@ describe("API", () => {
     orgId = (await res.json()).id;
   });
 
+  it("開発用ログイン: 組織を名前で選べ、組織のプロジェクトを一覧で開ける", async () => {
+    // 組織の一覧は、開発用ログインでだけ（ログインなしで）取れる
+    const other = (await (await t.app.request("/api/orgs", json({ name: "別の組織" }))).json()).id;
+    const orgs = await (await t.app.request("/api/dev/orgs")).json();
+    expect(orgs.map((o: { name: string }) => o.name)).toEqual(["テスト組織", "別の組織"]);
+    // プロジェクトの一覧（組織ごと）
+    const [g1] = await registerMocks();
+    const p = await (await t.app.request(`/api/orgs/${orgId}/projects`, as("editor", json({ name: "予約システム", purpose: "電話を減らす", aiConfig: { mode: "single", generatorIds: [g1] } })))).json();
+    const list = await (await t.app.request(`/api/orgs/${orgId}/projects`, as("viewer"))).json();
+    expect(list).toEqual([expect.objectContaining({ id: p.id, name: "予約システム", purpose: "電話を減らす", phaseKey: "purpose", phaseName: "目的整理" })]);
+    expect(await (await t.app.request(`/api/orgs/${other}/projects`, as("viewer", {}, other))).json()).toEqual([]);
+    expect((await t.app.request(`/api/orgs/${orgId}/projects`, as("viewer", {}, other))).status).toBe(404);
+    // 本番（開発用ログインでない）では組織の一覧は出さない
+    const prod = createApp({ store: t.store, encryptor: t.encryptor, storage: t.storage, authenticate: devAuthenticator, allowMock: false, devAuth: false });
+    expect((await prod.request("/api/dev/orgs")).status).toBe(404);
+  });
+
   async function registerMocks() {
     const ids: string[] = [];
     for (const label of ["Claude役", "GPT役", "評価役"]) {

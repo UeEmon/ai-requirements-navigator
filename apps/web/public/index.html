@@ -30,6 +30,14 @@ header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:spac
 .brand{font-family:var(--f-display);font-weight:900;font-size:22px;margin:0}
 .brand small{display:block;font-family:var(--f-mono);font-weight:400;font-size:11px;color:var(--ink-2);letter-spacing:.08em}
 .conn{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px}
+.conn label.cl{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--ink-2)}
+.ctx{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:13px;padding-top:8px;color:var(--ink-2)}
+.ctx b{color:var(--ink)}
+.ctx .sep{color:var(--rule)}
+#ctxHelp{background:var(--sheet);border:1px solid var(--rule);font-size:13px;line-height:1.7}
+#ctxHelp dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:6px 0}
+#ctxHelp dt{font-weight:700}#ctxHelp dd{margin:0}
+table.t tr.cur td{background:var(--accent-soft)}
 input,select,textarea{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--rule);border-radius:var(--r);background:var(--sheet);color:var(--ink);min-width:0}
 textarea{width:100%;resize:vertical}
 [hidden]{display:none!important}
@@ -125,6 +133,8 @@ tr.sub td{border-bottom:none;padding-top:0}
     <h1 class="brand"><small>REQUIREMENTS NAVIGATOR</small>要件ナビ</h1>
     <div class="conn" id="conn"></div>
   </header>
+  <div class="ctx" id="ctx" aria-live="polite"></div>
+  <div class="note" id="ctxHelp" hidden></div>
 
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="hear" aria-selected="true" id="t-hear">ヒアリング</button>
@@ -375,21 +385,64 @@ async function logout(){
 /* ---------- 接続 ---------- */
 function renderConn(){
   if (S.meta?.auth === "dev") {
-    $("#conn").innerHTML = `<span class="hint">開発用ログイン</span>
-       <input id="cOrg" placeholder="組織ID" value="${esc(S.orgId)}" style="width:15em">
-       <select id="cRole">${ROLE_ORDER.map(r=>`<option ${r===S.role?"selected":""}>${r}</option>`).join("")}</select>
-       <button class="btn sm ghost" id="cNewOrg">組織を作成</button>`;
-    $("#cOrg").onchange = e => { S.orgId = e.target.value.trim(); store.set("orgId", S.orgId); reload(); };
-    $("#cRole").onchange = e => { S.role = e.target.value; store.set("role", S.role); reload(); };
-    $("#cNewOrg").onclick = createOrg;
+    const orgs = S.devOrgs || [];
+    const known = orgs.some(o=>o.id===S.orgId);
+    $("#conn").innerHTML = `<span class="hint" title="パスワードなしで、組織と役割を選ぶだけで使えるお試し用のログインです">開発用ログイン</span>
+       <label class="cl">組織<select id="cOrg" style="max-width:16em">
+         ${!S.orgId||!known?`<option value="">${orgs.length?"選んでください":"まだありません"}</option>`:""}
+         ${orgs.map(o=>`<option value="${esc(o.id)}" ${o.id===S.orgId?"selected":""}>${esc(o.name)}</option>`).join("")}
+         <option value="__new">＋ 新しい組織を作る</option></select></label>
+       <label class="cl">役割<select id="cRole">${ROLE_ORDER.map(r=>`<option value="${r}" ${r===S.role?"selected":""}>${ROLE_JA[r]}</option>`).join("")}</select></label>
+       <button class="btn sm ghost" id="cHelp" aria-expanded="${!$("#ctxHelp").hidden}" title="組織・プロジェクト・開発用ログインの関係">？</button>`;
+    $("#cOrg").onchange = e => {
+      if (e.target.value === "__new") { e.target.value = S.orgId; createOrg(); return; }
+      switchOrg(e.target.value);
+    };
+    $("#cRole").onchange = e => { S.role = e.target.value; store.set("role", S.role); renderCtx(); reload(); };
+    $("#cHelp").onclick = toggleCtxHelp;
     return;
   }
   $("#conn").innerHTML = S.token
-    ? `<span class="who">${esc(S.user)}（${esc(S.role)}）</span><button class="btn sm ghost" id="cOut">ログアウト</button>`
+    ? `<span class="who">${esc(S.user)}（${esc(ROLE_JA[S.role]||S.role)}）</span><button class="btn sm ghost" id="cHelp" title="組織・プロジェクトの関係">？</button><button class="btn sm ghost" id="cOut">ログアウト</button>`
     : `<button class="btn sm" id="cIn">ログイン</button><button class="btn sm ghost" id="cNewOrg">組織を作成</button>`;
   $("#cOut") && ($("#cOut").onclick = logout);
+  $("#cHelp") && ($("#cHelp").onclick = toggleCtxHelp);
   $("#cIn") && ($("#cIn").onclick = login);
   $("#cNewOrg") && ($("#cNewOrg").onclick = createOrg);
+}
+const ROLE_JA={admin:"管理者",editor:"編集者",reviewer:"レビュー担当",viewer:"閲覧者"};
+const ROLE_DESC={admin:"AI設定・連携先・承認の設定まで、すべて操作できます",editor:"ヒアリング・要件の編集・確定ができます",reviewer:"要件を見て、レビュー（承認・差し戻し）ができます",viewer:"見るだけです"};
+/** 開発用ログイン: 組織の一覧（名前で選ぶため） */
+async function loadDevOrgs(){ if(S.meta?.auth!=="dev") return; try{ S.devOrgs = await (await fetch("/api/dev/orgs")).json(); }catch(e){ S.devOrgs=[]; } }
+/** 組織を切り替える（開いていたプロジェクトは、その組織のものではないので閉じる） */
+function switchOrg(id){
+  if(id===S.orgId) return;
+  S.orgId=id; store.set("orgId", id);
+  S.project=null; store.set("projectId", null); S.round=null; S.guide=null; S.providers=[];
+  renderConn(); reload();
+  toast(id?`組織「${(S.devOrgs||[]).find(o=>o.id===id)?.name||""}」に切り替えました`:"組織を選んでください");
+}
+/** 今どの組織・プロジェクトで、どの役割で使っているか */
+async function renderCtx(){
+  const el=$("#ctx"); if(!el) return;
+  if(!S.orgId && !S.token){ el.innerHTML=`<span>はじめに、右上で組織を選ぶか「＋ 新しい組織を作る」を選んでください</span>`; return; }
+  let orgName=(S.devOrgs||[]).find(o=>o.id===S.orgId)?.name || S.orgName;
+  if(!orgName && S.orgId){ try{ orgName=(await api(`/api/orgs/${S.orgId}`)).name; S.orgName=orgName; }catch(e){} }
+  el.innerHTML=`<span>組織 <b>${esc(orgName||"（不明）")}</b></span><span class="sep">›</span>
+    <span>プロジェクト ${S.project?`<b>${esc(S.project.name)}</b>${S.project.phase?.name?`（${esc(S.project.phase.name)}）`:""}`:`<b>未選択</b>`}</span>
+    <button class="btn sm ghost" id="ctxPick">${S.project?"切り替える":"開く・作る"}</button>
+    <span class="sep">｜</span><span>役割 <b>${esc(ROLE_JA[S.role]||S.role)}</b></span>`;
+  $("#ctxPick").onclick=()=>switchTab("project");
+}
+function toggleCtxHelp(){
+  const h=$("#ctxHelp"); h.hidden=!h.hidden; $("#cHelp")?.setAttribute("aria-expanded", String(!h.hidden));
+  if(h.hidden) return;
+  h.innerHTML=`<b>組織・プロジェクト・ログインの関係</b>
+    <dl><dt>組織</dt><dd>会社や部署の単位です。AI の API キー、課題管理ツールの連携、利用者と役割は、組織ごとに設定します。</dd>
+    <dt>プロジェクト</dt><dd>要件定義をする1つのシステムです。組織の中にいくつでも作れ、「プロジェクト設定」タブで一覧から開きます。</dd>
+    <dt>役割</dt><dd>${ROLE_ORDER.map(r=>`${ROLE_JA[r]}：${ROLE_DESC[r]}`).join("<br>")}</dd>
+    ${S.meta?.auth==="dev"?`<dt>開発用ログイン</dt><dd>パスワードなしで、組織と役割を選ぶだけで使えるお試し用のログインです。誰でもどの組織の管理者にもなれるため、社内で共有する場合はログイン画面（AUTH_MODE=oidc）にしてください。役割を切り替えると、別の利用者として扱います（レビューの依頼と承認を1人で試せます）。</dd>`:`<dt>ログイン</dt><dd>組織と役割は、ログインしたアカウントで決まります。変えるときは管理者に依頼してください。</dd>`}
+    <dt>ID</dt><dd>組織とプロジェクトには、内部の番号（ID）があります。ふだんは名前で選べばよく、ID は他の人に同じプロジェクトを開いてもらうときや、AI コーディングツールの設定に使います。</dd></dl>`;
 }
 async function createOrg(){
   const panel = $("#hear");
@@ -403,8 +456,8 @@ async function createOrg(){
       const headers = $("#oTok") ? {"x-bootstrap-token": $("#oTok").value} : {};
       const org = await api("/api/orgs", {method:"POST", body:{name:$("#oName").value}, headers});
       if (isOidc()) { $("#oMsg").innerHTML=`<div class="note">組織を作成しました。組織ID：<span class="mono">${esc(org.id)}</span></div>`; return; }
-      S.orgId = org.id; store.set("orgId", org.id); toast("組織を作成しました");
-      renderConn(); reload(); switchTab("admin");
+      await loadDevOrgs(); switchOrg(org.id); toast(`組織「${org.name}」を作成しました。次に AI を登録してください`);
+      switchTab("admin");
     }catch(e){ $("#oMsg").innerHTML = `<div class="note err">${esc(e.message)}</div>` }
   };
 }
@@ -722,13 +775,33 @@ function renderKeyGuide(){
 }
 /** 取得方法の項目を開いて表示する（ほかのタブから） */
 function openKeyGuide(id){ switchTab("admin"); const d=$("#kg-"+id); if(d){ d.open=true; d.scrollIntoView({block:"start"}); } }
+/** 組織のプロジェクトの一覧（名前で選んで開く） */
+async function loadProjectList(){
+  const box=$("#jList"); if(!box) return;
+  if(!S.orgId && !S.token){ box.innerHTML=`<p class="hint">先に右上で組織を選んでください</p>`; return; }
+  try{
+    const list=await api(`/api/orgs/${S.orgId}/projects`);
+    box.innerHTML = list.length ? `<table class="t"><thead><tr><th>プロジェクト</th><th>進み具合</th><th>作成日</th><th>ID</th><th></th></tr></thead><tbody>
+      ${list.map(p=>`<tr class="${S.project?.id===p.id?"cur":""}"><td><b>${esc(p.name)}</b>${p.confidential?' <span class="tag">機密</span>':""}${p.purpose?`<br><span class="hint">${esc(p.purpose.slice(0,60))}</span>`:""}</td>
+        <td>${esc(p.phaseName||"")}</td><td class="mono">${esc((p.createdAt||"").slice(0,10))}</td>
+        <td><button class="btn sm ghost mono" data-jcopy="${esc(p.id)}" title="ID をコピー（共有用）">${esc(p.id.slice(0,8))}…</button></td>
+        <td>${S.project?.id===p.id?'<span class="hint">開いています</span>':`<button class="btn sm" data-jopen="${esc(p.id)}">開く</button>`}</td></tr>`).join("")}</tbody></table>`
+      : `<p class="hint">この組織にはまだプロジェクトがありません。下の「新規作成」か「サンプル事例を読み込む」で作ってください。</p>`;
+    box.querySelectorAll("[data-jopen]").forEach(b=>b.onclick=()=>openProject(b.dataset.jopen));
+    box.querySelectorAll("[data-jcopy]").forEach(b=>b.onclick=()=>{ copyText(b.dataset.jcopy); });
+  }catch(e){ box.innerHTML=`<p class="note err">${esc(e.message)}</p>`; }
+}
 /* ---------- プロジェクト設定タブ ---------- */
 function renderProject(){
   const isAdmin = S.role === "admin";
   const gens = S.providers.map(p=>`<label><input type="checkbox" name="g" value="${p.id}" id="g-${p.id}">${esc(p.label)}</label>`).join("");
   $("#projPanel").innerHTML = `<h2>プロジェクト</h2>
-    ${S.project?`<p>現在: <b>${esc(S.project.name)}</b> <span class="mono">${esc(S.project.id)}</span>${S.role==="admin"?` <button class="btn sm ghost" type="button" id="jRepo">このプロジェクトのリポジトリを作る（GitHub）</button>`:""}</p>`:""}
-    <div class="row"><label class="f" style="flex:1">既存のプロジェクトIDを開く<input id="jOpen" placeholder="プロジェクトID"></label><button class="btn ghost" id="jOpenGo">開く</button></div>
+    ${S.project?`<p>開いているプロジェクト: <b>${esc(S.project.name)}</b>${S.role==="admin"?` <button class="btn sm ghost" type="button" id="jRepo">このプロジェクトのリポジトリを作る（GitHub）</button>`:""}</p>`:""}
+    <h3 style="margin-top:12px">この組織のプロジェクト</h3>
+    <div class="scroll" id="jList"><p class="hint">読み込み中…</p></div>
+    <details class="hint" style="margin-top:6px"><summary>ID で開く（ほかの人から共有された場合など）</summary>
+      <div class="row" style="margin-top:6px"><label class="f" style="flex:1">プロジェクトID<input id="jOpen" placeholder="例：3f2a…（「プロジェクト設定」の一覧の ID）" spellcheck="false"></label><button class="btn ghost" id="jOpenGo">開く</button></div>
+      <p>プロジェクトは組織の中にあるため、別の組織のプロジェクトは開けません（右上で組織を切り替えてください）。</p></details>
     ${canEdit()?`<div class="note" style="background:var(--accent-soft)">使い方を見るには、本システム自身の要求事項を題材にした<b>サンプル事例</b>を読み込めます（資料・分析・EARSの要件・非機能要件シート入り。AIは呼び出しません）。<button class="btn sm ghost" id="jSample" style="margin-left:6px">サンプル事例を読み込む</button></div>`:""}
     <h3 style="margin-top:16px">新規作成</h3>
     <div style="display:flex;flex-direction:column;gap:10px">
@@ -742,6 +815,7 @@ function renderProject(){
     </div>`;
   $("#jMode").onchange=()=>{$("#jEvW").hidden=$("#jMode").value==="single"};
   $("#jOpenGo").onclick=()=>openProject($("#jOpen").value.trim());
+  loadProjectList();
   if($("#jToAi")) $("#jToAi").onclick=()=>switchTab("admin");
   if($("#jRepo")) $("#jRepo").onclick=()=>{ const k=$("#iKind"); if(!k) return; k.value="github"; k.dispatchEvent(new Event("change")); $("#integPanel").scrollIntoView({block:"start"}); $("#n-token").focus(); toast("GitHub のトークンを貼り付けて、リポジトリの「＋ 新しいリポジトリを作る」を選んでください"); };
   if($("#jSample")) $("#jSample").onclick=async()=>{
@@ -832,7 +906,7 @@ async function loadUsage(){
 }
 async function openProject(id){
   if(!id) return;
-  try{ S.project = await api(`/api/projects/${id}`); store.set("projectId", id); S.round=null; S.guide=null; await loadBaselineState(); renderHear(); loadGuide(); toast("プロジェクトを開きました") }
+  try{ S.project = await api(`/api/projects/${id}`); store.set("projectId", id); S.round=null; S.guide=null; await loadBaselineState(); renderHear(); loadGuide(); renderCtx(); if($("#v-project").classList.contains("on")) renderProject(); toast(`プロジェクト「${S.project.name}」を開きました`) }
   catch(e){ toast(e.message) }
 }
 
@@ -850,7 +924,7 @@ function renderHear(){
   if(isOidc() && !S.token){ signedOut(); return; }
   if(!S.project){
     el.innerHTML=`<div class="panel"><h2>はじめに</h2><ol class="hint" style="margin:0;padding-left:1.2em">
-      <li>${isOidc()?"管理者から組織に追加してもらい、ログイン":"右上で組織を作成（またはIDを入力）"}</li><li>「AI設定」でAIを登録（APIキーは組織ごと。取得方法も同じタブにあります）</li><li>「プロジェクト設定」でプロジェクトを作成すると、ここで質問が始まります</li></ol></div>`;
+      <li>${isOidc()?"管理者から組織に追加してもらい、ログイン":"右上の「組織」で組織を選ぶか「＋ 新しい組織を作る」"}</li><li>「AI設定」でAIを登録（APIキーは組織ごと。取得方法も同じタブにあります）</li><li>「プロジェクト設定」でプロジェクトを作成すると、ここで質問が始まります</li></ol></div>`;
     return;
   }
   const phases=S.meta.phases, cur=S.project.phaseKey, ci=phases.findIndex(p=>p.key===cur);
@@ -2289,7 +2363,9 @@ async function reload(){
   if(isOidc() && !S.token){ signedOut(); return; }
   await loadProviders();
   const pid=store.get("projectId");
-  if(pid && (!S.project || S.project.id!==pid)) { try{ S.project=await api(`/api/projects/${pid}`) }catch(e){ S.project=null } }
+  if(pid && (!S.project || S.project.id!==pid)) { try{ S.project=await api(`/api/projects/${pid}`) }catch(e){ S.project=null; store.set("projectId", null); } }
+  if(!pid) S.project=null;
+  renderCtx();
   await loadBaselineState();
   renderHear(); loadGuide();
   if($("#v-admin").classList.contains("on")) renderAdmin();
@@ -2300,6 +2376,8 @@ async function reload(){
   catch(e){ $("#hear").innerHTML='<div class="panel note err">APIに接続できません。サーバーが起動しているか確認してください。</div>'; return }
   if(isOidc()){ await handleCallback(); if(S.token) applyClaims(); }
   const fromGoogle = takeGoogleReturn();
+  await loadDevOrgs();
+  if(S.meta?.auth==="dev" && S.orgId && !(S.devOrgs||[]).some(o=>o.id===S.orgId)){ S.orgId=""; store.set("orgId",null); store.set("projectId",null); } // データを消した後など
   renderConn(); await reload();
   if(fromGoogle) switchTab("admin");
 })();

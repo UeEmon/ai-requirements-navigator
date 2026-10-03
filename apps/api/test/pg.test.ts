@@ -206,6 +206,7 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
 
       // 外部連携: プロジェクトの一覧・トークン・実装状況・テスト結果・質問・Webhook
       expect((await store.listProjects(org.id)).map((x) => x.id)).toContain(project.id);
+      expect((await store.listOrgs()).map((x) => x.id)).toContain(org.id);
       const tk = await store.createApiToken({ orgId: org.id, name: "ci", tokenHash: `h-${project.id}`, last4: "abcd", scopes: ["read", "report"], projectIds: [project.id], expiresAt: "2099-01-01T00:00:00.000Z", createdBy: "u1" });
       expect(await store.findApiToken(`h-${project.id}`)).toMatchObject({ id: tk.id, scopes: ["read", "report"], projectIds: [project.id], revokedAt: null });
       await store.touchApiToken(tk.id);

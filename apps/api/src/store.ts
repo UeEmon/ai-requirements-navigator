@@ -475,6 +475,8 @@ export interface Webhook {
 
 export interface Store {
   createOrg(name: string): Promise<Org>;
+  /** すべての組織（開発用ログインで組織を選ぶため。本番では使わない） */
+  listOrgs(): Promise<Org[]>;
   getOrg(id: string): Promise<Org | null>;
   setOrgLimit(id: string, monthlyTokenLimit: number | null): Promise<Org | null>;
 
@@ -667,6 +669,9 @@ export class MemoryStore implements Store {
   }
   async getOrg(id: string) {
     return this.orgs.get(id) ?? null;
+  }
+  async listOrgs() {
+    return [...this.orgs.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
   async setOrgLimit(id: string, monthlyTokenLimit: number | null) {
     const o = this.orgs.get(id);

@@ -308,6 +308,15 @@ export function createApp(deps: AppDeps) {
     return c.json(org, 201);
   });
 
+  /**
+   * 開発用ログイン（AUTH_MODE=dev）でだけ使う: 組織の一覧（名前で選べるように）。
+   * 開発用ログインは誰でもどの組織の管理者にもなれるため、本番（ログイン画面）では提供しない
+   */
+  app.get("/api/dev/orgs", async (c) => {
+    if (!deps.devAuth) throw new HTTPException(404, { message: "見つかりません" });
+    return c.json((await store.listOrgs()).map((o) => ({ id: o.id, name: o.name, createdAt: o.createdAt })));
+  });
+
   /* ---------- 以降は認証必須 ---------- */
   app.use("/api/*", async (c, next) => {
     // 外部連携 API（/api/v1）はトークンでも使えるため、connect.ts の認証に任せる
@@ -547,6 +556,16 @@ export function createApp(deps: AppDeps) {
   /* ------------------------------------------------------------------ */
   /* プロジェクト・フェーズ・質問ガイド                                     */
   /* ------------------------------------------------------------------ */
+
+  /** 組織のプロジェクトの一覧（名前で選んで開くため） */
+  app.get("/api/orgs/:orgId/projects", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "viewer");
+    const list = await store.listProjects(orgId);
+    return c.json(
+      list.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, phaseKey: p.phaseKey, phaseName: PHASES.find((x) => x.key === p.phaseKey)?.name ?? (p.phaseKey === "done" ? "完了" : p.phaseKey), confidential: p.confidential, createdAt: p.createdAt })),
+    );
+  });
 
   app.post("/api/orgs/:orgId/projects", async (c) => {
     const orgId = c.req.param("orgId");

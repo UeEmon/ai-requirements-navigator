@@ -380,6 +380,10 @@ export class PgStore implements Store {
     const { rows } = await this.pool.query("SELECT * FROM orgs WHERE id = $1", [id]);
     return rows[0] ? toOrg(rows[0]) : null;
   }
+  async listOrgs() {
+    const { rows } = await this.pool.query("SELECT * FROM orgs ORDER BY created_at");
+    return rows.map(toOrg);
+  }
 
   async setOrgLimit(id: string, monthlyTokenLimit: number | null) {
     const { rows } = await this.pool.query("UPDATE orgs SET monthly_token_limit = $2 WHERE id = $1 RETURNING *", [id, monthlyTokenLimit]);
