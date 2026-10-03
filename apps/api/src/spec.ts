@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Diagram, Table } from "@arn/ai-core";
+import { PHASE_BOUNDARY, RULE_KINDS, type BusinessRule, type Diagram, type Table } from "@arn/ai-core";
 import type { Decision, Project, Requirement } from "./store.js";
 
 /**
@@ -22,6 +22,8 @@ export interface Spec {
   baseline?: string;
   /** 決定記録の後に続く節（画面一覧・申し送り・変更履歴など） */
   extras?: SpecExtra[];
+  umlTitle?: string;
+  decisionsTitle?: string;
 }
 
 /** 決定記録の後に続く節。箇条書き（lines）と表（tables） */
@@ -40,14 +42,26 @@ export interface SpecImage {
 }
 
 const SECTIONS: Array<[string, Requirement["type"]]> = [
-  ["1. 目的", "BR"],
-  ["2. 利用者", "AC"],
-  ["3. 機能要件", "FR"],
-  ["4. 非機能要件", "NFR"],
-  ["5. 制約条件", "CN"],
+  ["目的", "BR"],
+  ["利用者", "AC"],
+  ["機能要件", "FR"],
+  ["業務ルール", "RL"],
+  ["非機能要件", "NFR"],
+  ["制約条件", "CN"],
 ];
 const PRIORITY: Record<string, string> = { must: "必須", should: "推奨", could: "任意" };
-const bodyOf = (r: Requirement) => (r.description ? `${r.title}：${r.description}` : r.title);
+/** 業務ルールは種類と具体例も載せる */
+const ruleText = (rule: BusinessRule | null | undefined) =>
+  rule ? `［${RULE_KINDS[rule.kind]}］${rule.examples.length ? ` 具体例：${rule.examples.map((e) => `${e.given} → ${e.expected}`).join("／")}` : ""}` : "";
+const bodyOf = (r: Requirement) => [r.title, r.description, r.type === "RL" ? ruleText(r.rule) : ""].filter(Boolean).join("：");
+/** 「8. 画面一覧」のような番号を外す（番号は描くときに振り直す） */
+const unnumber = (t: string) => t.replace(/^\d+\.\s*/, "");
+
+/** この要件定義書で決めていること（工程の線引き） */
+export const SCOPE_TABLE: Table = {
+  head: ["区分", "この要件定義書で決めていること", "設計工程で決めること", "テスト工程で決めること"],
+  rows: PHASE_BOUNDARY.map((b) => [b.area, b.requirements, b.design, b.test]),
+};
 const mapping = (d: Decision) =>
   Object.entries(d.mapping)
     .map(([l, p]) => `${l}=${p}`)
@@ -61,13 +75,22 @@ export function buildSpec(
   date = new Date(),
   more: { baseline?: string; extras?: Spec["extras"] } = {},
 ): Spec {
+  // 番号は節の並びで振る（モジュールごとの節があったりなかったりしても飛ばない）
+  const sections = SECTIONS.map(([title, type], i) => ({ title: `${i + 1}. ${title}`, rows: reqs.filter((r) => r.type === type) }));
+  let n = sections.length;
+  const umlTitle = `${++n}. UML`;
+  const decisionsTitle = `${++n}. 決定記録`;
+  const extras = (more.extras ?? []).map((x) => ({ ...x, title: `${++n}. ${unnumber(x.title)}` }));
   return {
     ...more,
+    extras,
     title: `${project.name} 要件定義書`,
     date: date.toISOString().slice(0, 10),
     purpose: project.purpose,
     counts: { requirements: reqs.length, decisions: decisions.length },
-    sections: SECTIONS.map(([title, type]) => ({ title, rows: reqs.filter((r) => r.type === type) })),
+    sections,
+    umlTitle,
+    decisionsTitle,
     diagrams,
     decisions,
   };
@@ -83,6 +106,8 @@ export function renderMarkdown(spec: Spec): string {
   const out: string[] = [`# ${spec.title}`, ""];
   out.push(`作成日: ${spec.date}　要件: ${spec.counts.requirements}件　決定: ${spec.counts.decisions}回${spec.baseline ? `　${spec.baseline}` : ""}`, "");
   if (spec.purpose) out.push(`> ${spec.purpose}`, "");
+  out.push("## この要件定義書の範囲", "", "要件定義では「何を・どの条件で・何を満たせばよいか」を決め、「どう作るか」は設計工程、「どう確かめるか」はテスト工程で決めます。", "");
+  out.push(`| ${SCOPE_TABLE.head.join(" | ")} |`, `| ${SCOPE_TABLE.head.map(() => "---").join(" | ")} |`, ...SCOPE_TABLE.rows.map((r) => `| ${r.join(" | ")} |`), "");
   for (const s of spec.sections) {
     out.push(`## ${s.title}`, "");
     if (!s.rows.length) {
@@ -93,12 +118,12 @@ export function renderMarkdown(spec: Spec): string {
     for (const r of s.rows) out.push(`| ${r.code} | ${cell(bodyOf(r))} | ${PRIORITY[r.priority] ?? r.priority} | ${cell(r.source)} |`);
     out.push("");
   }
-  out.push("## 6. UML", "");
+  out.push(`## ${spec.umlTitle ?? "UML"}`, "");
   for (const d of spec.diagrams) {
     out.push(`### ${d.title}`, "", "```mermaid", d.mermaid, "```", "");
     out.push("<details><summary>PlantUML</summary>", "", "```plantuml", d.plantuml, "```", "", "</details>", "");
   }
-  out.push("## 7. 決定記録", "");
+  out.push(`## ${spec.decisionsTitle ?? "決定記録"}`, "");
   if (!spec.decisions.length) out.push("（まだありません）");
   for (const d of spec.decisions) {
     const m = mapping(d);
@@ -160,6 +185,14 @@ export async function renderDocx(spec: Spec, images: SpecImage[] = []): Promise<
     p(`作成日: ${spec.date}　要件: ${spec.counts.requirements}件　決定: ${spec.counts.decisions}回${spec.baseline ? `　${spec.baseline}` : ""}`, { color: "55636F" }),
   ];
   if (spec.purpose) children.push(p(spec.purpose));
+  children.push(h("この要件定義書の範囲", d.HeadingLevel.HEADING_1));
+  children.push(p("要件定義では「何を・どの条件で・何を満たせばよいか」を決め、「どう作るか」は設計工程、「どう確かめるか」はテスト工程で決めます。"));
+  children.push(
+    new d.Table({
+      width: { size: 100, type: d.WidthType.PERCENTAGE },
+      rows: [new d.TableRow({ tableHeader: true, children: SCOPE_TABLE.head.map((x) => tcell(x, true)) }), ...SCOPE_TABLE.rows.map((r) => new d.TableRow({ children: r.map((x) => tcell(x)) }))],
+    }),
+  );
 
   for (const s of spec.sections) {
     children.push(h(s.title, d.HeadingLevel.HEADING_1));
@@ -186,7 +219,7 @@ export async function renderDocx(spec: Spec, images: SpecImage[] = []): Promise<
     );
   }
 
-  children.push(h("6. UML", d.HeadingLevel.HEADING_1));
+  children.push(h(spec.umlTitle ?? "UML", d.HeadingLevel.HEADING_1));
   for (const dg of spec.diagrams) {
     children.push(h(dg.title, d.HeadingLevel.HEADING_2));
     const img = imgByTitle.get(dg.title);
@@ -200,7 +233,7 @@ export async function renderDocx(spec: Spec, images: SpecImage[] = []): Promise<
     }
   }
 
-  children.push(h("7. 決定記録", d.HeadingLevel.HEADING_1));
+  children.push(h(spec.decisionsTitle ?? "決定記録", d.HeadingLevel.HEADING_1));
   if (!spec.decisions.length) children.push(p("（まだありません）"));
   for (const dc of spec.decisions) {
     const m = mapping(dc);
@@ -309,6 +342,13 @@ export async function renderPdf(spec: Spec, images: SpecImage[] = [], font: PdfF
     { text: `作成日: ${spec.date}　要件: ${spec.counts.requirements}件　決定: ${spec.counts.decisions}回${spec.baseline ? `　${spec.baseline}` : ""}`, style: "meta" },
   ];
   if (spec.purpose) content.push({ text: spec.purpose, margin: [0, 0, 0, 8] });
+  content.push({ text: "この要件定義書の範囲", style: "h1" });
+  content.push({ text: "要件定義では「何を・どの条件で・何を満たせばよいか」を決め、「どう作るか」は設計工程、「どう確かめるか」はテスト工程で決めます。", fontSize: 9, margin: [0, 0, 0, 4] });
+  content.push({
+    table: { headerRows: 1, widths: [50, "*", "*", "*"], body: [SCOPE_TABLE.head.map((t) => ({ text: t, bold: true, fillColor: "#E8EEF4" })), ...SCOPE_TABLE.rows] },
+    layout: "lightHorizontalLines",
+    fontSize: 8,
+  });
 
   for (const s of spec.sections) {
     content.push({ text: s.title, style: "h1" });
@@ -330,7 +370,7 @@ export async function renderPdf(spec: Spec, images: SpecImage[] = [], font: PdfF
     });
   }
 
-  content.push({ text: "6. UML", style: "h1", pageBreak: "before" });
+  content.push({ text: spec.umlTitle ?? "UML", style: "h1", pageBreak: "before" });
   for (const dg of spec.diagrams) {
     content.push({ text: dg.title, style: "h2" });
     const img = imgByTitle.get(dg.title);
@@ -343,7 +383,7 @@ export async function renderPdf(spec: Spec, images: SpecImage[] = [], font: PdfF
     }
   }
 
-  content.push({ text: "7. 決定記録", style: "h1" });
+  content.push({ text: spec.decisionsTitle ?? "決定記録", style: "h1" });
   content.push(
     spec.decisions.length
       ? {

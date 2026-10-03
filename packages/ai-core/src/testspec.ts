@@ -12,8 +12,9 @@
  * - ストーリーの受け入れ条件: 受け入れテストのケースにする
  */
 import type { Ears, EarsPattern } from "./ears.js";
+import { RULE_KINDS, type BusinessRule } from "./rules.js";
 
-export type TestKind = "normal" | "negative" | "abnormal" | "state-in" | "state-out" | "option-on" | "option-off" | "boundary" | "nfr" | "acceptance";
+export type TestKind = "normal" | "negative" | "abnormal" | "state-in" | "state-out" | "option-on" | "option-off" | "boundary" | "example" | "nfr" | "acceptance";
 export const TEST_KINDS: Record<TestKind, string> = {
   normal: "正常系",
   negative: "条件を満たさない",
@@ -23,6 +24,7 @@ export const TEST_KINDS: Record<TestKind, string> = {
   "option-on": "機能あり",
   "option-off": "機能なし",
   boundary: "境界値",
+  example: "業務ルールの具体例",
   nfr: "目標の確認",
   acceptance: "受け入れ",
 };
@@ -56,6 +58,8 @@ export interface TestRequirement {
   type: string;
   title: string;
   ears?: Ears | null;
+  /** 業務ルール（RL）の具体例 */
+  rule?: BusinessRule | null;
   priority?: string;
   /** 非機能要件シートの項目（av.rto など）。シートから作った要件だけ */
   nfrKey?: string;
@@ -221,7 +225,7 @@ function fromText(title: string): Draft[] {
   return [{ kind: "normal", title: "基本の動作", given: "通常の利用状態", when: "対象の操作・処理を行う", then: `「${clean(title)}」のとおりに動作する` }];
 }
 
-export const TEST_TARGET_TYPES = ["FR", "NFR"];
+export const TEST_TARGET_TYPES = ["FR", "RL", "NFR"];
 
 export function deriveTestCases(reqs: TestRequirement[], stories: TestStory[] = []): TestCase[] {
   const out: TestCase[] = [];
@@ -241,6 +245,11 @@ export function deriveTestCases(reqs: TestRequirement[], stories: TestStory[] = 
         then: e ? `${clean(e.system || "システム").replace(/は$/u, "")}が${expectationOf(e.response)}` : `「${clean(r.title)}」を満たす`,
         method: v ? `${v.method}：${v.how}${v.guessed ? "（文の言葉から推定）" : ""}` : undefined,
       });
+    } else if (r.type === "RL") {
+      const ex = r.rule?.examples ?? [];
+      const kind = r.rule ? RULE_KINDS[r.rule.kind] : "業務ルール";
+      if (!ex.length) drafts.push({ ...fromText(r.title)[0]!, title: `${kind}（具体例なし）`, level: "system", source: "rule" });
+      ex.forEach((e, i) => drafts.push({ kind: "example", level: "system", source: "rule", title: `${kind}の具体例${i + 1}`, given: clean(e.given), when: "このルールを使う処理を行う", then: clean(e.expected) }));
     } else {
       for (const d of r.ears ? fromEars(r.ears) : fromText(r.title)) drafts.push({ ...d, level: "system", source: "rule" });
     }

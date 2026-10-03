@@ -20,3 +20,6 @@ export * from "./testspec.js";
 export * from "./design-tables.js";
 export * from "./readiness.js";
 export * from "./connect.js";
+export * from "./rules.js";
+export * from "./terms.js";
+export * from "./boundary.js";

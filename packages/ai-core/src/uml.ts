@@ -65,6 +65,8 @@ export const UmlModel = z.object({
         operations: z.array(z.string().max(80)).default([]),
         /** このエンティティの根拠になった要件（設計 → 要件の追跡） */
         requirementCodes: z.array(z.string().max(20)).max(30).default([]),
+        /** 保存期間・削除の決まり（例: 最終利用から5年で削除）。法令・個人情報の扱いから決める */
+        retention: z.string().max(120).default(""),
       }),
     )
     .default([]),
@@ -96,7 +98,15 @@ export const UmlModel = z.object({
         states: z.array(z.string().max(60)).min(1),
         initial: z.string().max(60),
         finals: z.array(z.string().max(60)).default([]),
-        transitions: z.array(z.object({ from: z.string(), to: z.string(), event: z.string().max(60).default("") })),
+        transitions: z.array(
+          z.object({
+            from: z.string(),
+            to: z.string(),
+            event: z.string().max(60).default(""),
+            /** 遷移できる条件（例: 利用日の前日まで）。条件がなければ空 */
+            guard: z.string().max(120).default(""),
+          }),
+        ),
       }),
     )
     .default([]),
@@ -124,6 +134,41 @@ export const UmlModel = z.object({
         timing: z.string().max(80).default(""),
         /** 受け渡すデータ */
         data: z.string().max(200).default(""),
+        /** つながらない・失敗したときの業務上の扱い（例: 予約は確定し、メールは翌朝まとめて再送する） */
+        failure: z.string().max(200).default(""),
+        requirementCodes: z.array(z.string().max(20)).max(20).default([]),
+      }),
+    )
+    .max(30)
+    .default([]),
+  /** 帳票・出力（印刷物・ファイル・定期的な通知） */
+  outputs: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(80),
+        kind: z.preprocess((v) => (v === "report" || v === "file" || v === "notice" ? v : "report"), z.enum(["report", "file", "notice"])),
+        purpose: z.string().max(200).default(""),
+        /** いつ・どのきっかけで作るか */
+        timing: z.string().max(80).default(""),
+        /** 誰が受け取るか */
+        recipients: z.string().max(80).default(""),
+        /** 載せる項目（業務の言葉） */
+        items: z.array(z.string().max(60)).max(30).default([]),
+        requirementCodes: z.array(z.string().max(20)).max(20).default([]),
+      }),
+    )
+    .max(30)
+    .default([]),
+  /** まとめて行う処理（夜間の集計・締め・定期的な取り込み など） */
+  batches: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(80),
+        timing: z.string().max(80).default(""),
+        input: z.string().max(200).default(""),
+        output: z.string().max(200).default(""),
+        /** 失敗したときの業務上の扱い */
+        failure: z.string().max(200).default(""),
         requirementCodes: z.array(z.string().max(20)).max(20).default([]),
       }),
     )
@@ -164,7 +209,7 @@ export function normalizeUmlModel(m: UmlModel): { model: UmlModel; dropped: numb
     return { ...a, edges: keep(a.edges, (e) => ids.has(e.from) && ids.has(e.to)) };
   });
   const permissions = keep(m.permissions ?? [], (x) => cn.has(x.entity) && x.ops.length > 0);
-  return { model: { classes, relations, sequences, stateMachines, activities, permissions, interfaces: m.interfaces ?? [] }, dropped };
+  return { model: { classes, relations, sequences, stateMachines, activities, permissions, interfaces: m.interfaces ?? [], outputs: m.outputs ?? [], batches: m.batches ?? [] }, dropped };
 }
 
 /* ------------------------------------------------------------------ */
@@ -315,7 +360,10 @@ function smLines(sm: Sm, arrow: string): string[] {
   const id = new Map(sm.states.map((s, i) => [s, `S${i}`]));
   const out = sm.states.map((s) => `state "${txt(s)}" as ${id.get(s)}`);
   out.push(`[*] ${arrow} ${id.get(sm.initial)}`);
-  for (const t of sm.transitions) out.push(`${id.get(t.from)} ${arrow} ${id.get(t.to)}${t.event ? ` : ${txt(t.event)}` : ""}`);
+  for (const t of sm.transitions) {
+    const label = [t.event ? txt(t.event) : "", t.guard ? `［${txt(t.guard)}］` : ""].filter(Boolean).join(" ");
+    out.push(`${id.get(t.from)} ${arrow} ${id.get(t.to)}${label ? ` : ${label}` : ""}`);
+  }
   for (const f of sm.finals) out.push(`${id.get(f)} ${arrow} [*]`);
   return out;
 }
@@ -432,16 +480,22 @@ export const UML_SYSTEM = `あなたはソフトウェア設計者です。確�
   values は区分値（状態や種別の選択肢）。type は string / text / int / decimal / bool / date / datetime / enum / ref のいずれか
 - classes.requirementCodes は、そのエンティティの根拠になった要件のIDを書く
 - permissions は利用者の役割ごとに、各エンティティにできる操作を "CRUD" の文字で書く（C登録 R参照 U更新 D削除。できない操作は書かない）
-- interfaces は、要件に他システム・外部サービス・メール送信・ファイルの取り込みや出力がある場合だけ書く。direction は in（受け取る）/ out（送る）/ both
+- interfaces は、要件に他システム・外部サービス・メール送信・ファイルの取り込みや出力がある場合だけ書く。direction は in（受け取る）/ out（送る）/ both。failure には、つながらない・失敗したときの業務上の扱いを書く
+- stateMachines の transitions には、遷移できる条件があれば guard に書く（例「利用日の前日まで」）
+- classes の retention には、保存期間・削除の決まりが要件から読み取れれば書く（個人情報・記録の保存期間など）
+- outputs は帳票・ファイル出力・定期的な通知（kind: report / file / notice）。要件にある場合だけ書く。items は載せる項目を業務の言葉で
+- batches は夜間の集計・締め・定期的な取り込みなど、まとめて行う処理。要件にある場合だけ書く。failure に失敗したときの業務上の扱い
 - 出力は次の形のJSONのみ。説明文やコードフェンスは付けない
 {
-  "classes": [{ "name": "Reservation", "label": "予約", "requirementCodes": ["FR-01"], "attributes": [{ "name": "id", "label": "予約ID", "type": "string", "key": "pk", "required": true, "rule": "", "values": [] }, { "name": "status", "label": "状態", "type": "enum", "key": "", "required": true, "rule": "", "values": ["仮予約", "確定", "取消"] }], "operations": ["キャンセルする"] }],
+  "classes": [{ "name": "Reservation", "label": "予約", "requirementCodes": ["FR-01"], "retention": "", "attributes": [{ "name": "id", "label": "予約ID", "type": "string", "key": "pk", "required": true, "rule": "", "values": [] }, { "name": "status", "label": "状態", "type": "enum", "key": "", "required": true, "rule": "", "values": ["仮予約", "確定", "取消"] }], "operations": ["キャンセルする"] }],
   "relations": [{ "from": "Customer", "to": "Reservation", "kind": "association|composition|aggregation|inheritance|dependency", "fromMultiplicity": "1", "toMultiplicity": "*", "label": "予約する" }],
   "sequences": [{ "title": "予約登録", "participants": [{ "id": "customer", "label": "顧客", "actor": true }], "messages": [{ "from": "customer", "to": "system", "text": "予約を申し込む", "reply": false }] }],
-  "stateMachines": [{ "entity": "予約", "states": ["仮予約", "確定"], "initial": "仮予約", "finals": ["確定"], "transitions": [{ "from": "仮予約", "to": "確定", "event": "承認" }] }],
+  "stateMachines": [{ "entity": "予約", "states": ["仮予約", "確定"], "initial": "仮予約", "finals": ["確定"], "transitions": [{ "from": "仮予約", "to": "確定", "event": "承認", "guard": "" }] }],
   "activities": [{ "title": "来店までの流れ", "steps": [{ "id": "s1", "label": "予約を受け付ける", "kind": "action|decision" }], "edges": [{ "from": "s1", "to": "s2", "label": "任意" }] }],
   "permissions": [{ "actor": "顧客", "entity": "Reservation", "ops": "CRU" }, { "actor": "店長", "entity": "Reservation", "ops": "CRUD" }],
-  "interfaces": [{ "name": "予約確認メール", "counterpart": "メール配信サービス", "direction": "out", "method": "API", "timing": "予約確定のつど", "data": "顧客のメールアドレス、予約日時", "requirementCodes": ["FR-03"] }]
+  "interfaces": [{ "name": "予約確認メール", "counterpart": "メール配信サービス", "direction": "out", "method": "API", "timing": "予約確定のつど", "data": "顧客のメールアドレス、予約日時", "failure": "予約は確定し、メールは再送の対象にする", "requirementCodes": ["FR-03"] }],
+  "outputs": [{ "name": "日別予約表", "kind": "report", "purpose": "当日の準備", "timing": "毎朝", "recipients": "店長", "items": ["時刻", "顧客名", "メニュー"], "requirementCodes": ["FR-05"] }],
+  "batches": [{ "name": "前日リマインド", "timing": "毎日18時", "input": "翌日の予約", "output": "リマインドメール", "failure": "翌朝に再実行し、送れなかった顧客を店長に知らせる", "requirementCodes": ["FR-06"] }]
 }`;
 
 export function buildUmlPrompt(projectName: string, purpose: string, reqs: UmlRequirement[]): string {
@@ -543,7 +597,10 @@ export function summarizeUmlModel(m: UmlModel): string {
   const cl = (c: UmlModel["classes"][number]) => c.label ?? c.name;
   if (m.classes.length) {
     out.push("クラス:");
-    for (const c of m.classes) out.push(`- ${cl(c)}（${c.attributes.map((a) => a.label ?? a.name).join("、") || "属性なし"}）${c.operations.length ? ` 操作: ${c.operations.join("、")}` : ""}`);
+    for (const c of m.classes) {
+      const attrs = c.attributes.map((a) => (a.label && a.label !== a.name ? `${a.name} ${a.label}` : a.name)).join("、");
+      out.push(`- ${cl(c)}${c.label ? ` ${c.name}` : ""}（${attrs || "属性なし"}）${c.operations.length ? ` 操作: ${c.operations.join("、")}` : ""}`);
+    }
     for (const r of m.relations) {
       const f = m.classes.find((c) => c.name === r.from);
       const t = m.classes.find((c) => c.name === r.to);
@@ -555,7 +612,7 @@ export function summarizeUmlModel(m: UmlModel): string {
     out.push(`シーケンス「${sq.title}」: ${sq.messages.map((x) => `${lab.get(x.from)}→${lab.get(x.to)}:${x.text}`).join(" / ")}`);
   }
   for (const sm of m.stateMachines) {
-    out.push(`状態遷移「${sm.entity}」: ${sm.transitions.map((t) => `${t.from}→${t.to}${t.event ? `(${t.event})` : ""}`).join(" / ")}`);
+    out.push(`状態遷移「${sm.entity}」: ${sm.transitions.map((t) => `${t.from}→${t.to}${t.event ? `(${t.event}${t.guard ? `［${t.guard}］` : ""})` : ""}`).join(" / ")}`);
   }
   for (const a of m.activities) {
     const lab = new Map(a.steps.map((x) => [x.id, x.label]));
@@ -564,6 +621,8 @@ export function summarizeUmlModel(m: UmlModel): string {
   const perms = m.permissions ?? [];
   if (perms.length) out.push(`権限: ${perms.map((x) => `${x.actor}→${m.classes.find((c) => c.name === x.entity)?.label ?? x.entity}:${x.ops}`).join(" / ")}`);
   for (const i of m.interfaces ?? []) out.push(`外部とのやり取り「${i.name}」: ${i.counterpart}（${i.direction}、${i.method}、${i.timing}）${i.data}`);
+  for (const o of m.outputs ?? []) out.push(`帳票・出力「${o.name}」: ${o.timing}・${o.recipients}（${o.items.join("、")}）`);
+  for (const b of m.batches ?? []) out.push(`まとめて行う処理「${b.name}」: ${b.timing}（${b.input} → ${b.output}）`);
   return out.join("\n");
 }
 

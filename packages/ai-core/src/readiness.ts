@@ -39,6 +39,19 @@ export interface ReadinessInput {
   accessControl: boolean;
   /** 要件が変わった後に作り直していない成果物（例: 「タスク分解（FR-03 が変更）」） */
   stale?: string[];
+  /* 以下は渡されたときだけ点検する */
+  /** 業務ルール（RL）の件数と、検査で問題のある要件ID */
+  rules?: { count: number; issues: string[] };
+  /** 用語集の件数と、要件文の表記ゆれ */
+  glossary?: { terms: number; variants: string[] };
+  /** 受け入れ基準を決めたか */
+  acceptance?: boolean;
+  /** 承認: required は確定に承認が必要な設定か */
+  approval?: { required: boolean; status: "approved" | "pending" | "rejected" | "stale" | "none" };
+  /** 画面の入出力項目のひも付け */
+  screenItems?: { unbound: string[]; unknown: string[] };
+  /** 個人情報を扱うか（保存期間の点検に使う） */
+  personalData?: boolean;
 }
 
 export interface ReadinessReport {
@@ -86,6 +99,42 @@ export function assessReadiness(x: ReadinessInput): ReadinessReport {
     items: x.openQuestions,
     where: "ヒアリング",
   });
+  if (x.rules) {
+    add({
+      key: "req.rules",
+      area: "requirements",
+      title: "業務ルール（計算・判定・制約・状態が変わる条件）が具体例つきで決まっている",
+      status: !x.rules.count || x.rules.issues.length ? "warn" : "ok",
+      detail: !x.rules.count
+        ? "業務ルールがありません。料金や期限の計算、受付の条件などがあれば「業務ルール」の段階で決めてください（なければ不要です）。"
+        : x.rules.issues.length
+          ? `具体例が足りない・あいまいな業務ルール：${list(x.rules.issues)}`
+          : `${x.rules.count}件。具体例はそのままテストケースになります`,
+      items: x.rules.issues,
+      where: "ヒアリング",
+    });
+  }
+  if (x.glossary) {
+    add({
+      key: "req.glossary",
+      area: "requirements",
+      title: "用語集があり、要件文の表記がそろっている",
+      status: !x.glossary.terms || x.glossary.variants.length ? "warn" : "ok",
+      detail: !x.glossary.terms ? "用語集がありません。業務の言葉の意味とコード上の名前をそろえてください。" : x.glossary.variants.length ? `用語集の言い換えを使っている要件：${list(x.glossary.variants)}` : `${x.glossary.terms}語`,
+      items: x.glossary.variants,
+      where: "要件一覧",
+    });
+  }
+  if (x.acceptance !== undefined) {
+    add({
+      key: "req.acceptance",
+      area: "requirements",
+      title: "受け入れ基準（何を満たせば受け入れるか）が決まっている",
+      status: x.acceptance ? "ok" : "warn",
+      detail: x.acceptance ? "決まっています。テスト結果に照らして判定できます" : "受け入れ基準がありません。テストの合格率や、業務の担当者が確かめることを決めてください。",
+      where: "テスト・引き継ぎ",
+    });
+  }
   add({
     key: "req.nfr",
     area: "requirements",
@@ -144,6 +193,29 @@ export function assessReadiness(x: ReadinessInput): ReadinessReport {
       detail: d.interfaces ? `${d.interfaces}件` : ifReqs.length ? `外部とのやり取りを含みそうな要件（${list(ifReqs)}）がありますが、一覧がありません。` : "外部とのやり取りはなさそうです",
       items: d.interfaces ? [] : ifReqs,
       where: "UML",
+    });
+  }
+  if (d.classes && x.personalData && !d.withRetention) {
+    add({ key: "design.retention", area: "design", title: "個人情報などの保存期間・削除の決まりがある", status: "warn", detail: "個人情報を扱いますが、どのデータにも保存期間がありません。設計モデルを作り直すか、要件として決めてください。", where: "UML" });
+  }
+  if (d.interfacesWithoutFailure.length || d.batchesWithoutFailure.length) {
+    const xs = [...d.interfacesWithoutFailure, ...d.batchesWithoutFailure];
+    add({ key: "design.failure", area: "design", title: "外部とのやり取り・まとめて行う処理が失敗したときの業務上の扱いが決まっている", status: "warn", detail: `扱いが決まっていないもの：${list(xs)}`, items: xs, where: "UML" });
+  }
+  if (x.screenItems) {
+    const bad = [...x.screenItems.unbound, ...x.screenItems.unknown];
+    add({
+      key: "design.screenItems",
+      area: "design",
+      title: "画面の入力項目がデータ項目にひも付いている",
+      status: bad.length ? "warn" : "ok",
+      detail: x.screenItems.unbound.length
+        ? `データ項目にひも付いていない入力項目：${list(x.screenItems.unbound)}（UML を採用してから画面を作り直すと付きます）`
+        : x.screenItems.unknown.length
+          ? `設計にないデータ項目を指している項目：${list(x.screenItems.unknown)}`
+          : "ひも付いています",
+      items: bad,
+      where: "画面",
     });
   }
   add({
@@ -222,6 +294,18 @@ export function assessReadiness(x: ReadinessInput): ReadinessReport {
     where: "変更管理",
   });
 
+  if (x.approval) {
+    const a = x.approval;
+    const msg = { approved: "いまの要件の内容で承認されています", pending: "承認を待っています", rejected: "差し戻されています。指摘を直して、もう一度レビューを依頼してください", stale: "承認した後に要件が変わりました。もう一度レビューを依頼してください", none: "レビュー・承認を受けていません" }[a.status];
+    add({
+      key: "mgmt.approval",
+      area: "management",
+      title: "要件定義のレビューと承認を受けている",
+      status: a.status === "approved" ? "ok" : a.required ? "ng" : "warn",
+      detail: `${msg}${a.required && a.status !== "approved" ? "（このプロジェクトは確定に承認が必要です）" : ""}`,
+      where: "変更管理",
+    });
+  }
   const stale = x.stale ?? [];
   add({
     key: "mgmt.stale",

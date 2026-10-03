@@ -48,7 +48,14 @@ export type AuditAction =
   | "test_run.record"
   | "question.create"
   | "question.answer"
-  | "handoff.pack";
+  | "handoff.pack"
+  | "settings.update"
+  | "glossary.update"
+  | "ai.glossary"
+  | "acceptance.update"
+  | "review.request"
+  | "review.decide"
+  | "review.withdraw";
 
 export interface AuditInput {
   orgId: string;

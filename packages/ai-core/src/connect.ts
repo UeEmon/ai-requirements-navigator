@@ -6,6 +6,7 @@
  * - 状況の集計: 要件ごとの実装状況（報告）とテスト結果（合格・不合格・未実施）
  * - リポジトリ用の出力: Gherkin（.feature）のテストシナリオ、AIコーディングツール向けの AGENTS.md
  */
+import { PHASE_BOUNDARY } from "./boundary.js";
 import type { TestCase } from "./testspec.js";
 
 /* ------------------------------------------------------------------ */
@@ -248,6 +249,7 @@ const KIND_TAG: Record<string, string> = {
   "option-on": "機能あり",
   "option-off": "機能なし",
   boundary: "境界値",
+  example: "業務ルールの具体例",
   nfr: "非機能",
   acceptance: "受け入れ",
 };
@@ -321,17 +323,26 @@ ${x.purpose || "（未記入）"}
 
 ## 要件
 
-- 機能要件 ${c("FR")}件・非機能要件 ${c("NFR")}件・制約 ${c("CN")}件（目的 ${c("BR")}件・利用者 ${c("AC")}件）
+- 機能要件 ${c("FR")}件・業務ルール ${c("RL")}件・非機能要件 ${c("NFR")}件・制約 ${c("CN")}件（目的 ${c("BR")}件・利用者 ${c("AC")}件）
 - 要件文は EARS 記法です。「〜とき」はきっかけ、「〜間」は状態、「〜場合」は異常時、「〜がある場合」は任意の機能を表し、「〜しなければならない」の部分が満たすべき振る舞いです
+- 業務ルール（RL）は計算・判定・制約・状態が変わる条件です。具体例（条件 → 結果）はそのまま単体テストにしてください（テストIDは TC-RL-01-1 など）
 - 一覧：\`requirements/requirements.md\`／設計の材料（データ項目定義・権限表・外部とのやり取り・図）：\`requirements/design.md\`／すべてを機械で読める形にしたもの：\`requirements/handoff.json\`
 ${x.nfr.length ? `\n### 守るべき主な非機能要件\n\n${x.nfr.map((n) => `- ${n}`).join("\n")}\n` : ""}
+## 決まっていること・あなたが決めてよいこと
+
+要件定義で決まっていることは変えないでください。設計工程で決めることは、要件を満たす範囲で決めてかまいません（迷ったら質問してください）。
+
+| 区分 | 要件定義で決まっている（変えない） | 設計で決めてよい |
+| --- | --- | --- |
+${PHASE_BOUNDARY.map((b) => `| ${b.area} | ${b.requirements} | ${b.design} |`).join("\n")}
+
 ## 作業の決まり
 
 1. **要件にない機能を作らない。** 要件があいまい・矛盾している・足りないと思ったら、推測で実装せず、要件ナビに質問してください（MCP の \`ask_question\`、または API の \`POST /api/v1/projects/{id}/questions\`）
 2. **要件IDを書く。** コミットとプルリクエストに対応する要件ID（例：\`FR-03\`）を書いてください
 3. **テストにテストIDを付ける。** \`tests/acceptance/*.feature\` のシナリオ、または同じテストIDをテスト名に含めてください（例：\`it("TC-FR-03-1 予約を確定すると確認メールを送る", …)\`）。テスト結果を要件に結びつけるのに使います
 4. **データの名前は設計の材料に合わせる。** \`requirements/design.md\` の「コード上の名前」を使ってください（物理設計は変えてよいが、業務の言葉との対応は保つ）
-5. **進み具合と結果を報告する。** 実装を始めたら・終えたら \`report_implementation\`、テストを実行したら \`report_test_results\`（または JUnit XML を API に送る）
+6. **進み具合と結果を報告する。** 実装を始めたら・終えたら \`report_implementation\`、テストを実行したら \`report_test_results\`（または JUnit XML を API に送る）
 
 ## 要件ナビとの接続
 
@@ -342,6 +353,7 @@ ${x.nfr.length ? `\n### 守るべき主な非機能要件\n\n${x.nfr.map((n) => 
 ## 引き継ぎ時点の状態
 
 - 着手前チェック：${x.verdict}
+- 要件が変わったら、MCP の \`get_changes\`（または API の \`GET /api/v1/projects/{id}/diff\`）で、この版からの変更と影響するテストを確認してください
 ${x.openQuestions.length ? `- 未決事項（着手前に確認すること）\n${x.openQuestions.map((q) => `  - ${q}`).join("\n")}` : "- 未決事項：なし"}
 
 ## このパッケージのファイル

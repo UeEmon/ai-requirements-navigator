@@ -41,7 +41,7 @@ export function openApiDocument(serverUrl: string) {
           operationId: "listRequirements",
           parameters: [
             projectId,
-            { name: "type", in: "query", schema: { type: "string", enum: ["BR", "AC", "FR", "NFR", "CN"] } },
+            { name: "type", in: "query", schema: { type: "string", enum: ["BR", "AC", "FR", "RL", "NFR", "CN"] } },
             { name: "codes", in: "query", schema: { type: "string" }, description: "カンマ区切りの要件ID" },
           ],
           responses: { "200": ok("要件", { type: "array", items: ref("Requirement") }), ...errors },
@@ -59,7 +59,7 @@ export function openApiDocument(serverUrl: string) {
         get: {
           summary: "設計の材料（データ項目定義・権限表・外部とのやり取り・設計モデル・画面一覧）",
           operationId: "getDesign",
-          parameters: [projectId, { name: "part", in: "query", schema: { type: "string", enum: ["entities", "data", "crud", "interfaces", "model", "screens"] } }],
+          parameters: [projectId, { name: "part", in: "query", schema: { type: "string", enum: ["entities", "data", "crud", "interfaces", "states", "outputs", "batches", "screenItems", "model", "screens"] } }],
           responses: { "200": ok("設計の材料。表は head と rows", { type: "object" }), ...errors },
         },
       },
@@ -73,6 +73,24 @@ export function openApiDocument(serverUrl: string) {
             { name: "level", in: "query", schema: { type: "string", enum: ["system", "nfr", "acceptance"] } },
           ],
           responses: { "200": ok("テストケース", { type: "object", properties: { cases: { type: "array", items: ref("TestCase") }, coverage: { type: "number" } } }), ...errors },
+        },
+      },
+      "/projects/{id}/glossary": {
+        get: { summary: "用語集（用語・意味・言い換え・コード上の名前）と、要件文の表記ゆれ", operationId: "getGlossary", parameters: [projectId], responses: { "200": ok("用語集", { type: "object" }), ...errors } },
+      },
+      "/projects/{id}/acceptance": {
+        get: { summary: "受け入れ基準と、いまのテスト結果に照らした判定", operationId: "getAcceptance", parameters: [projectId], responses: { "200": ok("受け入れ基準と判定", { type: "object" }), ...errors } },
+      },
+      "/projects/{id}/diff": {
+        get: {
+          summary: "確定版の差分（追加・変更・削除された要件と、影響するテスト・ストーリー・画面）",
+          operationId: "getDiff",
+          parameters: [
+            projectId,
+            { name: "from", in: "query", schema: { type: "integer" }, description: "比べる元の確定版（省略時は最新の確定版）" },
+            { name: "to", in: "query", schema: { type: "string" }, description: "比べる先の確定版の番号、または current（省略時はいまの要件）" },
+          ],
+          responses: { "200": ok("差分", { type: "object" }), ...errors },
         },
       },
       "/projects/{id}/handoff": {
@@ -153,11 +171,16 @@ export function openApiDocument(serverUrl: string) {
           type: "object",
           properties: {
             code: { type: "string", example: "FR-01" },
-            type: { type: "string", enum: ["BR", "AC", "FR", "NFR", "CN"] },
+            type: { type: "string", enum: ["BR", "AC", "FR", "RL", "NFR", "CN"] },
             title: { type: "string", description: "EARS 記法の要件文" },
             description: { type: "string" },
             priority: { type: "string", enum: ["must", "should", "could"] },
             ears: { oneOf: [ref("Ears"), { type: "null" }] },
+            rule: {
+              type: ["object", "null"],
+              description: "業務ルール（RL）の種類と具体例",
+              properties: { kind: { type: "string", enum: ["calc", "judge", "constraint", "transition"] }, examples: { type: "array", items: { type: "object", properties: { given: { type: "string" }, expected: { type: "string" } } } }, entities: { type: "array", items: { type: "string" } } },
+            },
             version: { type: "integer" },
             nfrKey: { type: ["string", "null"], description: "非機能要件シートの項目（av.rto など）" },
           },

@@ -12,13 +12,16 @@ import {
   nfrRequirement,
   normalizeAnalysis,
   renderEars,
+  type AcceptanceCriteria,
+  type BusinessRule,
+  type GlossaryTerm,
   type Ears,
   type NfrDecision,
   type NfrProfile,
   type RequirementType,
   type SourceDocument,
 } from "@arn/ai-core";
-import type { AIConfig, Project, Store } from "./store.js";
+import type { AcceptanceSheet, AIConfig, GlossarySheet, Project, Store } from "./store.js";
 
 const SYSTEM = "要件ナビ";
 type Pattern = Ears["pattern"];
@@ -37,6 +40,7 @@ interface SampleRequirement {
   priority: "must" | "should" | "could";
   title?: string;
   ears?: Ears;
+  rule?: BusinessRule;
   description?: string;
 }
 
@@ -134,6 +138,62 @@ export const SAMPLE_REQUIREMENTS: SampleRequirement[] = [
   { type: "FR", priority: "must", ears: e("unwanted", "そのAIの呼び出しを止め、利用者に知らせなければならない", { trigger: "組織またはAIの今月のトークン利用量が上限に達した" }) },
   { type: "FR", priority: "must", ears: e("ubiquitous", "AIへの送信・案の採用・設定の変更を、実行した利用者と日時とともに監査ログに記録しなければならない") },
   { type: "FR", priority: "must", ears: e("state", "ローカルLLM以外のAIにデータを送信しないようにしなければならない", { state: "プロジェクトが機密に指定されている" }) },
+  // 業務ルール（計算・判定・制約・状態が変わる条件。具体例はそのままテストケースになる）
+  {
+    type: "RL",
+    priority: "must",
+    title: "評価の合計点は、網羅性・正確性を各25%、一貫性を20%、実現可能性・分かりやすさを各15%の重みで計算し、整数に四捨五入する",
+    rule: {
+      kind: "calc",
+      examples: [
+        { given: "網羅性80・正確性70・一貫性90・実現可能性60・分かりやすさ75", expected: "合計点76（75.75を四捨五入）" },
+        { given: "5つの基準がすべて80", expected: "合計点80" },
+        { given: "網羅性100・ほかの基準がすべて0", expected: "合計点25" },
+      ],
+      entities: ["評価"],
+    },
+  },
+  {
+    type: "RL",
+    priority: "must",
+    title: "非機能要件の水準が推奨より2段以上高く、理由が書かれていない項目は、要対応とする",
+    rule: {
+      kind: "judge",
+      examples: [
+        { given: "推奨L1・選んだ水準L3・理由なし", expected: "要対応" },
+        { given: "推奨L1・選んだ水準L3・理由あり", expected: "要対応にしない（確認の表示のみ）" },
+        { given: "推奨L1・選んだ水準L2・理由なし", expected: "要対応にしない（確認の表示のみ）" },
+      ],
+      entities: ["非機能要件シート"],
+    },
+  },
+  {
+    type: "RL",
+    priority: "must",
+    title: "要件定義を確定した後は、要件を直接は編集できず、変更要求を判断したときだけ変わる",
+    rule: {
+      kind: "transition",
+      examples: [
+        { given: "確定版がない状態で要件を編集する", expected: "編集できる" },
+        { given: "確定版がある状態で要件を編集する", expected: "編集できず、変更要求を出すよう案内する" },
+        { given: "変更要求を「変更する」と判断した", expected: "要件が変わり、確定版の番号が1つ上がる" },
+      ],
+      entities: ["要件", "確定版", "変更要求"],
+    },
+  },
+  {
+    type: "RL",
+    priority: "should",
+    title: "資料分析の見直し率が30%未満のときは、今の業務の焼き増しのおそれとして警告する",
+    rule: {
+      kind: "judge",
+      examples: [
+        { given: "課題10件のうち見直し案に結び付いたものが2件（20%）", expected: "警告する" },
+        { given: "課題10件のうち見直し案に結び付いたものが3件（30%）", expected: "警告しない" },
+      ],
+      entities: ["資料分析"],
+    },
+  },
   // 非機能要件（シートからの分は読み込み時に作る。ここではシートにない項目だけ）
   { type: "NFR", priority: "must", ears: e("unwanted", "その生成AIを90秒で打ち切り、残りのAIの案で処理を続けなければならない", { trigger: "生成AIが応答しなかった" }) },
   { type: "NFR", priority: "must", ears: e("event", "処理を受け付けた後、進み具合を5秒以内に画面に表示しなければならない", { trigger: "利用者がAIの処理を開始した" }) },
@@ -287,7 +347,7 @@ export const SAMPLES = {
 } as const;
 export type SampleId = keyof typeof SAMPLES;
 
-const TYPE_PHASE: Record<string, string> = { BR: "purpose", AC: "actors", FR: "functions", NFR: "quality", CN: "constraints" };
+const TYPE_PHASE: Record<string, string> = { BR: "purpose", AC: "actors", FR: "functions", RL: "rules", NFR: "quality", CN: "constraints" };
 
 /** EARS の構造がある要件は文を組み立てる */
 const titleOf = (r: SampleRequirement) => (r.ears ? renderEars(r.ears) : r.title!);
@@ -313,6 +373,7 @@ export async function loadSample(store: Store, input: { orgId: string; aiConfig:
       type: r.type,
       priority: r.priority,
       ears: r.ears,
+      rule: r.rule,
       roundId: null,
       source: "サンプル事例",
       phaseKey: TYPE_PHASE[r.type] ?? null,
@@ -355,5 +416,34 @@ export async function loadSample(store: Store, input: { orgId: string; aiConfig:
     by: input.actor,
     at: new Date().toISOString(),
   });
+  // 用語集と受け入れ基準（要件定義で決めておくこと）
+  await store.saveProjectSheet<GlossarySheet>(project.id, "glossary", { terms: SAMPLE_GLOSSARY }, input.actor);
+  await store.saveProjectSheet<AcceptanceSheet>(project.id, "acceptance", SAMPLE_ACCEPTANCE, input.actor);
   return { project, requirements: added.length + nfrCount, documents: docs.length };
 }
+
+/* ------------------------------------------------------------------ */
+/* 用語集・受け入れ基準                                                 */
+/* ------------------------------------------------------------------ */
+
+const term = (t: string, definition: string, synonyms: string[] = [], codeName = ""): GlossaryTerm => ({ term: t, definition, synonyms, codeName, source: "manual" });
+export const SAMPLE_GLOSSARY: GlossaryTerm[] = [
+  term("要件", "システムが満たすべきこと。目的・利用者・機能要件・業務ルール・非機能要件・制約条件に分ける", ["要求事項"], "Requirement"),
+  term("確定版", "利用者が確定した時点の要件の一覧。以後の変更は変更要求を通して行い、版の番号が上がる", ["ベースライン"], "Baseline"),
+  term("変更要求", "確定した後の要件の追加・変更・削除の申し出。影響分析の結果を見て判断する", ["変更依頼"], "ChangeRequest"),
+  term("生成AI", "要件案・設計モデル・画面などの案を作るAI", [], "generator"),
+  term("評価AI", "生成AIの案を、作ったAIを伏せて採点するAI", ["審査AI"], "evaluator"),
+  term("非機能要件シート", "性能・可用性・セキュリティなど26項目の水準と理由をまとめた表", ["NFR表"], "NfrSheet"),
+  term("業務ルール", "計算のしかた・判定の条件・制約・状態が変わる条件。具体例を添える", ["ビジネスルール"], ""),
+];
+export const SAMPLE_ACCEPTANCE: AcceptanceCriteria = {
+  mustPassRate: 100,
+  shouldPassRate: 90,
+  maxFailedTests: 0,
+  nfrAllRun: true,
+  questionsClosed: true,
+  custom: [
+    { id: "C1", text: "業務部門の担当者が、資料の取り込みから要件定義書の出力までを、説明を受けずに通しで実施できた", checked: false, checkedBy: null, checkedAt: null },
+    { id: "C2", text: "情報システム部門が、組織へのAIの登録と利用上限の設定を手順書どおりに実施できた", checked: false, checkedBy: null, checkedAt: null },
+  ],
+};

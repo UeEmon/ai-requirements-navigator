@@ -25,6 +25,7 @@ import {
   type ChangeProposal,
   type Diagram,
   type ImpactContext,
+  BusinessRule,
   Ears,
   EARS_TYPES,
   renderEars,
@@ -53,7 +54,7 @@ const BaselineInput = z.object({
 
 /** 確定前の確認（非機能要件シート） */
 export type BaselineGate = (p: Project) => Promise<{ ok: boolean; undecided: string[]; errors: string[]; coverage: number }>;
-const TypeSchema = z.enum(["BR", "AC", "FR", "NFR", "CN"]);
+const TypeSchema = z.enum(["BR", "AC", "FR", "RL", "NFR", "CN"]);
 const PrioritySchema = z.enum(["must", "should", "could"]);
 const ChangeInput = z.object({
   kind: z.enum(["modify", "add", "delete"]),
@@ -64,6 +65,8 @@ const ChangeInput = z.object({
   type: TypeSchema.optional(),
   /** 機能要件・非機能要件の EARS の構造（あれば内容はここから組み立てる） */
   ears: Ears.optional(),
+  /** 業務ルール（RL）の種類と具体例 */
+  rule: BusinessRule.optional(),
   reason: z.string().max(2000).default(""),
 });
 const DecideInput = z.object({
@@ -73,11 +76,14 @@ const DecideInput = z.object({
   alternativeIndex: z.number().int().min(0).default(0),
 });
 
-const TYPE_PHASE: Record<string, string> = { BR: "purpose", AC: "actors", FR: "functions", NFR: "quality", CN: "constraints" };
+const TYPE_PHASE: Record<string, string> = { BR: "purpose", AC: "actors", FR: "functions", RL: "rules", NFR: "quality", CN: "constraints" };
 const snapshotOf = (rs: Requirement[]): Baseline["snapshot"] =>
   rs.map((r) => ({ code: r.code, type: r.type, title: r.title, description: r.description, priority: r.priority, version: r.version }));
 
-export function designAndChange(ctx: ImplementationContext, opts: { gate?: BaselineGate } = {}) {
+/** 確定前の確認（レビューと承認） */
+export type ApprovalGate = (p: Project) => Promise<{ ok: boolean; required: boolean; status: string; review: { code: string } | null }>;
+
+export function designAndChange(ctx: ImplementationContext, opts: { gate?: BaselineGate; approvalGate?: ApprovalGate } = {}) {
   const { store } = ctx;
 
   /** 確定済みなら確定版を返す */
@@ -389,6 +395,12 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
       if (await baselineOf(p.id)) throw new HTTPException(409, { message: "要件定義は確定済みです。変更は変更要求で行ってください" });
       const reqs = await store.listRequirements(p.id);
       if (!reqs.length) throw new HTTPException(400, { message: "要件がまだありません" });
+      // 承認が必要なプロジェクトでは、いまの要件の内容で承認されていること（理由を書いても飛ばせない）
+      const ap = opts.approvalGate ? await opts.approvalGate(p) : null;
+      if (ap && !ap.ok) {
+        const why = { pending: "承認を待っています", rejected: "差し戻されています", stale: "承認した後に要件が変わりました", none: "レビューを依頼していません" }[ap.status] ?? ap.status;
+        return c.json({ error: `このプロジェクトは確定に承認が必要です（${why}）。「変更管理」でレビューを依頼し、承認を受けてください`, code: "approval_required", status: ap.status }, 409);
+      }
       // 非機能要件の検討が終わっているか（未検討の項目・要対応の矛盾）
       const g = opts.gate ? await opts.gate(p) : null;
       if (g && !g.ok) {
@@ -418,6 +430,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
           requirements: reqs.length,
           reason: b.reason,
           nfr: g ? { coverage: g.coverage, undecided: g.undecided.length, errors: g.errors.length, override: !g.ok } : null,
+          approval: ap ? { required: ap.required, status: ap.status, review: ap.review?.code ?? null } : null,
         },
       });
       ctx.emit?.(p.orgId, "baseline.created", { projectId: p.id, version: b.version, reason: b.reason, requirements: reqs.length });
@@ -447,11 +460,13 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
         proposal = {
           title: earsOk(target!.type) ? renderEars(input.ears!) : (input.title ?? target!.title),
           ...(earsOk(target!.type) ? { ears: input.ears } : {}),
+          ...(target!.type === "RL" && input.rule ? { rule: input.rule } : {}),
           description: input.description ?? target!.description,
           priority: input.priority ?? target!.priority,
           type: target!.type,
         };
-        if (proposal.title === target!.title && proposal.description === target!.description && proposal.priority === target!.priority) {
+        const ruleChanged = !!proposal.rule && JSON.stringify(proposal.rule) !== JSON.stringify(target!.rule ?? null);
+        if (!ruleChanged && proposal.title === target!.title && proposal.description === target!.description && proposal.priority === target!.priority) {
           throw new HTTPException(400, { message: "変更する内容がありません" });
         }
       } else if (input.kind === "add") {
@@ -463,6 +478,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
           priority: input.priority ?? "should",
           type: input.type,
           ...(earsOk(input.type) ? { ears: input.ears } : {}),
+          ...(input.type === "RL" && input.rule ? { rule: input.rule } : {}),
         };
       }
       const cr = await store.addChangeRequest({
@@ -531,6 +547,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
               type: after!.type,
               priority: after!.priority,
               ears: after!.ears ?? undefined,
+              rule: after!.rule ?? undefined,
               roundId: null,
               source: label,
               phaseKey: TYPE_PHASE[after!.type] ?? null,
@@ -543,7 +560,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
           if (cr.kind === "modify") {
             // EARS の構造がなく文を変えた場合は、古い構造を残さない
             const ears = after!.ears !== undefined && after!.ears !== null ? after!.ears : after!.title !== r.title ? null : undefined;
-            await store.updateRequirement(r.id, { title: after!.title, description: after!.description, priority: after!.priority, ears }, actor, `${label}: ${cr.reason || input.reason}`);
+            await store.updateRequirement(r.id, { title: after!.title, description: after!.description, priority: after!.priority, ears, ...(after!.rule ? { rule: after!.rule } : {}) }, actor, `${label}: ${cr.reason || input.reason}`);
           } else {
             await store.deleteRequirement(r.id);
           }

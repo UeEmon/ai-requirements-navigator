@@ -123,7 +123,8 @@ describe("設計モデルの表（データ項目定義・権限表・外部と�
     expect(t.head).toEqual(["エンティティ", "項目", "コード上の名前", "型", "キー", "必須", "桁・形式・範囲", "区分値"]);
     expect(t.rows).toContainEqual(["予約（Reservation）", "状態", "status", "enum", "", "必須", "", "仮予約 / 確定 / キャンセル / 来店済み"]);
     expect(t.rows).toContainEqual(["顧客（Customer）", "顧客ID", "id", "string", "主キー", "必須", "", ""]);
-    expect(entityTable(await model()).rows[1]).toEqual(["予約", "Reservation", "4", "FR-01, FR-02"]);
+    expect(entityTable(await model()).rows[1]).toEqual(["予約", "Reservation", "4", "", "FR-01, FR-02"]);
+    expect(entityTable(await model()).rows[0]![3]).toBe("最後の来店から5年で削除");
   });
 
   it("権限表は役割 × エンティティの CRUD。存在しないエンティティへの権限は捨てる", async () => {
@@ -141,7 +142,7 @@ describe("設計モデルの表（データ項目定義・権限表・外部と�
 
   it("外部とのやり取りに番号を振る。クラス図にはキーの印が付く", async () => {
     const m = await model();
-    expect(interfaceTable(m).rows[0]).toEqual(["IF-01", "予約確認メール", "メール配信サービス", "送る", "API", "予約確定のつど", "顧客のメールアドレス、予約日時、メニュー", "FR-02"]);
+    expect(interfaceTable(m).rows[0]).toEqual(["IF-01", "予約確認メール", "メール配信サービス", "送る", "API", "予約確定のつど", "顧客のメールアドレス、予約日時、メニュー", "予約は確定し、メールは再送の対象にして店長に知らせる", "FR-02"]);
     expect(toMermaidClass(m)).toContain("Reservation : +予約ID string PK");
   });
 

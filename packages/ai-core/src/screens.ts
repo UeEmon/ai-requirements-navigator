@@ -38,7 +38,17 @@ export const ScreenContent = z.object({
         purpose: z.string().max(300).default(""),
         actor: z.string().max(60).default(""),
         requirementCodes: z.array(z.string()).default([]),
-        elements: z.array(z.object({ kind: elementKind, label: z.string().min(1).max(80) })).max(20).default([]),
+        elements: z
+          .array(
+            z.object({
+              kind: elementKind,
+              label: z.string().min(1).max(80),
+              /** 入力・表示するデータ項目（設計モデルの「エンティティ.項目」。例: Reservation.startAt） */
+              field: z.string().max(120).default(""),
+            }),
+          )
+          .max(20)
+          .default([]),
         actions: z.array(z.object({ label: z.string().min(1).max(40), to: z.string().min(1).max(60) })).max(10).default([]),
       }),
     )
@@ -50,7 +60,14 @@ export type ScreenContent = z.infer<typeof ScreenContent>;
 export interface ScreenElement {
   kind: ElementKind;
   label: string;
+  /** 入力・表示するデータ項目（Reservation.startAt）。なければ省略 */
+  field?: string;
 }
+
+/** 入力の要素（データ項目にひも付けるべきもの） */
+export const INPUT_KINDS: ElementKind[] = ["field", "select"];
+/** データを表示する要素 */
+export const OUTPUT_KINDS: ElementKind[] = ["text", "list", "table"];
 export interface Screen {
   /** S01 など。システムが振る */
   key: string;
@@ -105,7 +122,7 @@ export function normalizeScreens(content: ScreenContent, reqs: ScreenRequirement
       purpose: s.purpose.trim(),
       actor: s.actor.trim(),
       requirementCodes: valid,
-      elements: s.elements.map((e) => ({ kind: e.kind, label: e.label.trim() })),
+      elements: s.elements.map((e) => ({ kind: e.kind, label: e.label.trim(), ...(e.field.trim() ? { field: e.field.trim() } : {}) })),
       actions,
     };
   });
@@ -119,11 +136,12 @@ export const SCREEN_SYSTEM = `あなたは業務システムの画面設計者�
 - 画面ごとに、目的・主に使う人・対応する要件コード・表示する情報と操作（elements）・次の画面への遷移（actions）を書く
 - elements の kind は heading / text / field / select / list / table / button / image / message のいずれか。label は「予約日時」「検索する」など短い言葉にする
 - 1画面の elements は12個程度まで。細かい項目を並べすぎない
+- 入力欄（field / select）と、データを表示する要素（text / list / table）には、採用した設計のデータ項目を field に「エンティティ.項目」の形で書く（例 "Reservation.startAt"）。設計にない項目は作らず、field を空にする
 - すべての機能要件（FR）が、いずれかの画面の requirementCodes に入るようにする。存在しない要件コードは使わない
 - actions の to には、遷移先の画面の id を書く
 - 要件にない画面や機能を作り込まない
 - 出力は次の形のJSONのみ。説明文やコードフェンスは付けない
-{ "screens": [{ "id": "top", "name": "...", "purpose": "...", "actor": "...", "requirementCodes": ["FR-01"], "elements": [{ "kind": "field", "label": "..." }], "actions": [{ "label": "...", "to": "confirm" }] }] }`;
+{ "screens": [{ "id": "top", "name": "...", "purpose": "...", "actor": "...", "requirementCodes": ["FR-01"], "elements": [{ "kind": "field", "label": "...", "field": "Reservation.startAt" }], "actions": [{ "label": "...", "to": "confirm" }] }] }`;
 
 export function buildScreenPrompt(projectName: string, purpose: string, reqs: ScreenRequirement[], opts: { design?: string; feedback?: string[] } = {}): string {
   return `# プロジェクト

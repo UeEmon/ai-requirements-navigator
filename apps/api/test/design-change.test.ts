@@ -106,7 +106,7 @@ describe("画面設計・要件定義の確定・変更管理", () => {
 
     // 仕様書とUMLに、画面一覧・画面遷移図・申し送りが入る
     const md = await (await req(`/api/projects/${p.id}/spec.md`, as("viewer"))).text();
-    expect(md).toContain("## 8. 画面一覧（ワイヤーフレーム）");
+    expect(md).toMatch(/## \d+\. 画面一覧（ワイヤーフレーム）/);
     expect(md).toContain("### 画面遷移図");
     expect(md).toContain("S01：ボタンの色を青にして");
     expect(md).toContain("未確定（作成中）");

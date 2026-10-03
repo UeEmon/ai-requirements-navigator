@@ -1,4 +1,5 @@
 import { EARS_INSTRUCTIONS, EARS_SHAPE } from "./ears.js";
+import { RULE_INSTRUCTIONS, RULE_SHAPE } from "./rules.js";
 import type { Phase } from "./phases.js";
 import type { CandidateContent, RequirementItem } from "./schema.js";
 
@@ -12,7 +13,7 @@ export interface PromptContext {
 
 const CANDIDATE_SHAPE = `{
   "items": [
-    { "title": "要件を1文で", "description": "補足（任意）", "type": "BR|AC|FR|NFR|CN", "priority": "must|should|could", ${EARS_SHAPE} }
+    { "title": "要件を1文で", "description": "補足（任意）", "type": "BR|AC|FR|RL|NFR|CN", "priority": "must|should|could", ${EARS_SHAPE}, ${RULE_SHAPE} }
   ],
   "questions": ["利用者に追加で確認したいこと（任意）"],
   "notes": "前提や注意点（任意）"
@@ -23,6 +24,8 @@ export const GENERATOR_SYSTEM = `あなたは要件定義の専門家です。�
 - 1項目は1文で、検証できる書き方にする（「速い」ではなく「3秒以内」など。数値が不明なら questions で確認する）
 - 既存の要件と重複・矛盾する項目は出さない
 ${EARS_INSTRUCTIONS}
+${RULE_INSTRUCTIONS}
+- ears は FR・NFR だけ、rule は RL だけに付ける
 - 出力は次の形のJSONのみ。説明文やコードフェンスは付けない
 ${CANDIDATE_SHAPE}`;
 

@@ -128,7 +128,7 @@ jobs:
           curl -fs localhost:8787/api/projects/$PJ/tests.csv "${H[@]}" | head -c 40 | grep -q 'テストID'
           curl -fs localhost:8787/api/projects/$PJ/readiness "${H[@]}" | jq -c '{verdict, score, counts}'
           curl -fs localhost:8787/api/projects/$PJ/handoff.json "${H[@]}" | jq -e 'select(.format == "arn-handoff/1") | {requirements: (.requirements | length), tests: (.tests.cases | length)}'
-          curl -fs localhost:8787/api/projects/$PJ/spec.md "${H[@]}" | grep -q '## 17. テスト仕様' && echo "::notice::引き継ぎOK（テストケース $TC 件）"
+          curl -fs localhost:8787/api/projects/$PJ/spec.md "${H[@]}" | grep -qE '## [0-9]+\. テスト仕様' && echo "::notice::引き継ぎOK（テストケース $TC 件）"
           # 開発・テストのツールとの連携: トークン → MCP → JUnit XML の取り込み → 開発用パッケージ
           TOK=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/api-tokens "${H[@]}" -d "{\"name\":\"CI\",\"scopes\":[\"report\"],\"projectIds\":[\"$PJ\"]}" | jq -r .token)
           A=(-H "authorization: Bearer $TOK" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream')

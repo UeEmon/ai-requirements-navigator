@@ -62,8 +62,8 @@ describe("サンプル事例（要件ナビ自身の要求事項）", () => {
 
     // 仕様書に、資料分析・非機能要件シートが入る
     const md = await (await req(`/api/projects/${project.id}/spec.md`, as("viewer"))).text();
-    expect(md).toContain("## 11. 現状の課題（資料分析）");
-    expect(md).toContain("## 13. 非機能要件シート");
+    expect(md).toMatch(/## \d+\. 現状の課題（資料分析）/);
+    expect(md).toMatch(/## \d+\. 非機能要件シート/);
     expect(md).toContain("要件ナビは、評価の合計点を、評価AIの申告ではなく定めた重みで計算しなければならない。");
 
     // そのまま確定できる

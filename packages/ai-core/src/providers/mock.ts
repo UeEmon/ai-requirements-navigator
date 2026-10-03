@@ -37,8 +37,8 @@ function seed(s: string): number {
 export function defaultMockHandler(id: string): MockHandler {
   return (req) => {
     const prompt = req.messages.map((m) => m.content).join("\n");
-    const typeMatch = prompt.match(/主に作る要件の区分: (BR|AC|FR|NFR|CN)/);
-    const type = (typeMatch?.[1] ?? "FR") as "BR" | "AC" | "FR" | "NFR" | "CN";
+    const typeMatch = prompt.match(/主に作る要件の区分: (BR|AC|FR|RL|NFR|CN)/);
+    const type = (typeMatch?.[1] ?? "FR") as "BR" | "AC" | "FR" | "RL" | "NFR" | "CN";
     const answer = prompt.split("# 利用者の回答")[1]?.split("\n").find((l) => l.trim())?.trim() ?? "回答";
 
     if (req.system.includes("ソフトウェア設計者")) return JSON.stringify(MOCK_UML);
@@ -65,6 +65,12 @@ export function defaultMockHandler(id: string): MockHandler {
         recommendedLabel: labels[0] ?? "A",
         recommendation: `案${labels[0] ?? "A"}は業務の見直しに踏み込んでいます。`,
       });
+    }
+    if (req.system.includes("用語集の作成者")) {
+      // 設計のエンティティ（「- 予約 Reservation（…」）を用語にする
+      const ents = [...prompt.matchAll(/^- (\S+) ([A-Z][A-Za-z0-9_]*)（/gm)].map((m) => ({ term: m[1]!, code: m[2]! }));
+      const terms = (ents.length ? ents : [{ term: "利用者", code: "" }]).map((e) => ({ term: e.term, definition: `${e.term}を表す業務の言葉（模擬AIによる定義）`, synonyms: e.term === "予約" ? ["申込"] : [], codeName: e.code }));
+      return JSON.stringify({ terms });
     }
     if (req.system.includes("テックリード")) return mockTaskPlan(prompt);
     if (req.system.includes("画面設計者")) return mockScreens(prompt);
@@ -131,6 +137,7 @@ const MOCK_UML = {
       name: "Customer",
       label: "顧客",
       requirementCodes: ["FR-01"],
+      retention: "最後の来店から5年で削除",
       attributes: [
         { name: "id", label: "顧客ID", type: "string", key: "pk", required: true },
         { name: "name", label: "氏名", type: "string", required: true, rule: "1〜50文字" },
@@ -193,7 +200,7 @@ const MOCK_UML = {
       finals: ["キャンセル", "来店済み"],
       transitions: [
         { from: "仮予約", to: "確定", event: "登録成功" },
-        { from: "確定", to: "キャンセル", event: "取消" },
+        { from: "確定", to: "キャンセル", event: "取消", guard: "利用日の前日まで" },
         { from: "確定", to: "来店済み", event: "受付" },
       ],
     },
@@ -227,8 +234,10 @@ const MOCK_UML = {
     { actor: "店長", entity: "Staff", ops: "CRUD" },
   ],
   interfaces: [
-    { name: "予約確認メール", counterpart: "メール配信サービス", direction: "out", method: "API", timing: "予約確定のつど", data: "顧客のメールアドレス、予約日時、メニュー", requirementCodes: ["FR-02"] },
+    { name: "予約確認メール", counterpart: "メール配信サービス", direction: "out", method: "API", timing: "予約確定のつど", data: "顧客のメールアドレス、予約日時、メニュー", failure: "予約は確定し、メールは再送の対象にして店長に知らせる", requirementCodes: ["FR-02"] },
   ],
+  outputs: [{ name: "日別予約表", kind: "report", purpose: "当日の準備", timing: "毎朝8時", recipients: "店長", items: ["時刻", "顧客名", "メニュー", "担当"], requirementCodes: ["FR-01"] }],
+  batches: [{ name: "前日リマインド", timing: "毎日18時", input: "翌日の確定した予約", output: "リマインドメール", failure: "翌朝に再実行し、送れなかった顧客を店長に知らせる", requirementCodes: ["FR-02"] }],
 };
 
 /** 確定した要件の件数ぶん、観点を前から順に「埋まった」とみなす */
@@ -305,8 +314,8 @@ function mockScreens(prompt: string): string {
     // 見た目の項目（color など）は返しても捨てられる
     elements: [
       { kind: "heading", label: i === 0 ? "ようこそ" : `手続き${i + 1}`, color: "red" },
-      { kind: "field", label: "日時" },
-      { kind: "list", label: "一覧" },
+      { kind: "field", label: "日時", field: "Reservation.startAt" },
+      { kind: "list", label: "一覧", field: "Reservation.status" },
       { kind: "button", label: "保存" },
     ],
     actions: [
@@ -350,7 +359,20 @@ const MOCK_EARS: Record<string, { pattern: string; trigger?: string; response: s
   "処理完了を利用者に通知する": { pattern: "event", trigger: "処理が完了した", response: "利用者に完了を通知しなければならない" },
   "操作の履歴を記録する": { pattern: "ubiquitous", response: "操作の履歴を記録しなければならない" },
 };
-function withMockEars<T extends { title: string; type: string }>(it: T): T & { ears?: object } {
+function withMockEars<T extends { title: string; type: string }>(it: T): T & { ears?: object; rule?: object } {
+  if (it.type === "RL") {
+    return {
+      ...it,
+      rule: {
+        kind: "judge",
+        examples: [
+          { given: "利用日の2日前に取り消した", expected: "取消料は0円" },
+          { given: "利用日の前日に取り消した", expected: "取消料は料金の50%" },
+        ],
+        entities: ["予約"],
+      },
+    };
+  }
   if (it.type !== "FR" && it.type !== "NFR") return it;
   const e = MOCK_EARS[it.title] ?? { pattern: "ubiquitous", response: it.title.replace(/提供する$/, "提供しなければならない") };
   return { ...it, ears: { system: "本システム", trigger: "", state: "", feature: "", ...e } };

@@ -134,7 +134,7 @@ describe("非機能要件シート", () => {
 
     // 仕様書に非機能要件シートが入る
     const md = await (await req(`/api/projects/${p.id}/spec.md`, as("viewer"))).text();
-    expect(md).toContain("## 13. 非機能要件シート");
+    expect(md).toMatch(/## \d+\. 非機能要件シート/);
     expect(md).toContain("［決定］可用性／稼働率（止まってよい時間）：99.9%（月に約43分まで）");
     const log = await (await req(`/api/orgs/${orgId}/audit?action=baseline`, as("admin"))).json();
     expect(log.entries[0].detail.nfr).toMatchObject({ coverage: 1, override: false });

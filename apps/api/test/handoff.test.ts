@@ -96,7 +96,8 @@ describe("コーディング・テスト工程への引き継ぎ", () => {
     expect(d.model).toBeUndefined();
 
     const md = await (await req(`/api/projects/${p.id}/spec.md`, as("viewer"))).text();
-    for (const h of ["## 14. データ設計", "## 15. 権限表", "## 16. 外部とのやり取り", "## 17. テスト仕様", "## 18. 着手前チェックと未決事項"]) expect(md).toContain(h);
+    for (const h of ["データ設計", "画面の入出力項目", "状態が変わる条件", "帳票・出力", "権限表", "外部とのやり取り", "テスト仕様", "着手前チェックと未決事項", "用語集", "受け入れ基準", "レビューと承認"]) expect(md).toMatch(new RegExp(`## \\d+\\. ${h.replace(/[()（）]/g, ".")}`));
+    expect(md).toContain("## この要件定義書の範囲");
     expect(md).toContain("| エンティティ | 項目 | コード上の名前 | 型 | キー | 必須 | 桁・形式・範囲 | 区分値 |");
     expect(md).toContain("| TC-FR-01-1 | FR-01 |");
     expect(md).toMatch(/判定：(引き渡せる|確認事項を共有すれば着手できる|足りないものがある)/);

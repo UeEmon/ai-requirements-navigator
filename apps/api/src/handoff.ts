@@ -9,14 +9,20 @@
  */
 import {
   assessReadiness,
+  batchTable,
   crudMatrix,
   dataDictionary,
+  lintRule,
+  outputTable,
+  screenItemTable,
+  stateTable,
   deriveTestCases,
   entityTable,
   evaluateNfr,
   interfaceTable,
   NFR_ITEMS,
   NFR_VERIFY,
+  PHASE_BOUNDARY,
   TEST_KINDS,
   TEST_LEVELS,
   testCasesCsv,
@@ -33,7 +39,13 @@ import type { Project, Requirement } from "./store.js";
 
 export const HANDOFF_FORMAT = "arn-handoff/1";
 
-export function handoff(ctx: ImplementationContext) {
+export interface ScopeAccess {
+  glossary: (p: Project) => Promise<{ terms: unknown[]; variants: Array<{ code: string; used: string; term: string }> }>;
+  acceptance: (p: Project) => Promise<{ defined: boolean; criteria: unknown; evaluation: { accepted: boolean; items: unknown[] } }>;
+  approval: (p: Project) => Promise<{ required: boolean; status: "approved" | "pending" | "rejected" | "stale" | "none" }>;
+}
+
+export function handoff(ctx: ImplementationContext, deps: { scope?: () => ScopeAccess } = {}) {
   const { store } = ctx;
 
   /** 非機能要件シートから作った要件に、シートの項目を結びつける */
@@ -41,7 +53,7 @@ export function handoff(ctx: ImplementationContext) {
     const sheet = await store.getNfrSheet(p.id);
     const keyOf = new Map<string, string>();
     for (const [key, d] of Object.entries(sheet?.decisions ?? {})) if (d.requirementId) keyOf.set(d.requirementId, key);
-    return reqs.map((r) => ({ code: r.code, type: r.type, title: r.title, ears: r.ears, priority: r.priority, nfrKey: keyOf.get(r.id) }));
+    return reqs.map((r) => ({ code: r.code, type: r.type, title: r.title, ears: r.ears, rule: r.rule ?? null, priority: r.priority, nfrKey: keyOf.get(r.id) }));
   }
 
   async function storiesOf(p: Project): Promise<TestStory[]> {
@@ -62,7 +74,21 @@ export function handoff(ctx: ImplementationContext) {
   async function designTables(p: Project) {
     const rec = await store.latestUmlModel(p.id);
     const m = rec?.model ?? null;
-    return { model: m, createdAt: rec?.createdAt ?? null, entities: entityTable(m), data: dataDictionary(m), crud: crudMatrix(m), interfaces: interfaceTable(m) };
+    const screens = await store.latestScreens(p.id);
+    const items = screenItemTable(screens?.model, m);
+    return {
+      model: m,
+      createdAt: rec?.createdAt ?? null,
+      entities: entityTable(m),
+      data: dataDictionary(m),
+      crud: crudMatrix(m),
+      interfaces: interfaceTable(m),
+      states: stateTable(m),
+      outputs: outputTable(m),
+      batches: batchTable(m),
+      screenItems: { head: items.head, rows: items.rows } as Table,
+      screenItemIssues: { unbound: items.unbound, unknown: items.unknown },
+    };
   }
 
   async function openQuestions(p: Project): Promise<string[]> {
@@ -118,8 +144,33 @@ export function handoff(ctx: ImplementationContext) {
       pendingChanges: changes.filter((c) => c.status === "open" || c.status === "analyzed").map((c) => c.code),
       accessControl: access?.status === "decided" && !!access.level && access.level !== "L1",
       stale,
+      ...(await scopeInputs(p, t.reqs)),
     });
     return { ...report, openQuestions: oq };
+  }
+
+  /** 要件定義の補足（業務ルール・用語集・受け入れ基準・承認・画面の項目・保存期間）の点検に渡す値 */
+  async function scopeInputs(p: Project, reqs: Requirement[]) {
+    const rules = reqs.filter((r) => r.type === "RL");
+    const sheet = await store.getNfrSheet(p.id);
+    const law = sheet?.decisions["ev.law"];
+    const personalData = (sheet?.profile.data ?? 0) >= 1 || (law?.status === "decided" && !!law.level && law.level !== "L1");
+    const d = await designTables(p);
+    const out = {
+      rules: { count: rules.length, issues: rules.filter((r) => !lintRule(r.title, r.rule).ok).map((r) => r.code) },
+      screenItems: (await store.latestScreens(p.id)) && d.model ? d.screenItemIssues : undefined,
+      personalData,
+    };
+    const sc = deps.scope?.();
+    if (!sc) return out;
+    const g = await sc.glossary(p);
+    const a = await sc.acceptance(p);
+    return {
+      ...out,
+      glossary: { terms: g.terms.length, variants: g.variants.map((v) => `${v.code}（${v.used} → ${v.term}）`) },
+      acceptance: a.defined,
+      approval: await sc.approval(p),
+    };
   }
 
   /** 引き継ぎパッケージ（JSON） */
@@ -141,8 +192,10 @@ export function handoff(ctx: ImplementationContext) {
         "tests.cases の requirementCode で要件と、storyKey で tasks のストーリーと対応します。テストのIDは要件が変わらない限り同じです。",
         "design.model はクラス・シーケンス・状態遷移・権限・外部とのやり取りの設計モデル、design.tables はそれを表にしたものです。",
         "要件にない機能は作らず、不明な点は readiness.openQuestions と readiness.checks を確認してください。",
+        "scope は工程の線引きです。requirements 列は決まっていること、design 列は設計工程で決めてよいこと、test 列はテスト工程で決めることです。",
+        "業務ルール（type が RL）は rule.examples の具体例をそのまま単体テストにしてください。glossary の用語を使い、synonyms の言い換えは使わないでください。",
       ],
-      requirements: t.reqs.map((r) => ({ code: r.code, type: r.type, title: r.title, description: r.description, priority: r.priority, ears: r.ears, source: r.source, version: r.version, nfrKey: nfrKey.get(r.code) ?? null })),
+      requirements: t.reqs.map((r) => ({ code: r.code, type: r.type, title: r.title, description: r.description, priority: r.priority, ears: r.ears, rule: r.rule ?? null, source: r.source, version: r.version, nfrKey: nfrKey.get(r.code) ?? null })),
       nfr: {
         profile: sheet?.profile ?? {},
         items: NFR_ITEMS.map((i) => {
@@ -151,7 +204,14 @@ export function handoff(ctx: ImplementationContext) {
           return { key: i.key, category: i.category, name: i.name, status: d?.status ?? "undecided", level: d?.level ?? null, levelLabel: lv?.label ?? null, value: d?.value ?? "", rationale: d?.rationale ?? "", verification: NFR_VERIFY[i.key] ?? null };
         }),
       },
-      design: { model: design.model, tables: { entities: design.entities, data: design.data, crud: design.crud, interfaces: design.interfaces } },
+      design: {
+        model: design.model,
+        tables: { entities: design.entities, data: design.data, crud: design.crud, interfaces: design.interfaces, states: design.states, outputs: design.outputs, batches: design.batches, screenItems: design.screenItems },
+      },
+      glossary: deps.scope ? (await deps.scope().glossary(p)).terms : [],
+      acceptance: deps.scope ? await deps.scope().acceptance(p) : null,
+      approval: deps.scope ? await deps.scope().approval(p) : null,
+      scope: PHASE_BOUNDARY,
       screens: screens?.model ?? null,
       tasks: plan?.plan ?? null,
       tests: { cases: t.cases, trace: t.trace.rows, coverage: t.trace.coverage },
@@ -177,6 +237,26 @@ export function handoff(ctx: ImplementationContext) {
         title: "14. データ設計",
         lines: d.model ? ["設計モデルから作ったエンティティとデータ項目の定義です。物理設計（テーブル定義）はこれを元に設計工程で行います。"] : [],
         tables: [...tableIf(d.entities, "エンティティ一覧（業務の言葉とコード上の名前）"), ...tableIf(d.data, "データ項目定義")],
+      },
+      {
+        title: "画面の入出力項目",
+        lines: d.screenItemIssues.unbound.length ? [`データ項目にひも付いていない入力項目：${d.screenItemIssues.unbound.join("、")}`] : [],
+        tables: tableIf(d.screenItems),
+      },
+      {
+        title: "状態が変わる条件",
+        lines: [],
+        tables: tableIf(d.states),
+      },
+      {
+        title: "帳票・出力",
+        lines: d.model && !d.outputs.rows.length ? ["帳票・出力はありません（または設計モデルに定義がありません）。"] : [],
+        tables: tableIf(d.outputs),
+      },
+      {
+        title: "まとめて行う処理（バッチ）",
+        lines: d.model && !d.batches.rows.length ? ["まとめて行う処理はありません（または設計モデルに定義がありません）。"] : [],
+        tables: tableIf(d.batches),
       },
       {
         title: "15. 権限表",

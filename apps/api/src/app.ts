@@ -1,9 +1,11 @@
 import {
   buildDiagrams,
   compareUmlModels,
+  BusinessRule,
   Ears,
   EARS_TYPES,
   lintEars,
+  lintRule,
   renderEars,
   screenFlowDiagram,
   createProvider,
@@ -34,6 +36,7 @@ import { designAndChange } from "./design-change.js";
 import { discovery } from "./discovery.js";
 import { connect } from "./connect.js";
 import { handoff } from "./handoff.js";
+import { scope } from "./scope.js";
 import { nfrSheet } from "./nfr-sheet.js";
 import { loadSample, SAMPLES } from "./samples.js";
 import { implementation, type ImplementationContext } from "./implementation.js";
@@ -138,12 +141,23 @@ const RequirementPatchInput = z
     priority: z.enum(["must", "should", "could"]).optional(),
     /** 機能要件・非機能要件の EARS の構造。指定すると内容（title）はここから組み立てる。null で構造を外す */
     ears: Ears.nullable().optional(),
+    /** 業務ルール（RL）の種類と具体例 */
+    rule: BusinessRule.nullable().optional(),
     reason: z.string().max(500).default(""),
   })
   .strict();
 const UmlAdoptInput = z.object({ label: z.string().min(1), reason: z.string().max(2000).default("") });
 const TokenInput = z.object({ code: z.string().min(1), codeVerifier: z.string().min(43).max(128), redirectUri: z.string().url() });
 const RefreshInput = z.object({ refreshToken: z.string().min(1) });
+
+/** 要件文の検査。機能・非機能は EARS の文型、業務ルールは具体例とあいまいな言葉 */
+function lintOf(r: { title: string; type: string; rule?: BusinessRule | null }) {
+  if (r.type === "RL") {
+    const l = lintRule(r.title, r.rule);
+    return { pattern: null, ok: l.ok, issues: l.issues.map((x) => x.message) };
+  }
+  return lintEars(r.title, r.type);
+}
 
 function parseOrThrow<T extends z.ZodTypeAny>(schema: T, json: unknown): z.infer<T> {
   const r = schema.safeParse(json);
@@ -664,7 +678,7 @@ export function createApp(deps: AppDeps) {
         phase,
         projectName: project.name,
         projectPurpose: project.purpose,
-        existingRequirements: existing.map((r) => ({ ...r, code: r.code, ears: r.ears ?? undefined })),
+        existingRequirements: existing.map((r) => ({ ...r, code: r.code, ears: r.ears ?? undefined, rule: r.rule ?? undefined })),
         userAnswer: input.answer,
       },
       {
@@ -902,10 +916,12 @@ export function createApp(deps: AppDeps) {
   };
   const impl = implementation(moduleCtx);
   const nfr = nfrSheet(moduleCtx);
-  const dc = designAndChange(moduleCtx, { gate: nfr.gate });
+  const dc = designAndChange(moduleCtx, { gate: nfr.gate, approvalGate: (p) => sc.approvalGate(p) });
   const disc = discovery(moduleCtx);
-  const ho = handoff(moduleCtx);
+  const ho = handoff(moduleCtx, { scope: () => sc });
+  const sc = scope(moduleCtx, { testsOf: (p) => ho.tests(p), statusOf: (p) => cn.status(p) });
   const cn = connect(moduleCtx, ho, {
+    scope: () => sc,
     authenticate: deps.authenticate,
     encryptor: deps.encryptor,
     publicUrl: deps.publicUrl,
@@ -978,6 +994,7 @@ export function createApp(deps: AppDeps) {
   disc.routes(app, { wantsAsync, enqueue });
   nfr.routes(app, { wantsAsync, enqueue });
   ho.routes(app);
+  sc.routes(app);
   cn.routes(app);
 
   /** EARS の構造から文を組み立て、検査結果を返す（画面の入力中の確認用） */
@@ -1167,7 +1184,7 @@ export function createApp(deps: AppDeps) {
   app.get("/api/projects/:id/requirements", async (c) => {
     const p = await loadProject(c, c.req.param("id"), "viewer");
     // 機能要件・非機能要件は EARS の文型と表現を検査した結果を付ける
-    return c.json((await store.listRequirements(p.id)).map((r) => ({ ...r, lint: lintEars(r.title, r.type) })));
+    return c.json((await store.listRequirements(p.id)).map((r) => ({ ...r, lint: lintOf(r) })));
   });
 
   /** 要件の手直し。変更前の内容は版として残る */
@@ -1180,6 +1197,7 @@ export function createApp(deps: AppDeps) {
     if (patch.ears && EARS_TYPES.includes(r.type)) patch.title = renderEars(patch.ears);
     else if (patch.ears) patch.ears = undefined; // 目的・利用者・制約は EARS の対象外
     else if (patch.title !== undefined && patch.title !== r.title && patch.ears === undefined) patch.ears = null; // 文を手で変えたら構造は外す
+    if (patch.rule !== undefined && r.type !== "RL") patch.rule = undefined; // 具体例は業務ルールだけ
     const updated = await store.updateRequirement(r.id, patch, actorOf(c), reason);
     if (!updated) throw new HTTPException(404, { message: "要件が見つかりません" });
     await audit(store, {
@@ -1249,7 +1267,7 @@ export function createApp(deps: AppDeps) {
     const found = await disc.specMore(p);
     const spec = buildSpec(p, await store.listRequirements(p.id), await store.listDecisions(p.id), diagrams, new Date(), {
       baseline: more.baseline,
-      extras: [...more.extras, ...found.extras, ...(await nfr.specMore(p)), ...(await ho.specMore(p))],
+      extras: [...more.extras, ...found.extras, ...(await nfr.specMore(p)), ...(await sc.specMore(p)), ...(await ho.specMore(p))],
     });
     try {
       if (format === "docx") return await renderDocx(spec, images);

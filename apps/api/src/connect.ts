@@ -15,6 +15,7 @@ import { isIP } from "node:net";
 import {
   buildDiagrams,
   IMPL_LABELS,
+  RULE_KINDS,
   JUnitParseError,
   matchResults,
   NFR_ITEMS,
@@ -62,6 +63,13 @@ export interface ConnectOptions {
   /** 名前解決（テスト用に差し替える） */
   lookup?: (host: string) => Promise<Array<{ address: string }>>;
   fetchImpl?: FetchLike;
+  /** 用語集・受け入れ基準・承認・確定版の差分（scope.ts） */
+  scope?: () => {
+    glossary: (p: Project) => Promise<unknown>;
+    acceptance: (p: Project) => Promise<unknown>;
+    approval: (p: Project) => Promise<unknown>;
+    diff: (p: Project, from?: number, to?: number) => Promise<unknown>;
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -251,7 +259,7 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
     const keyOf = new Map(t.treqs.map((r) => [r.code, r.nfrKey ?? null]));
     return t.reqs
       .filter((r) => (!q.type || r.type === q.type) && (!q.codes?.length || q.codes.includes(r.code)))
-      .map((r) => ({ code: r.code, type: r.type, title: r.title, description: r.description, priority: r.priority, ears: r.ears, version: r.version, nfrKey: keyOf.get(r.code) ?? null }));
+      .map((r) => ({ code: r.code, type: r.type, title: r.title, description: r.description, priority: r.priority, ears: r.ears, rule: r.rule ?? null, version: r.version, nfrKey: keyOf.get(r.code) ?? null }));
   }
 
   async function requirementDetail(p: Project, code: string) {
@@ -270,12 +278,14 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
       description: r.description,
       priority: r.priority,
       ears: r.ears,
+      rule: r.rule ?? null,
       version: r.version,
       source: r.source,
       nfr: item ? { key: item.key, name: item.name, verification: NFR_VERIFY[item.key] ?? null } : null,
       tests: t.cases.filter((c) => c.requirementCode === code || (c.storyKey && t.stories.some((s) => s.key === c.storyKey && s.requirementCodes.includes(code)))),
       stories: t.stories.filter((s) => s.requirementCodes.includes(code)),
       screens: (screens?.model.screens ?? []).filter((s) => s.requirementCodes.includes(code)).map((s) => ({ key: s.key, name: s.name, purpose: s.purpose, elements: s.elements })),
+      screenItems: d.screenItems.rows.filter((r) => (screens?.model.screens ?? []).some((s) => s.requirementCodes.includes(code) && r[0] === `${s.key} ${s.name}`)),
       entities: (d.model?.classes ?? []).filter((c) => (c.requirementCodes ?? []).includes(code)),
       interfaces: (d.model?.interfaces ?? []).filter((i) => (i.requirementCodes ?? []).includes(code)),
       status: st ? { implementation: st.impl, tests: st.tests } : null,
@@ -291,6 +301,10 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
       data: d.data,
       crud: d.crud,
       interfaces: d.interfaces,
+      states: d.states,
+      outputs: d.outputs,
+      batches: d.batches,
+      screenItems: d.screenItems,
       model: d.model,
       screens: screens?.model ?? null,
     };
@@ -318,6 +332,12 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
       runs.map((r) => ({ id: r.id, at: r.createdAt, tests: r.tests, requirements: r.requirements })),
     );
   }
+
+  const needScope = () => {
+    const sc = opts.scope?.();
+    if (!sc) throw new HTTPException(501, { message: "この機能は使えません" });
+    return sc;
+  };
 
   /* ---------- 報告する ---------- */
 
@@ -379,7 +399,7 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
     const plan = await store.latestTaskPlan(p.id);
     const counts: Record<string, number> = {};
     for (const r of t.reqs) counts[r.type] = (counts[r.type] ?? 0) + 1;
-    const TYPES: Array<[string, string]> = [["BR", "目的"], ["AC", "利用者"], ["FR", "機能要件"], ["NFR", "非機能要件"], ["CN", "制約"]];
+    const TYPES: Array<[string, string]> = [["BR", "目的"], ["AC", "利用者"], ["FR", "機能要件"], ["RL", "業務ルール"], ["NFR", "非機能要件"], ["CN", "制約"]];
     const reqMd = [
       `# ${p.name} 要件一覧`,
       "",
@@ -388,11 +408,29 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
       ...TYPES.flatMap(([type, label]) => {
         const rows = b.requirements.filter((r) => r.type === type);
         if (!rows.length) return [];
-        return [`## ${label}`, "", "| ID | 要件 | 優先度 | 版 | テスト |", "| --- | --- | --- | --- | --- |", ...rows.map((r) => `| ${r.code} | ${r.title.replace(/\|/g, "\\|")} | ${r.priority} | ${r.version} | ${t.cases.filter((x) => x.requirementCode === r.code).map((x) => x.id).join(", ")} |`), ""];
+        const esc = (x: string) => x.replace(/\|/g, "\\|");
+        const examples = (r: (typeof rows)[number]) => (r.rule?.examples ?? []).map((e) => `${esc(e.given)} → ${esc(e.expected)}`).join("<br>");
+        return type === "RL"
+          ? [`## ${label}`, "", "| ID | ルール | 種類 | 具体例（条件 → 結果） | 版 | テスト |", "| --- | --- | --- | --- | --- | --- |", ...rows.map((r) => `| ${r.code} | ${esc(r.title)} | ${r.rule ? RULE_KINDS[r.rule.kind] : ""} | ${examples(r)} | ${r.version} | ${t.cases.filter((x) => x.requirementCode === r.code).map((x) => x.id).join(", ")} |`), ""]
+          : [`## ${label}`, "", "| ID | 要件 | 優先度 | 版 | テスト |", "| --- | --- | --- | --- | --- |", ...rows.map((r) => `| ${r.code} | ${esc(r.title)} | ${r.priority} | ${r.version} | ${t.cases.filter((x) => x.requirementCode === r.code).map((x) => x.id).join(", ")} |`), ""];
       }),
       "## 非機能要件シート（確認方法）",
       "",
       ...b.nfr.items.filter((i) => i.status === "decided").map((i) => `- ${i.name}：${i.levelLabel ?? i.value}${i.verification ? `（確認方法：${i.verification.method}）` : ""}`),
+      "",
+      "## 受け入れ基準",
+      "",
+      ...((b.acceptance?.evaluation.items ?? []) as Array<{ label: string; target: string }>).map((i) => `- ${i.label}：${i.target}`),
+      "",
+    ].join("\n");
+    const glossaryMd = [
+      `# ${p.name} 用語集`,
+      "",
+      "要件・コード・テストではこの用語を使い、「言い換え」の言葉は使わないでください。",
+      "",
+      "| 用語 | 意味 | 言い換え（使わない） | コード上の名前 |",
+      "| --- | --- | --- | --- |",
+      ...((b.glossary ?? []) as Array<{ term: string; definition: string; synonyms: string[]; codeName: string }>).map((g) => `| ${g.term} | ${g.definition.replace(/\|/g, "\\|")} | ${g.synonyms.join("、")} | ${g.codeName} |`),
       "",
     ].join("\n");
     const diagrams = [...buildDiagrams(p.name, t.reqs.map((r) => ({ code: r.code, type: r.type, title: r.title })), d.model), ...(screens ? [screenFlowDiagram(screens.model)] : [])];
@@ -419,6 +457,24 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
       "",
       mdTable(d.interfaces),
       "",
+      "## 画面の入出力項目",
+      "",
+      "入力チェックは、データ項目定義の「必須」「業務上の制約」「区分値」を満たすようにしてください。",
+      "",
+      mdTable(d.screenItems),
+      "",
+      "## 状態が変わる条件",
+      "",
+      mdTable(d.states),
+      "",
+      "## 帳票・出力",
+      "",
+      mdTable(d.outputs),
+      "",
+      "## まとめて行う処理（バッチ）",
+      "",
+      mdTable(d.batches),
+      "",
       "## 図",
       "",
       ...diagrams.flatMap((g) => [`### ${g.title}`, "", "```mermaid", g.mermaid, "```", ""]),
@@ -443,6 +499,7 @@ echo
       { path: ".mcp.json", content: `${mcpJson}\n` },
       { path: "requirements/requirements.md", content: reqMd },
       { path: "requirements/design.md", content: designMd },
+      { path: "requirements/glossary.md", content: glossaryMd },
       ...(screens ? [{ path: "requirements/screens.md", content: `# ${p.name} 画面一覧\n\n見た目（色・配置・文言）は設計工程で決めます。\n\n${summarizeScreens(screens.model)}\n` }] : []),
       ...(plan ? [{ path: "requirements/tasks.md", content: toTaskMarkdown(plan.plan, p.name, t.reqs.map((r) => ({ code: r.code, type: r.type, title: r.title }))) }] : []),
       { path: "requirements/handoff.json", content: JSON.stringify(b, null, 2) },
@@ -563,8 +620,8 @@ echo
     {
       name: "list_requirements",
       title: "要件の一覧",
-      description: "要件の一覧。title は EARS 記法の要件文、ears はその構造（trigger / state / feature / response）。type で絞り込めます（BR 目的 / AC 利用者 / FR 機能 / NFR 非機能 / CN 制約）",
-      inputSchema: { type: "object", properties: { ...pid, type: { type: "string", enum: ["BR", "AC", "FR", "NFR", "CN"] }, codes: { type: "array", items: str, description: "要件ID（FR-01 など）" } } },
+      description: "要件の一覧。title は要件文（機能・非機能は EARS 記法で、ears にその構造）。業務ルール（RL）は rule に種類と具体例（条件 → 結果）。type で絞り込めます（BR 目的 / AC 利用者 / FR 機能 / RL 業務ルール / NFR 非機能 / CN 制約）",
+      inputSchema: { type: "object", properties: { ...pid, type: { type: "string", enum: ["BR", "AC", "FR", "RL", "NFR", "CN"] }, codes: { type: "array", items: str, description: "要件ID（FR-01 など）" } } },
       scope: "read",
       run: async (c, a) => ({ requirements: await requirementsOf(await projectFor(c, a.projectId, "read"), { type: a.type, codes: a.codes }) }),
     },
@@ -579,8 +636,8 @@ echo
     {
       name: "get_design",
       title: "設計の材料",
-      description: "データ項目定義（コード上の名前・型・キー・必須・桁や形式・区分値）、権限表（CRUD）、外部とのやり取り、設計モデル、画面一覧。part で一部だけ取れます",
-      inputSchema: { type: "object", properties: { ...pid, part: { type: "string", enum: ["entities", "data", "crud", "interfaces", "model", "screens"] } } },
+      description: "データ項目定義（コード上の名前・型・キー・必須・業務上の制約・区分値）、権限表（CRUD）、外部とのやり取り、状態が変わる条件、帳票・出力、まとめて行う処理、画面の入出力項目、設計モデル、画面一覧。part で一部だけ取れます",
+      inputSchema: { type: "object", properties: { ...pid, part: { type: "string", enum: ["entities", "data", "crud", "interfaces", "states", "outputs", "batches", "screenItems", "model", "screens"] } } },
       scope: "read",
       run: async (c, a) => designOf(await projectFor(c, a.projectId, "read"), a.part),
     },
@@ -607,6 +664,30 @@ echo
       inputSchema: { type: "object", properties: { ...pid, status: { type: "string", enum: ["open", "answered", "closed"] } } },
       scope: "read",
       run: async (c, a) => ({ questions: (await store.listQuestions((await projectFor(c, a.projectId, "read")).id)).filter((q) => !a.status || q.status === a.status) }),
+    },
+    {
+      name: "get_glossary",
+      title: "用語集",
+      description: "業務の言葉の意味・言い換え（使わない）・コード上の名前。名前を付けるときはこの用語を使ってください",
+      inputSchema: { type: "object", properties: { ...pid } },
+      scope: "read",
+      run: async (c, a) => needScope().glossary(await projectFor(c, a.projectId, "read")) as Promise<Record<string, unknown>>,
+    },
+    {
+      name: "get_acceptance",
+      title: "受け入れ基準",
+      description: "何を満たせば受け入れられるか（合格率・不合格の上限・確認すること）と、いまのテスト結果に照らした判定",
+      inputSchema: { type: "object", properties: { ...pid } },
+      scope: "read",
+      run: async (c, a) => needScope().acceptance(await projectFor(c, a.projectId, "read")) as Promise<Record<string, unknown>>,
+    },
+    {
+      name: "get_changes",
+      title: "確定版からの変更",
+      description: "指定した確定版（sinceVersion。省略時は最新の確定版）から、いま（または toVersion）までに追加・変更・削除された要件と、影響するテスト・ストーリー・画面",
+      inputSchema: { type: "object", properties: { ...pid, sinceVersion: { type: "integer", minimum: 1 }, toVersion: { type: "integer", minimum: 1 } } },
+      scope: "read",
+      run: async (c, a) => needScope().diff(await projectFor(c, a.projectId, "read"), a.sinceVersion ? Number(a.sinceVersion) : undefined, a.toVersion ? Number(a.toVersion) : undefined) as Promise<Record<string, unknown>>,
     },
     {
       name: "report_implementation",
@@ -848,6 +929,19 @@ echo
     });
     app.get("/api/v1/projects/:id/handoff", async (c) => c.json(await ho.bundle(await projectFor(c, c.req.param("id"), "read"))));
     app.get("/api/v1/projects/:id/status", async (c) => c.json(await status(await projectFor(c, c.req.param("id"), "read"))));
+    app.get("/api/v1/projects/:id/glossary", async (c) => c.json(await needScope().glossary(await projectFor(c, c.req.param("id"), "read"))));
+    app.get("/api/v1/projects/:id/acceptance", async (c) => c.json(await needScope().acceptance(await projectFor(c, c.req.param("id"), "read"))));
+    app.get("/api/v1/projects/:id/diff", async (c) => {
+      const p = await projectFor(c, c.req.param("id"), "read");
+      const num = (k: string) => {
+        const v = c.req.query(k);
+        if (!v || v === "current") return undefined;
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1) throw new HTTPException(400, { message: `${k} は版の番号です` });
+        return n;
+      };
+      return c.json(await needScope().diff(p, num("from"), num("to")));
+    });
     app.get("/api/v1/projects/:id/agent-pack.zip", async (c) => {
       const p = await projectFor(c, c.req.param("id"), "read");
       const zip = await agentPack(c, p);
@@ -912,6 +1006,7 @@ echo
   return {
     routes,
     emit,
+    status,
     /** テスト用: 送信中の Webhook を待つ */
     flush: async () => {
       await Promise.all([...pending]);

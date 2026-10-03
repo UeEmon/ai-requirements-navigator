@@ -127,7 +127,7 @@ describe("リポジトリ用の出力", () => {
       files: ["AGENTS.md"],
     });
     expect(md).toContain("確定版 第2版（2026-10-03）");
-    expect(md).toContain("機能要件 3件・非機能要件 1件");
+    expect(md).toContain("機能要件 3件・業務ルール 0件・非機能要件 1件");
     expect(md).toContain("`https://arn.example.com/mcp`");
     expect(md).toContain("TC-FR-03-1");
     expect(md).toContain("  - キャンセル料は取るか");

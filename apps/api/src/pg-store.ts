@@ -37,6 +37,10 @@ import type {
   ImplReportRecord,
   TestRunRecord,
   Webhook,
+  ProjectSettings,
+  ProjectSheet,
+  ProjectSheetKind,
+  Review,
 } from "./store.js";
 
 const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
@@ -65,6 +69,7 @@ const toProject = (r: any): Project => ({
   phaseKey: r.phase_key,
   aiConfig: r.ai_config,
   createdAt: iso(r.created_at),
+  settings: r.settings ?? {},
 });
 const toRound = (r: any): Round => ({
   id: r.id,
@@ -94,6 +99,7 @@ const toReq = (r: any): Requirement => ({
   updatedAt: r.updated_at ? iso(r.updated_at) : null,
   deletedAt: r.deleted_at ? iso(r.deleted_at) : null,
   ears: r.ears ?? null,
+  rule: r.rule ?? null,
 });
 const toVersion = (r: any): RequirementVersion => ({
   requirementId: r.requirement_id,
@@ -333,6 +339,20 @@ const toWebhook = (r: any): Webhook => ({
   createdBy: r.created_by,
   createdAt: iso(r.created_at),
 });
+const toReview = (r: any): Review => ({
+  id: r.id,
+  projectId: r.project_id,
+  code: r.code,
+  snapshot: r.snapshot,
+  fingerprint: r.fingerprint,
+  note: r.note,
+  requiredApprovals: r.required_approvals,
+  requestedBy: r.requested_by,
+  status: r.status,
+  decisions: r.decisions,
+  createdAt: iso(r.created_at),
+  closedAt: r.closed_at ? iso(r.closed_at) : null,
+});
 const toNfr = (r: any): NfrSheet => ({
   projectId: r.project_id,
   profile: r.profile,
@@ -464,9 +484,9 @@ export class PgStore implements Store {
         );
         const code = `${it.type}-${String((c[0]?.n ?? 0) + 1).padStart(2, "0")}`;
         const { rows } = await client.query(
-          `INSERT INTO requirements(project_id, code, type, title, description, priority, round_id, source, phase_key, ears)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-          [projectId, code, it.type, it.title, it.description, it.priority, it.roundId, it.source, it.phaseKey ?? null, it.ears ? JSON.stringify(it.ears) : null],
+          `INSERT INTO requirements(project_id, code, type, title, description, priority, round_id, source, phase_key, ears, rule)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+          [projectId, code, it.type, it.title, it.description, it.priority, it.roundId, it.source, it.phaseKey ?? null, it.ears ? JSON.stringify(it.ears) : null, it.rule ? JSON.stringify(it.rule) : null],
         );
         out.push(toReq(rows[0]));
       }
@@ -506,7 +526,7 @@ export class PgStore implements Store {
         [id, r.version, r.title, r.description, r.priority, actor, reason],
       );
       const { rows } = await client.query(
-        `UPDATE requirements SET title = $2, description = $3, priority = $4, ears = $5, version = version + 1, updated_at = now()
+        `UPDATE requirements SET title = $2, description = $3, priority = $4, ears = $5, rule = $6, version = version + 1, updated_at = now()
          WHERE id = $1 RETURNING *`,
         [
           id,
@@ -514,6 +534,7 @@ export class PgStore implements Store {
           patch.description ?? r.description,
           patch.priority ?? r.priority,
           patch.ears === undefined ? (r.ears === null || r.ears === undefined ? null : JSON.stringify(r.ears)) : patch.ears ? JSON.stringify(patch.ears) : null,
+          patch.rule === undefined ? (r.rule === null || r.rule === undefined ? null : JSON.stringify(r.rule)) : patch.rule ? JSON.stringify(patch.rule) : null,
         ],
       );
       await client.query("COMMIT");
@@ -975,5 +996,47 @@ export class PgStore implements Store {
   }
   async recordWebhookDelivery(id: string, status: string) {
     await this.pool.query("UPDATE webhooks SET last_status = $2, last_at = now() WHERE id = $1", [id, status]);
+  }
+
+  async updateProjectSettings(id: string, settings: ProjectSettings) {
+    const { rows } = await this.pool.query("UPDATE projects SET settings = $2 WHERE id = $1 RETURNING *", [id, JSON.stringify(settings)]);
+    return rows[0] ? toProject(rows[0]) : null;
+  }
+  async getProjectSheet<T>(projectId: string, kind: ProjectSheetKind): Promise<ProjectSheet<T> | null> {
+    const { rows } = await this.pool.query("SELECT * FROM project_sheets WHERE project_id = $1 AND kind = $2", [projectId, kind]);
+    const r = rows[0];
+    return r ? { projectId: r.project_id, kind: r.kind, data: r.data, updatedBy: r.updated_by, updatedAt: iso(r.updated_at) } : null;
+  }
+  async saveProjectSheet<T>(projectId: string, kind: ProjectSheetKind, data: T, updatedBy: string): Promise<ProjectSheet<T>> {
+    const { rows } = await this.pool.query(
+      `INSERT INTO project_sheets(project_id, kind, data, updated_by, updated_at) VALUES ($1,$2,$3,$4, now())
+       ON CONFLICT (project_id, kind) DO UPDATE SET data = EXCLUDED.data, updated_by = EXCLUDED.updated_by, updated_at = now() RETURNING *`,
+      [projectId, kind, JSON.stringify(data), updatedBy],
+    );
+    const r = rows[0];
+    return { projectId: r.project_id, kind: r.kind, data: r.data, updatedBy: r.updated_by, updatedAt: iso(r.updated_at) };
+  }
+  async addReview(r: Omit<Review, "id" | "code" | "status" | "decisions" | "createdAt" | "closedAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO reviews(project_id, code, snapshot, fingerprint, note, required_approvals, requested_by)
+       VALUES ($1, (SELECT 'RV-' || lpad((count(*) + 1)::text, 3, '0') FROM reviews WHERE project_id = $1), $2, $3, $4, $5, $6) RETURNING *`,
+      [r.projectId, JSON.stringify(r.snapshot), r.fingerprint, r.note, r.requiredApprovals, r.requestedBy],
+    );
+    return toReview(rows[0]);
+  }
+  async getReview(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM reviews WHERE id = $1", [id]);
+    return rows[0] ? toReview(rows[0]) : null;
+  }
+  async listReviews(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM reviews WHERE project_id = $1 ORDER BY created_at DESC, code DESC", [projectId]);
+    return rows.map(toReview);
+  }
+  async updateReview(id: string, patch: Partial<Pick<Review, "status" | "decisions" | "closedAt">>) {
+    const cur = await this.getReview(id);
+    if (!cur) return null;
+    const next = { ...cur, ...patch };
+    const { rows } = await this.pool.query("UPDATE reviews SET status = $2, decisions = $3, closed_at = $4 WHERE id = $1 RETURNING *", [id, next.status, JSON.stringify(next.decisions), next.closedAt]);
+    return rows[0] ? toReview(rows[0]) : null;
   }
 }

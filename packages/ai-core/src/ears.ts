@@ -145,6 +145,6 @@ export const EARS_INSTRUCTIONS = `- 機能要件（FR）と非機能要件（NFR
   - trigger: きっかけとなる出来事（例「利用者が予約を確定した」「決済に失敗した」）。state: 継続する状態（例「予約の受付期間中である」）。feature: 任意の機能（例「多言語表示の機能」）
   - system: 主語となるシステム名（例「予約システム」）。response: システムの応答を「〜しなければならない」で終える（例「予約確認メールを3分以内に送信しなければならない」）
   - 1要件に1つの応答。「など」「適切に」「必要に応じて」「なるべく」などの解釈が分かれる言葉は使わない。数値が不明なら questions で確認する
-- 目的（BR）・利用者（AC）・制約条件（CN）は ears を付けず、title に1文で書く`;
+- 目的（BR）・利用者（AC）・業務ルール（RL）・制約条件（CN）は ears を付けず、title に1文で書く`;
 
 export const EARS_SHAPE = `"ears": { "pattern": "event", "trigger": "...", "state": "", "feature": "", "system": "...", "response": "...しなければならない" }`;

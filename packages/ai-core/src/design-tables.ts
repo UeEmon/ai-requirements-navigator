@@ -5,6 +5,7 @@
  *   - 外部とのやり取りの一覧
  * 古い設計モデル（キーや権限を持たない）でも壊れないように、無い値は空として扱う。
  */
+import { INPUT_KINDS, OUTPUT_KINDS, type ScreenModel } from "./screens.js";
 import type { UmlModel } from "./uml.js";
 
 export interface Table {
@@ -43,9 +44,71 @@ export function dataDictionary(m: UmlModel | null | undefined): Table {
 /** エンティティの一覧（業務の言葉とコード上の名前の対応、根拠の要件） */
 export function entityTable(m: UmlModel | null | undefined): Table {
   return {
-    head: ["業務の言葉", "コード上の名前", "項目数", "根拠の要件"],
-    rows: (m?.classes ?? []).map((c) => [c.label ?? c.name, c.name, String(c.attributes?.length ?? 0), (c.requirementCodes ?? []).join(", ")]),
+    head: ["業務の言葉", "コード上の名前", "項目数", "保存期間・削除", "根拠の要件"],
+    rows: (m?.classes ?? []).map((c) => [c.label ?? c.name, c.name, String(c.attributes?.length ?? 0), c.retention ?? "", (c.requirementCodes ?? []).join(", ")]),
   };
+}
+
+/** 状態が変わる条件（状態遷移とその条件） */
+export function stateTable(m: UmlModel | null | undefined): Table {
+  return {
+    head: ["対象", "変わる前", "変わった後", "きっかけ", "条件"],
+    rows: (m?.stateMachines ?? []).flatMap((sm) => sm.transitions.map((t) => [sm.entity, t.from, t.to, t.event ?? "", t.guard ?? ""])),
+  };
+}
+
+const OUTPUT_KIND: Record<string, string> = { report: "帳票", file: "ファイル", notice: "通知" };
+
+/** 帳票・出力の一覧 */
+export function outputTable(m: UmlModel | null | undefined): Table {
+  return {
+    head: ["ID", "名前", "種類", "目的", "いつ", "受け取る人", "載せる項目", "根拠の要件"],
+    rows: (m?.outputs ?? []).map((o, i) => [`OUT-${String(i + 1).padStart(2, "0")}`, o.name, OUTPUT_KIND[o.kind] ?? o.kind, o.purpose, o.timing, o.recipients, o.items.join("、"), o.requirementCodes.join(", ")]),
+  };
+}
+
+/** まとめて行う処理（バッチ）の一覧 */
+export function batchTable(m: UmlModel | null | undefined): Table {
+  return {
+    head: ["ID", "名前", "いつ", "入力", "出力", "失敗したときの扱い", "根拠の要件"],
+    rows: (m?.batches ?? []).map((b, i) => [`BAT-${String(i + 1).padStart(2, "0")}`, b.name, b.timing, b.input, b.output, b.failure, b.requirementCodes.join(", ")]),
+  };
+}
+
+/** 項目を「エンティティ.項目」で探す（エンティティ・項目とも、コード上の名前か業務の言葉で書いてよい） */
+export function resolveField(m: UmlModel | null | undefined, ref: string | undefined) {
+  if (!ref || !m) return null;
+  const [cn, an] = ref.split(".");
+  const c = m.classes.find((x) => x.name === cn || x.label === cn);
+  const a = c?.attributes.find((x) => x.name === an || x.label === an);
+  return c && a ? { entity: c, attribute: a } : null;
+}
+
+/** 画面の入出力項目（画面の要素と、データ項目定義のひも付け） */
+export function screenItemTable(screens: ScreenModel | null | undefined, m: UmlModel | null | undefined): Table & { unbound: string[]; unknown: string[] } {
+  const rows: string[][] = [];
+  const unbound: string[] = [];
+  const unknown: string[] = [];
+  for (const s of screens?.screens ?? []) {
+    for (const e of s.elements) {
+      const io = INPUT_KINDS.includes(e.kind) ? "入力" : OUTPUT_KINDS.includes(e.kind) ? "表示" : "";
+      if (!io) continue;
+      const r = resolveField(m, e.field);
+      if (!e.field && io === "入力") unbound.push(`${s.key} ${s.name}「${e.label}」`);
+      if (e.field && !r) unknown.push(`${s.key} ${s.name}「${e.label}」→ ${e.field}`);
+      rows.push([
+        `${s.key} ${s.name}`,
+        e.label,
+        io,
+        r ? `${r.entity.label ?? r.entity.name}.${r.attribute.label ?? r.attribute.name}` : e.field ? `（設計にない：${e.field}）` : "",
+        r ? `${r.entity.name}.${r.attribute.name}` : "",
+        r?.attribute.required ? "必須" : "",
+        r?.attribute.rule ?? "",
+        (r?.attribute.values ?? []).join(" / "),
+      ]);
+    }
+  }
+  return { head: ["画面", "項目", "入出力", "データ項目", "コード上の名前", "必須", "業務上の制約", "区分値"], rows, unbound, unknown };
 }
 
 /** 権限表（行: 役割、列: エンティティ） */
@@ -69,7 +132,7 @@ export function crudMatrix(m: UmlModel | null | undefined): Table {
 /** 外部とのやり取り */
 export function interfaceTable(m: UmlModel | null | undefined): Table {
   return {
-    head: ["ID", "名前", "相手", "方向", "方式", "タイミング", "受け渡すデータ", "根拠の要件"],
+    head: ["ID", "名前", "相手", "方向", "方式", "タイミング", "受け渡すデータ", "つながらないときの扱い", "根拠の要件"],
     rows: (m?.interfaces ?? []).map((i, n) => [
       `IF-${String(n + 1).padStart(2, "0")}`,
       i.name,
@@ -78,6 +141,7 @@ export function interfaceTable(m: UmlModel | null | undefined): Table {
       i.method ?? "",
       i.timing ?? "",
       i.data ?? "",
+      i.failure ?? "",
       (i.requirementCodes ?? []).join(", "),
     ]),
   };
@@ -97,5 +161,10 @@ export function designCompleteness(m: UmlModel | null | undefined) {
     permissions: m?.permissions?.length ?? 0,
     interfaces: m?.interfaces?.length ?? 0,
     classesWithoutReq: (m?.classes ?? []).filter((c) => !(c.requirementCodes ?? []).length).length,
+    withRetention: (m?.classes ?? []).filter((c) => (c.retention ?? "").trim()).length,
+    interfacesWithoutFailure: (m?.interfaces ?? []).filter((i) => !(i.failure ?? "").trim()).map((i) => i.name),
+    batchesWithoutFailure: (m?.batches ?? []).filter((b) => !(b.failure ?? "").trim()).map((b) => b.name),
+    outputs: m?.outputs?.length ?? 0,
+    batches: m?.batches?.length ?? 0,
   };
 }

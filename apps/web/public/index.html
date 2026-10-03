@@ -127,7 +127,11 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
   </nav>
 
   <section class="view on" id="v-hear"><div id="hear"></div></section>
-  <section class="view" id="v-reqs"><div class="panel"><div class="scroll" id="reqs"></div><h3 style="margin-top:20px">決定記録</h3><div id="decs"></div></div></section>
+  <section class="view" id="v-reqs"><div class="panel"><div class="scroll" id="reqs"></div><h3 style="margin-top:20px">決定記録</h3><div id="decs"></div></div>
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div><h2 style="margin:0">用語集</h2><p class="hint" style="margin:4px 0 0">業務の言葉の意味と、コード上の名前をそろえます。「言い換え」に入れた言葉を要件文で使うと、表記ゆれとして知らせます。</p></div>
+      <div class="row"><button class="btn sm" id="gGen">AIで用語集を作る</button></div></div>
+      <div id="gMsg"></div><div id="gBody"></div></div></section>
   <section class="view" id="v-uml">
     <div class="panel"><div class="row" style="justify-content:space-between;align-items:center">
       <div><h2 style="margin:0">UML</h2><p class="hint" id="umlInfo" style="margin:4px 0 0"></p></div>
@@ -197,6 +201,9 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
       <div><h2 style="margin:0">着手前チェック</h2><p class="hint" style="margin:4px 0 0">要件定義の成果物が、コーディングとテストの工程に引き渡せる状態かを点検します。△・× の項目は、右のボタンから直す画面に移れます。</p></div>
       <div class="row"><button class="btn sm ghost" data-hfile="handoff.json">引き継ぎパッケージ（JSON）</button><button class="btn sm ghost" data-hfile="tests.csv">テストケース（CSV）</button></div></div>
       <div id="hoReady"></div></div>
+    <div class="panel"><h2 style="margin:0">受け入れ基準</h2>
+      <p class="hint" style="margin:4px 0 0">何を満たせば受け入れるかを、要件定義のうちに決めておきます。テスト結果が報告されると、ここで判定できます。</p>
+      <div id="hoAccept"></div></div>
     <div class="panel"><h2 style="margin:0">設計の材料</h2>
       <p class="hint" style="margin:4px 0 0">採用した設計モデル（UML）から作った、データ項目定義・権限表・外部とのやり取りです。物理設計（テーブル定義・API仕様）は設計工程でこれを元に行います。</p>
       <div id="hoDesign"></div></div>
@@ -210,7 +217,9 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
       <div id="hoConnect"></div></div>
   </section>
   <section class="view" id="v-change">
+    <div class="panel" id="reviewPanel"></div>
     <div class="panel" id="basePanel"></div>
+    <div class="panel" id="diffPanel" hidden></div>
     <div class="panel" id="crForm"></div>
     <div class="panel"><h2 style="margin:0">変更要求</h2><div id="crList"></div></div>
     <div class="panel" id="crDetail" hidden></div>
@@ -236,7 +245,8 @@ const canEdit = () => ["admin","editor"].includes(S.role);
 
 function authHeaders(){
   const h = {};
-  if (S.meta?.auth === "dev") { h["x-org-id"] = S.orgId; h["x-role"] = S.role; }
+  // 開発用ログインでは役割ごとに別の利用者として扱う（依頼した人と承認する人を分けて試せるように）
+  if (S.meta?.auth === "dev") { h["x-org-id"] = S.orgId; h["x-role"] = S.role; h["x-user-id"] = `dev-${S.role}`; }
   else if (S.token) h["authorization"] = "Bearer " + S.token;
   return h;
 }
@@ -652,9 +662,27 @@ async function sendAnswer(){
   }catch(e){ $("#roundOut").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   finally{ if($("#send")){ $("#send").disabled=false; $("#sendMsg").textContent="" } }
 }
+const RULE_KIND={calc:"計算",judge:"判定",constraint:"制約",transition:"状態が変わる条件"};
+/** 業務ルールの種類と具体例 */
+function ruleHtml(rule){
+  if(!rule) return "";
+  return `<div class="cmt"><span class="tag">${RULE_KIND[rule.kind]||esc(rule.kind)}</span> ${(rule.examples||[]).map(e=>`${esc(e.given)} → <b>${esc(e.expected)}</b>`).join("／")||"具体例なし"}</div>`;
+}
 function itemsHtml(items, key, checked=true){
   return `<ul>${items.map((it,i)=>`<li><label><input type="checkbox" data-k="${key}" data-i="${i}" ${checked?"checked":""}>
-    <span>${esc(it.title)} <span class="tag">${it.type}/${it.priority}</span>${it.description?`<br><span class="cmt">${esc(it.description)}</span>`:""}</span></label></li>`).join("")}</ul>`;
+    <span>${esc(it.title)} <span class="tag">${it.type}/${it.priority}</span>${it.description?`<br><span class="cmt">${esc(it.description)}</span>`:""}${it.type==="RL"?ruleHtml(it.rule):""}</span></label></li>`).join("")}</ul>`;
+}
+/** 業務ルールの具体例の編集欄（1行に「条件 => 結果」） */
+function ruleEditor(pre, rule){
+  rule=rule||{kind:"judge",examples:[],entities:[]};
+  return `<div style="border:1px dashed var(--rule);border-radius:6px;padding:8px 10px;display:flex;flex-direction:column;gap:6px">
+    <div class="row" style="align-items:flex-end"><label class="f">種類<select id="${pre}-kind">${Object.entries(RULE_KIND).map(([k,v])=>`<option value="${k}" ${k===rule.kind?"selected":""}>${v}</option>`).join("")}</select></label>
+      <label class="f" style="flex:1">関係するデータ（読点で区切る）<input id="${pre}-ent" value="${esc((rule.entities||[]).join("、"))}" placeholder="例：予約、料金"></label></div>
+    <label class="f">具体例（1行に1つ。「条件 => 結果」。境界の値を含めて2つ以上）<textarea id="${pre}-ex" rows="3" placeholder="大人2人・平日 => 4,000円">${esc((rule.examples||[]).map(e=>`${e.given} => ${e.expected}`).join("\n"))}</textarea></label></div>`;
+}
+function readRule(pre){
+  const examples=$("#"+pre+"-ex").value.split("\n").map(l=>l.split("=>")).filter(x=>x.length>=2&&x[0].trim()&&x.slice(1).join("=>").trim()).map(x=>({given:x[0].trim(),expected:x.slice(1).join("=>").trim()}));
+  return {kind:$("#"+pre+"-kind").value, examples, entities:$("#"+pre+"-ent").value.split(/[、,]/).map(x=>x.trim()).filter(Boolean)};
 }
 function renderRound(){
   const r=S.round, ev=r.evaluation, out=$("#roundOut");
@@ -694,19 +722,20 @@ async function decide(pick){
 }
 
 /* ---------- 要件・UML・仕様書 ---------- */
-const TYPE={BR:"目的",AC:"利用者",FR:"機能",NFR:"非機能",CN:"制約"}, PRI={must:"必須",should:"推奨",could:"任意"};
+const TYPE={BR:"目的",AC:"利用者",FR:"機能",RL:"業務ルール",NFR:"非機能",CN:"制約"}, PRI={must:"必須",should:"推奨",could:"任意"};
 async function loadReqs(){
   if(!S.project){$("#reqs").innerHTML='<p class="hint">プロジェクトを開いてください</p>';$("#decs").innerHTML="";return}
   const [reqs,decs]=await Promise.all([api(`/api/projects/${S.project.id}/requirements`),api(`/api/projects/${S.project.id}/decisions`)]);
   const ed=canEdit(), locked=!!S.baseline;
   $("#reqs").innerHTML=(locked?`<div class="note warn" style="margin:0 0 10px">要件定義は確定済みです（確定版 v${S.baseline.version}）。変更・削除は「変更要求」から行い、後の工程への影響を確認してから決めます。</div>`:"")+`<table class="t"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>優先度</th><th>根拠</th>${ed?"<th></th>":""}</tr></thead><tbody>
     ${reqs.map(r=>`<tr id="rq-${r.id}"><td class="mono">${r.code}${r.version>1?`<br><span class="tag">v${r.version}</span>`:""}</td><td>${TYPE[r.type]}${EARS_TYPES.includes(r.type)&&(r.ears||r.lint?.pattern)?`<br><span class="tag">EARS:${EARS_SHORT[(r.ears||{}).pattern||r.lint.pattern]}</span>`:""}</td>
-      <td>${esc(r.title)}${r.lint&&!r.lint.ok?`<div class="cmt" style="color:var(--warn)">⚠ ${r.lint.issues.map(esc).join("／")}</div>`:""}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}<div id="rh-${r.id}"></div></td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td>
+      <td>${esc(r.title)}${r.type==="RL"?ruleHtml(r.rule):""}${r.lint&&!r.lint.ok?`<div class="cmt" style="color:var(--warn)">⚠ ${r.lint.issues.map(esc).join("／")}</div>`:""}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}<div id="rh-${r.id}"></div></td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td>
       ${ed?`<td style="white-space:nowrap">${locked?`<button class="btn sm ghost" data-rcr="${r.id}">変更要求</button>`:`<button class="btn sm ghost" data-redit="${r.id}">編集</button>`} <button class="btn sm ghost" data-rhist="${r.id}">履歴</button> ${locked?"":`<button class="btn sm danger" data-rdel="${r.id}">削除</button>`}</td>`:""}</tr>
       ${ed?`<tr id="re-${r.id}" hidden><td colspan="6"><div style="display:flex;flex-direction:column;gap:8px">
         ${EARS_TYPES.includes(r.type)?`${earsEditor("ee-"+r.id, r.ears||{pattern:r.lint?.pattern||"ubiquitous",trigger:"",state:"",feature:"",system:"システム",response:r.title.replace(/。$/,"")})}
         <details id="reTW-${r.id}"><summary class="hint">EARS の構造を使わず、文で直接書く</summary><label class="f">内容<textarea id="reT-${r.id}" rows="2">${esc(r.title)}</textarea></label></details>`
         :`<label class="f">内容<textarea id="reT-${r.id}" rows="2">${esc(r.title)}</textarea></label>`}
+        ${r.type==="RL"?ruleEditor("rr-"+r.id, r.rule):""}
         <label class="f">補足<textarea id="reD-${r.id}" rows="2">${esc(r.description)}</textarea></label>
         <div class="row"><label class="f">優先度<select id="reP-${r.id}">${Object.entries(PRI).map(([k,v])=>`<option value="${k}" ${k===r.priority?"selected":""}>${v}</option>`).join("")}</select></label>
           <label class="f" style="flex:1">変更理由（任意）<input id="reR-${r.id}" placeholder="例：数値を明確にした"></label>
@@ -721,6 +750,7 @@ async function loadReqs(){
     const useEars=q("ee-"+id+"-box") && !q("reTW-"+id).open;
     const body={description:q("reD-"+id).value.trim(),priority:q("reP-"+id).value,reason:q("reR-"+id).value.trim()};
     if(useEars) body.ears=readEars("ee-"+id); else body.title=q("reT-"+id).value.trim();
+    if(q("rr-"+id+"-kind")) body.rule=readRule("rr-"+id);
     try{ await api(`/api/requirements/${id}`,{method:"PATCH",body}); toast("要件を更新しました（変更前の内容は履歴に残ります）"); loadReqs() }
     catch(e){ q("reM-"+id).innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   });
@@ -734,6 +764,7 @@ async function loadReqs(){
       box.innerHTML=v.history.length?`<div class="cmt" style="margin-top:6px;border-left:2px solid var(--rule);padding-left:8px">${v.history.map(h=>`v${h.version}（${h.createdAt.slice(0,16).replace("T"," ")}・${esc(h.changedBy)}${h.changeReason?`・${esc(h.changeReason)}`:""}）：${esc(h.title)}／${PRI[h.priority]||h.priority}`).join("<br>")}</div>`:`<div class="cmt">変更履歴はありません</div>`;
     }catch(e){ toast(e.message) }
   });
+  loadGlossary();
   $("#decs").innerHTML=decs.map(d=>`<div class="hint">${d.createdAt.slice(0,16).replace("T"," ")}　${esc(d.pick)}を採用 — ${esc(d.reason||"（理由未入力）")}　<span class="mono">${Object.entries(d.mapping).map(([l,n])=>esc(l+"="+n)).join(" / ")}</span></div>`).join("")||'<p class="hint">まだありません</p>';
 }
 /* ---------- UML ---------- */
@@ -1006,7 +1037,7 @@ async function loadHandoff(){
   try{
     const [r,d,t]=await Promise.all([api(`/api/projects/${S.project.id}/readiness`), api(`/api/projects/${S.project.id}/design/tables`), api(`/api/projects/${S.project.id}/tests`)]);
     hoState.tests=t; renderReadiness(r); renderDesignTables(d); renderTests();
-    loadConnectStatus();
+    loadConnectStatus(); loadAcceptance();
   }catch(e){ $("#hoReady").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
 function renderReadiness(r){
@@ -1025,7 +1056,11 @@ function renderDesignTables(d){
   $("#hoDesign").innerHTML=`<details open><summary><b>エンティティ</b>（${d.entities.rows.length}）</summary>${tableHtml(d.entities)}</details>
     <details open><summary><b>データ項目定義</b>（${d.data.rows.length}）</summary>${tableHtml(d.data)}</details>
     <details><summary><b>権限表</b>（${d.crud.rows.length}役割）</summary>${tableHtml(d.crud)}</details>
-    <details><summary><b>外部とのやり取り</b>（${d.interfaces.rows.length}）</summary>${tableHtml(d.interfaces)}</details>`;
+    <details><summary><b>外部とのやり取り</b>（${d.interfaces.rows.length}）</summary>${tableHtml(d.interfaces)}</details>
+    <details><summary><b>画面の入出力項目</b>（${d.screenItems.rows.length}）</summary>${d.screenItemIssues.unbound.length?`<div class="note warn">データ項目にひも付いていない入力項目：${d.screenItemIssues.unbound.map(esc).join("、")}</div>`:""}${tableHtml(d.screenItems)}</details>
+    <details><summary><b>状態が変わる条件</b>（${d.states.rows.length}）</summary>${tableHtml(d.states)}</details>
+    <details><summary><b>帳票・出力</b>（${d.outputs.rows.length}）</summary>${tableHtml(d.outputs)}</details>
+    <details><summary><b>まとめて行う処理（バッチ）</b>（${d.batches.rows.length}）</summary>${tableHtml(d.batches)}</details>`;
 }
 function renderTests(){
   const t=hoState.tests; if(!t) return;
@@ -1048,6 +1083,137 @@ document.querySelectorAll("[data-hfile]").forEach(b=>b.onclick=async()=>{
     saveBlob(await res.blob(), `${fileSafe(S.project.name)}_${f==="tests.csv"?"テストケース.csv":"引き継ぎ.json"}`);
   }catch(e){ toast(e.message) }
 });
+
+/* ---------- 用語集 ---------- */
+const gState={terms:[]};
+async function loadGlossary(){
+  if(!S.project){ $("#gBody").innerHTML=""; return }
+  $("#gGen").hidden=!canEdit();
+  try{ const g=await api(`/api/projects/${S.project.id}/glossary`); gState.terms=g.terms.map(t=>({...t})); renderGlossary(g) }
+  catch(e){ $("#gMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+}
+function renderGlossary(g){
+  const ed=canEdit(), SRC={ai:"AI",design:"設計",manual:"手入力"};
+  $("#gMsg").innerHTML=g.variants.length?`<div class="note warn">表記ゆれ：${g.variants.map(v=>`${esc(v.code)}「${esc(v.used)}」→「${esc(v.term)}」`).join("、")}</div>`:"";
+  $("#gBody").innerHTML=`<div class="scroll"><table class="t"><thead><tr><th>用語</th><th>意味</th><th>言い換え（使わない。読点で区切る）</th><th>コード上の名前</th><th>出どころ</th>${ed?"<th></th>":""}</tr></thead><tbody>
+    ${gState.terms.map((t,i)=>ed?`<tr><td><input data-g="${i}" data-f="term" value="${esc(t.term)}" style="width:9em"></td><td><textarea data-g="${i}" data-f="definition" rows="2" style="width:100%;min-width:14em">${esc(t.definition)}</textarea></td>
+      <td><input data-g="${i}" data-f="synonyms" value="${esc(t.synonyms.join("、"))}"></td><td><input class="mono" data-g="${i}" data-f="codeName" value="${esc(t.codeName)}" style="width:9em"></td><td class="hint">${SRC[t.source]||t.source}</td>
+      <td><button class="btn sm danger" data-gdel="${i}">削除</button></td></tr>`
+      :`<tr><td><b>${esc(t.term)}</b></td><td>${esc(t.definition)}</td><td>${esc(t.synonyms.join("、"))}</td><td class="mono">${esc(t.codeName)}</td><td class="hint">${SRC[t.source]||t.source}</td></tr>`).join("")||`<tr><td colspan="6" class="hint">まだありません。${ed?"「AIで用語集を作る」か「行を追加」で作ってください。":""}</td></tr>`}</tbody></table></div>
+    ${ed?`<div class="row" style="margin-top:8px"><button class="btn sm ghost" id="gAdd">行を追加</button><button class="btn sm" id="gSave">保存</button>${g.updatedAt?`<span class="hint">最終更新：${esc(g.updatedAt.slice(0,16).replace("T"," "))}・${esc(g.updatedBy||"")}</span>`:""}</div>`:""}`;
+  if(!ed) return;
+  const pull=()=>document.querySelectorAll("[data-g]").forEach(el=>{const t=gState.terms[+el.dataset.g]; const f=el.dataset.f; const v=el.value.trim(); if(f==="synonyms") t.synonyms=v.split(/[、,]/).map(x=>x.trim()).filter(Boolean); else t[f]=v; if(t.source!=="manual"&&el.dataset.dirty) t.source="manual"});
+  document.querySelectorAll("[data-g]").forEach(el=>el.oninput=()=>{el.dataset.dirty="1"});
+  $("#gAdd").onclick=()=>{ pull(); gState.terms.push({term:"",definition:"",synonyms:[],codeName:"",source:"manual"}); renderGlossary(g) };
+  document.querySelectorAll("[data-gdel]").forEach(b=>b.onclick=()=>{ pull(); gState.terms.splice(+b.dataset.gdel,1); renderGlossary(g) });
+  $("#gSave").onclick=async()=>{
+    pull(); const terms=gState.terms.filter(t=>t.term);
+    try{ const r=await api(`/api/projects/${S.project.id}/glossary`,{method:"PUT",body:{terms}}); gState.terms=r.terms.map(t=>({...t})); renderGlossary(r); toast("用語集を保存しました") }
+    catch(e){ $("#gMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+}
+$("#gGen").onclick=async()=>{
+  if(!S.project) return;
+  const b=$("#gGen"); b.disabled=true; $("#gMsg").innerHTML='<p class="hint">AIが要件と設計から用語集を作っています…（手入力した用語は変えません）</p>';
+  try{ const g=await api(`/api/projects/${S.project.id}/glossary/generate`,{method:"POST",body:{}}); gState.terms=g.terms.map(t=>({...t})); renderGlossary(g); toast("用語集を作りました") }
+  catch(e){ $("#gMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  finally{ b.disabled=false }
+};
+
+/* ---------- 受け入れ基準 ---------- */
+async function loadAcceptance(){
+  if(!S.project){ $("#hoAccept").innerHTML=""; return }
+  try{ renderAcceptance(await api(`/api/projects/${S.project.id}/acceptance`)) }catch(e){ $("#hoAccept").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+}
+function renderAcceptance(a){
+  const c=a.criteria, ed=canEdit(), canCheck=["admin","editor","reviewer"].includes(S.role);
+  const ev=a.evaluation;
+  $("#hoAccept").innerHTML=`${a.defined?"":'<div class="note warn" style="margin-top:8px">まだ決めていません。下は既定の基準です。内容を確かめて保存してください。</div>'}
+    <div class="row" style="margin:10px 0;gap:18px"><span>判定 <b class="st ${ev.accepted?"good":"warn"}" style="font-size:14px">${ev.accepted?"受け入れ基準を満たしています":"受け入れ基準を満たしていません"}</b></span></div>
+    <div class="scroll"><table class="t"><thead><tr><th>条件</th><th>基準</th><th>いま</th><th></th></tr></thead><tbody>
+    ${ev.items.map(i=>`<tr><td>${esc(i.label)}</td><td>${esc(i.target)}</td><td>${esc(i.actual)}</td><td><span class="st ${i.ok?"good":"warn"}">${i.ok?"○":"△"}</span>
+      ${i.key.startsWith("custom:")&&canCheck&&a.defined?` <button class="btn sm ghost" data-acheck="${esc(i.key.slice(7))}" data-on="${i.ok?"0":"1"}">${i.ok?"確認を取り消す":"確認した"}</button>`:""}</td></tr>`).join("")}</tbody></table></div>
+    ${ed?`<details style="margin-top:8px" ${a.defined?"":"open"}><summary><b>基準を変える</b></summary>
+      <div class="row" style="align-items:flex-end;margin-top:6px">
+        <label class="f">必須の要件の合格率（%）<input type="number" id="acMust" min="0" max="100" value="${c.mustPassRate}" style="width:7em"></label>
+        <label class="f">推奨の要件の合格率（%）<input type="number" id="acShould" min="0" max="100" value="${c.shouldPassRate}" style="width:7em"></label>
+        <label class="f">不合格のテストの上限（件）<input type="number" id="acFail" min="0" value="${c.maxFailedTests}" style="width:7em"></label>
+        <label class="cmt"><input type="checkbox" id="acNfr" ${c.nfrAllRun?"checked":""}> 非機能要件のテストをすべて実施</label>
+        <label class="cmt"><input type="checkbox" id="acQ" ${c.questionsClosed?"checked":""}> 開発からの質問がすべて回答済み</label></div>
+      <label class="f" style="margin-top:6px">業務の担当者が確かめること（1行に1つ）<textarea id="acCustom" rows="3">${esc(c.custom.map(x=>x.text).join("\n"))}</textarea></label>
+      <div class="row" style="margin-top:6px"><button class="btn sm" id="acSave">保存</button><span class="hint">文を変えた条件は、確認をやり直します。</span></div></details>`:""}`;
+  document.querySelectorAll("[data-acheck]").forEach(b=>b.onclick=async()=>{
+    try{ renderAcceptance(await api(`/api/projects/${S.project.id}/acceptance/check`,{method:"POST",body:{id:b.dataset.acheck,checked:b.dataset.on==="1"}})) }catch(e){ toast(e.message) }
+  });
+  if($("#acSave")) $("#acSave").onclick=async()=>{
+    const lines=$("#acCustom").value.split("\n").map(x=>x.trim()).filter(Boolean);
+    const custom=lines.map((text,i)=>{ const old=c.custom.find(x=>x.text===text); return {id:old?.id||`C${i+1}`, text, checked:false, checkedBy:null, checkedAt:null} });
+    // IDの重複を避ける
+    const seen=new Set(); custom.forEach((x,i)=>{ while(seen.has(x.id)) x.id=`C${i+1}${seen.size}`; seen.add(x.id) });
+    const criteria={mustPassRate:+$("#acMust").value, shouldPassRate:+$("#acShould").value, maxFailedTests:+$("#acFail").value, nfrAllRun:$("#acNfr").checked, questionsClosed:$("#acQ").checked, custom};
+    try{ renderAcceptance(await api(`/api/projects/${S.project.id}/acceptance`,{method:"PUT",body:{criteria}})); toast("受け入れ基準を保存しました") }catch(e){ toast(e.message) }
+  };
+}
+
+/* ---------- レビューと承認 ---------- */
+const RV_ST={open:["承認待ち","warn"],approved:["承認","good"],rejected:["差し戻し","bad"],withdrawn:["取り下げ",""]};
+const AP_ST={approved:["いまの要件の内容で承認されています","good"],pending:["承認を待っています","warn"],rejected:["差し戻されています","bad"],stale:["承認した後に要件が変わりました（もう一度依頼してください）","warn"],none:["レビューを依頼していません",""]};
+async function loadReviews(){
+  if(!S.project){ $("#reviewPanel").innerHTML=""; return }
+  try{ renderReviews(await api(`/api/projects/${S.project.id}/reviews`)) }catch(e){ $("#reviewPanel").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+}
+function renderReviews(v){
+  const [al,ac]=AP_ST[v.status]||[v.status,""];
+  const canReview=["admin","reviewer","editor"].includes(S.role);
+  $("#reviewPanel").innerHTML=`<h2 style="margin:0">レビューと承認</h2>
+    <p class="hint" style="margin:4px 0 0">要件定義の内容を関係者に確認してもらい、承認を記録します。依頼した人は承認できません。承認した後に要件が変わると、承認は無効になります。</p>
+    <div class="row" style="margin:10px 0;gap:18px"><span>いまの状態 <b class="st ${ac}">${esc(al)}</b></span>
+      <span>確定に承認が<b>${v.settings.approvalRequired?`必要（${v.settings.requiredApprovals}人）`:"不要"}</b></span>
+      ${S.role==="admin"?`<label class="cmt"><input type="checkbox" id="rvReq" ${v.settings.approvalRequired?"checked":""}> 確定に承認を必須にする</label>
+        <label class="cmt">承認の人数 <select id="rvNum">${[1,2,3].map(n=>`<option ${n===v.settings.requiredApprovals?"selected":""}>${n}</option>`).join("")}</select></label>`:""}</div>
+    ${canEdit()&&!S.baseline?`<div class="row" style="align-items:flex-end"><label class="f" style="flex:1">依頼のメモ（任意）<input id="rvNote" placeholder="例：業務部門の確認をお願いします"></label><button class="btn" id="rvGo">いまの要件でレビューを依頼する</button></div>`:""}
+    ${v.reviews.map(r=>{const [l,c]=RV_ST[r.status]||[r.status,""]; return `<div style="border-top:1px solid var(--rule);padding:8px 0;margin-top:8px">
+      <div><span class="mono">${esc(r.code)}</span> <span class="st ${c}">${l}</span> <span class="hint">${esc(r.requestedBy)}・${esc(r.createdAt.slice(0,16).replace("T"," "))}・要件 ${r.requirements}件・承認 ${r.approvals}/${r.requiredApprovals}</span>${r.stale&&r.status!=="withdrawn"?' <span class="tag">依頼後に要件が変更</span>':""}</div>
+      ${r.note?`<div class="cmt">${esc(r.note)}</div>`:""}
+      ${r.decisions.map(d=>`<div class="cmt">${esc(d.at.slice(0,16).replace("T"," "))} ${esc(d.by)}：${d.decision==="approve"?"承認":"差し戻し"}${d.comment?`（${esc(d.comment)}）`:""}</div>`).join("")}
+      ${r.status==="open"&&canReview?`<div class="row" style="align-items:flex-end;margin-top:6px"><label class="f" style="flex:1">コメント（差し戻すときは必須）<input id="rvC-${r.id}"></label>
+        <button class="btn sm" data-rvok="${r.id}" ${r.stale?"disabled":""}>承認する</button><button class="btn sm danger" data-rvng="${r.id}">差し戻す</button>${canEdit()?`<button class="btn sm ghost" data-rvwd="${r.id}">取り下げる</button>`:""}</div>`:""}</div>`}).join("")}
+    <div id="rvMsg"></div>`;
+  const msg=e=>{$("#rvMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>`};
+  if($("#rvGo")) $("#rvGo").onclick=async()=>{ try{ await api(`/api/projects/${S.project.id}/reviews`,{method:"POST",body:{note:$("#rvNote").value.trim()}}); toast("レビューを依頼しました"); loadReviews() }catch(e){ msg(e) } };
+  const decide=async(id,decision)=>{ try{ await api(`/api/reviews/${id}/decide`,{method:"POST",body:{decision,comment:$("#rvC-"+id).value.trim()}}); toast(decision==="approve"?"承認しました":"差し戻しました"); loadReviews() }catch(e){ msg(e) } };
+  document.querySelectorAll("[data-rvok]").forEach(b=>b.onclick=()=>decide(b.dataset.rvok,"approve"));
+  document.querySelectorAll("[data-rvng]").forEach(b=>b.onclick=()=>decide(b.dataset.rvng,"reject"));
+  document.querySelectorAll("[data-rvwd]").forEach(b=>b.onclick=async()=>{ try{ await api(`/api/reviews/${b.dataset.rvwd}/withdraw`,{method:"POST",body:{}}); loadReviews() }catch(e){ msg(e) } });
+  const saveSettings=async()=>{ try{ await api(`/api/projects/${S.project.id}/settings`,{method:"PUT",body:{approvalRequired:$("#rvReq").checked,requiredApprovals:+$("#rvNum").value}}); toast("設定を変えました"); loadReviews() }catch(e){ msg(e) } };
+  if($("#rvReq")){ $("#rvReq").onchange=saveSettings; $("#rvNum").onchange=saveSettings }
+}
+
+/* ---------- 確定版の差分 ---------- */
+const DIFF_F={title:"文",description:"補足",priority:"優先度",type:"区分",detail:"構造・具体例"};
+function renderDiffPanel(){
+  const el=$("#diffPanel"), info=S.baselineInfo||{history:[]};
+  if(!S.baseline){ el.hidden=true; return }
+  el.hidden=false;
+  const opts=info.history.map(h=>`<option value="${h.version}">第${h.version}版（${h.createdAt.slice(0,10)}）</option>`).join("");
+  el.innerHTML=`<h2 style="margin:0">確定版の差分</h2>
+    <p class="hint" style="margin:4px 0 0">版どうし、または確定版といまの要件を比べます。開発・テストの作り直しの範囲（影響するテスト・ストーリー・画面）も示します。</p>
+    <div class="row" style="align-items:flex-end;margin-top:8px"><label class="f">比べる元<select id="dfFrom">${opts}</select></label>
+      <label class="f">比べる先<select id="dfTo"><option value="current">いまの要件</option>${opts}</select></label><button class="btn sm" id="dfGo">比べる</button></div><div id="dfOut"></div>`;
+  if(info.history[1]){ $("#dfFrom").value=String(info.history[1].version); $("#dfTo").value=String(info.history[0].version) }
+  $("#dfGo").onclick=async()=>{
+    try{
+      const d=await api(`/api/projects/${S.project.id}/baselines/diff?from=${$("#dfFrom").value}&to=${$("#dfTo").value}`);
+      const row=(k,code,a,b)=>`<tr><td><span class="st ${k==="追加"?"good":k==="削除"?"bad":"warn"}">${k}</span></td><td class="mono">${esc(code)}</td><td>${a}</td><td>${b}</td></tr>`;
+      $("#dfOut").innerHTML=`<p style="margin:10px 0">追加 <b class="mono">${d.added.length}</b>　変更 <b class="mono">${d.modified.length}</b>　削除 <b class="mono">${d.removed.length}</b>　変わらない <b class="mono">${d.unchanged}</b></p>
+        ${d.added.length+d.modified.length+d.removed.length?`<div class="scroll"><table class="t"><thead><tr><th></th><th>要件</th><th>前</th><th>後</th></tr></thead><tbody>
+        ${d.added.map(x=>row("追加",x.code,"",esc(x.title))).join("")}
+        ${d.modified.map(x=>row("変更",x.code,`${esc(x.before.title)}<br><span class="hint">${x.fields.map(f=>DIFF_F[f]||f).join("・")}が変更（v${x.before.version}→v${x.after.version}）</span>`,esc(x.after.title))).join("")}
+        ${d.removed.map(x=>row("削除",x.code,esc(x.title),"")).join("")}</tbody></table></div>
+        <p class="cmt">影響するテスト：${d.affected.tests.map(esc).join(", ")||"なし"}<br>影響するストーリー：${d.affected.stories.map(s=>esc(s.key)).join(", ")||"なし"}<br>影響する画面：${d.affected.screens.map(s=>esc(`${s.key} ${s.name}`)).join(", ")||"なし"}</p>`:'<p class="hint">違いはありません</p>'}`;
+    }catch(e){ $("#dfOut").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+}
 
 /* ---------- 開発・テストのツールとの連携 ---------- */
 const IMPL={not_started:["未着手",""],in_progress:["実装中","warn"],implemented:["実装済み","good"],blocked:["止まっている","bad"]};
@@ -1112,7 +1278,7 @@ $("#hoPack").onclick=async()=>{
 };
 
 /* ---------- 外部連携のトークンと Webhook（組織の管理者） ---------- */
-const WH_EVENTS={"baseline.created":"確定版の作成","change.decided":"変更の決定","question.created":"開発からの質問","question.answered":"質問への回答","implementation.reported":"実装状況の報告","test_run.recorded":"テスト結果の登録"};
+const WH_EVENTS={"baseline.created":"確定版の作成","change.decided":"変更の決定","review.requested":"レビューの依頼","review.decided":"承認・差し戻し","question.created":"開発からの質問","question.answered":"質問への回答","implementation.reported":"実装状況の報告","test_run.recorded":"テスト結果の登録"};
 async function loadDevConnect(){
   const panel=$("#devPanel"); if(!S.orgId && !S.token){ panel.innerHTML=""; return }
   if(S.role!=="admin"){ panel.innerHTML=`<h2>開発・テストのツールとの連携</h2><p class="hint">AIコーディングツール・CI 用のトークンと Webhook は、組織の管理者が登録します。</p>`; return }
@@ -1577,7 +1743,7 @@ async function loadChange(){
   await loadBaselineState();
   const [list, reqs]=await Promise.all([api(`/api/projects/${S.project.id}/changes`), api(`/api/projects/${S.project.id}/requirements`)]);
   changeState.list=list; changeState.reqs=reqs;
-  renderBaseline(); renderCrForm(); renderCrList();
+  renderBaseline(); renderCrForm(); renderCrList(); loadReviews(); renderDiffPanel();
   if(changeState.selected) renderCrDetail(changeState.list.find(x=>x.id===changeState.selected)); else $("#crDetail").hidden=true;
 }
 function renderBaseline(){
@@ -1613,7 +1779,7 @@ function renderCrForm(){
   const setEars=(e)=>{
     const t=typeNow();
     if(EARS_TYPES.includes(t)){ $("#crEarsW").innerHTML=earsEditor("cre", e); bindEars("cre", t); $("#crTitleW").open=false; $("#crTitleW").querySelector("summary").hidden=false }
-    else { $("#crEarsW").innerHTML=""; $("#crTitleW").open=true; $("#crTitleW").querySelector("summary").hidden=true }
+    else { const r=reqs.find(x=>x.id===$("#crReq").value); $("#crEarsW").innerHTML=t==="RL"?ruleEditor("cre-r", $("#crKind").value==="add"?null:r?.rule):""; $("#crTitleW").open=true; $("#crTitleW").querySelector("summary").hidden=true }
   };
   const fill=()=>{ const r=reqs.find(x=>x.id===$("#crReq").value); if(!r) return; $("#crTitle").value=r.title; $("#crDesc").value=r.description||""; $("#crPri").value=r.priority;
     setEars(r.ears||{pattern:"ubiquitous",trigger:"",state:"",feature:"",system:"システム",response:r.title.replace(/。$/,"")}) };
@@ -1623,7 +1789,8 @@ function renderCrForm(){
     const k=$("#crKind").value, body={kind:k, reason:$("#crReason").value.trim()};
     if(k!=="add") body.requirementId=$("#crReq").value;
     if(k!=="delete"){ body.description=$("#crDesc").value.trim(); body.priority=$("#crPri").value;
-      if($("#cre-box") && !$("#crTitleW").open) body.ears=readEars("cre"); else body.title=$("#crTitle").value.trim() }
+      if($("#cre-box") && !$("#crTitleW").open) body.ears=readEars("cre"); else body.title=$("#crTitle").value.trim();
+      if($("#cre-r-kind")) body.rule=readRule("cre-r") }
     if(k==="add") body.type=$("#crType").value;
     try{ const cr=await api(`/api/projects/${S.project.id}/changes`,{method:"POST",body}); changeState.selected=cr.id; await loadChange(); analyzeChange(cr.id) }
     catch(e){ $("#crMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }

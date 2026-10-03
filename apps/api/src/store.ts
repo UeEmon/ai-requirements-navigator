@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ImplReport, MatchedResults, AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, NfrDecision, NfrProfile, NfrSuggestion, SizingSuggestion, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
+import type { AcceptanceCriteria, BusinessRule, GlossaryTerm, ImplReport, MatchedResults, AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, NfrDecision, NfrProfile, NfrSuggestion, SizingSuggestion, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
 export interface Org {
   id: string;
@@ -51,6 +51,15 @@ export interface Project {
   phaseKey: string;
   aiConfig: AIConfig;
   createdAt: string;
+  /** プロジェクトの決まり（確定に承認が必要か など） */
+  settings?: ProjectSettings;
+}
+
+export interface ProjectSettings {
+  /** 要件定義の確定に、レビューでの承認が必要か */
+  approvalRequired?: boolean;
+  /** 承認に必要な人数（既定 1） */
+  requiredApprovals?: number;
 }
 
 export interface StoredCandidate {
@@ -90,6 +99,8 @@ export interface Requirement {
   deletedAt: string | null;
   /** 機能要件・非機能要件の EARS の構造（title はここから組み立てた文） */
   ears: Ears | null;
+  /** 業務ルール（RL）の種類と具体例 */
+  rule?: BusinessRule | null;
 }
 
 export interface RequirementVersion {
@@ -103,7 +114,7 @@ export interface RequirementVersion {
   createdAt: string;
 }
 
-export type RequirementPatch = Partial<Pick<Requirement, "title" | "description" | "priority" | "ears">>;
+export type RequirementPatch = Partial<Pick<Requirement, "title" | "description" | "priority" | "ears" | "rule">>;
 
 export interface AuditEntry {
   id: string;
@@ -284,7 +295,7 @@ export interface ChangeRequest {
   requirementId: string | null;
   requirementCode: string | null;
   /** 変更後（modify / add） */
-  proposal: { title: string; description: string; priority: RequirementItem["priority"]; type: RequirementType; ears?: Ears | null } | null;
+  proposal: { title: string; description: string; priority: RequirementItem["priority"]; type: RequirementType; ears?: Ears | null; rule?: BusinessRule | null } | null;
   reason: string;
   status: ChangeStatus;
   impact: ImpactReport | null;
@@ -416,8 +427,39 @@ export interface AgentQuestion {
   createdAt: string;
 }
 
-export const WEBHOOK_EVENTS = ["baseline.created", "change.decided", "question.created", "question.answered", "implementation.reported", "test_run.recorded"] as const;
+export const WEBHOOK_EVENTS = ["baseline.created", "change.decided", "review.requested", "review.decided", "question.created", "question.answered", "implementation.reported", "test_run.recorded"] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
+/** 要件定義の補足（用語集・受け入れ基準）。kind ごとに1つ */
+export type ProjectSheetKind = "glossary" | "acceptance";
+export interface ProjectSheet<T = unknown> {
+  projectId: string;
+  kind: ProjectSheetKind;
+  data: T;
+  updatedBy: string;
+  updatedAt: string;
+}
+export type GlossarySheet = { terms: GlossaryTerm[] };
+export type AcceptanceSheet = AcceptanceCriteria;
+
+/** 要件定義のレビュー（承認の依頼と、承認者の判断） */
+export interface Review {
+  id: string;
+  projectId: string;
+  /** RV-001（プロジェクトごとの連番） */
+  code: string;
+  /** 依頼したときの要件（確定版と同じ形） */
+  snapshot: Array<{ code: string; type: string; title: string; description: string; priority: string; version: number }>;
+  /** 要件の内容の指紋。いまの要件と違えば、承認は古い */
+  fingerprint: string;
+  note: string;
+  requiredApprovals: number;
+  requestedBy: string;
+  status: "open" | "approved" | "rejected" | "withdrawn";
+  decisions: Array<{ by: string; decision: "approve" | "reject"; comment: string; at: string }>;
+  createdAt: string;
+  closedAt: string | null;
+}
+
 export interface Webhook {
   id: string;
   orgId: string;
@@ -567,6 +609,15 @@ export interface Store {
   listWebhooks(orgId: string): Promise<Webhook[]>;
   deleteWebhook(orgId: string, id: string): Promise<boolean>;
   recordWebhookDelivery(id: string, status: string): Promise<void>;
+
+  updateProjectSettings(id: string, settings: ProjectSettings): Promise<Project | null>;
+  getProjectSheet<T>(projectId: string, kind: ProjectSheetKind): Promise<ProjectSheet<T> | null>;
+  saveProjectSheet<T>(projectId: string, kind: ProjectSheetKind, data: T, updatedBy: string): Promise<ProjectSheet<T>>;
+  addReview(r: Omit<Review, "id" | "code" | "status" | "decisions" | "createdAt" | "closedAt">): Promise<Review>;
+  getReview(id: string): Promise<Review | null>;
+  /** 新しい順 */
+  listReviews(projectId: string): Promise<Review[]>;
+  updateReview(id: string, patch: Partial<Pick<Review, "status" | "decisions" | "closedAt">>): Promise<Review | null>;
 }
 
 export function usageOf(u: Usage): { inputTokens: number; outputTokens: number } {
@@ -605,6 +656,8 @@ export class MemoryStore implements Store {
   private testRuns: TestRunRecord[] = [];
   private questions: AgentQuestion[] = [];
   private webhooks: Webhook[] = [];
+  private sheets = new Map<string, ProjectSheet>();
+  private reviews: Review[] = [];
   private seq = 0;
 
   async createOrg(name: string) {
@@ -642,7 +695,7 @@ export class MemoryStore implements Store {
     return this.creds.delete(id);
   }
   async createProject(p: Omit<Project, "id" | "createdAt" | "phaseKey">) {
-    const r: Project = { ...p, id: randomUUID(), phaseKey: "purpose", createdAt: now() };
+    const r: Project = { settings: {}, ...p, id: randomUUID(), phaseKey: "purpose", createdAt: now() };
     this.projects.set(r.id, r);
     return r;
   }
@@ -688,6 +741,7 @@ export class MemoryStore implements Store {
         updatedAt: null,
         deletedAt: null,
         ears: it.ears ?? null,
+        rule: it.rule ?? null,
       };
       this.reqs.push(r);
       out.push(r);
@@ -1056,5 +1110,42 @@ export class MemoryStore implements Store {
   async recordWebhookDelivery(id: string, status: string) {
     const w = this.webhooks.find((x) => x.id === id);
     if (w) Object.assign(w, { lastStatus: status, lastAt: now() });
+  }
+  async updateProjectSettings(id: string, settings: ProjectSettings) {
+    const p = this.projects.get(id);
+    if (!p) return null;
+    p.settings = { ...settings };
+    return { ...p, settings: { ...settings } };
+  }
+  async getProjectSheet<T>(projectId: string, kind: ProjectSheetKind) {
+    const x = this.sheets.get(`${projectId}:${kind}`);
+    return x ? (JSON.parse(JSON.stringify(x)) as ProjectSheet<T>) : null;
+  }
+  async saveProjectSheet<T>(projectId: string, kind: ProjectSheetKind, data: T, updatedBy: string) {
+    const x: ProjectSheet<T> = JSON.parse(JSON.stringify({ projectId, kind, data, updatedBy, updatedAt: now() }));
+    this.sheets.set(`${projectId}:${kind}`, x as ProjectSheet);
+    return x;
+  }
+  async addReview(r: Omit<Review, "id" | "code" | "status" | "decisions" | "createdAt" | "closedAt">) {
+    const n = this.reviews.filter((x) => x.projectId === r.projectId).length + 1;
+    const x: Review = JSON.parse(JSON.stringify({ ...r, id: randomUUID(), code: `RV-${String(n).padStart(3, "0")}`, status: "open", decisions: [], createdAt: now(), closedAt: null }));
+    this.reviews.push(x);
+    return JSON.parse(JSON.stringify(x)) as Review;
+  }
+  async getReview(id: string) {
+    const x = this.reviews.find((r) => r.id === id);
+    return x ? (JSON.parse(JSON.stringify(x)) as Review) : null;
+  }
+  async listReviews(projectId: string) {
+    return this.reviews
+      .filter((r) => r.projectId === projectId)
+      .reverse()
+      .map((x) => JSON.parse(JSON.stringify(x)) as Review);
+  }
+  async updateReview(id: string, patch: Partial<Pick<Review, "status" | "decisions" | "closedAt">>) {
+    const x = this.reviews.find((r) => r.id === id);
+    if (!x) return null;
+    Object.assign(x, JSON.parse(JSON.stringify(patch)));
+    return JSON.parse(JSON.stringify(x)) as Review;
   }
 }

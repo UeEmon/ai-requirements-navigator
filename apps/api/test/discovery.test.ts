@@ -153,7 +153,7 @@ describe("資料の分析・業務の見直し・EARS", () => {
 
     // 仕様書と UML に、業務フロー（現状・見直し後）と課題・見直し案が入る
     const md = await (await req(`/api/projects/${p.id}/spec.md`, as("viewer"))).text();
-    expect(md).toContain("## 11. 現状の課題（資料分析）");
+    expect(md).toMatch(/## \d+\. 現状の課題（資料分析）/);
     expect(md).toContain("D1「受付担当が電話で予約を受け、紙の受付票に記入している。」");
     expect(md).toContain("採用　P1 [やめる]");
     expect(md).toContain("引き継がない：紙の受付票の印刷機能");

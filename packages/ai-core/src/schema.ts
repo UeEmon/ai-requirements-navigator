@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { Ears, EARS_TYPES, renderEars } from "./ears.js";
+import { BusinessRule } from "./rules.js";
 
-export const RequirementType = z.enum(["BR", "AC", "FR", "NFR", "CN"]);
+/** BR 目的 / AC 利用者 / FR 機能 / RL 業務ルール / NFR 非機能 / CN 制約 */
+export const RequirementType = z.enum(["BR", "AC", "FR", "RL", "NFR", "CN"]);
 export type RequirementType = z.infer<typeof RequirementType>;
 
 export const RequirementItem = z
@@ -12,13 +14,20 @@ export const RequirementItem = z
     priority: z.enum(["must", "should", "could"]).default("should"),
     /** 機能要件・非機能要件の EARS 記法の構造。あれば title はここから組み立てる */
     ears: Ears.optional(),
+    /** 業務ルール（RL）の種類と具体例 */
+    rule: BusinessRule.optional(),
   })
   .transform((it) => withEars(it))
   .refine((it) => it.title.trim().length > 0, { message: "要件の文がありません" });
 export type RequirementItem = z.infer<typeof RequirementItem>;
 
 /** 機能要件・非機能要件は EARS の構造から文を組み立てる。対象外の区分では構造を捨てる */
-export function withEars<T extends { title: string; type: string; ears?: Ears }>(it: T): T {
+export function withEars<T extends { title: string; type: string; ears?: Ears; rule?: BusinessRule }>(it: T): T {
+  // 業務ルールの構造は RL だけに残す
+  if (it.type !== "RL" && it.rule !== undefined) {
+    const { rule: _r, ...rest } = it;
+    it = rest as T;
+  }
   if (!EARS_TYPES.includes(it.type)) {
     const { ears: _drop, ...rest } = it;
     return rest as T;
