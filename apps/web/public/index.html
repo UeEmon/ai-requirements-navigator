@@ -98,6 +98,13 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
 span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.good{color:var(--good)}span.st.warn{color:var(--warn)}span.st.bad{color:var(--bad)}
 .steps .running{color:var(--accent)}.steps .done{color:var(--good)}.steps .failed{color:var(--bad)}
 .who{font-size:12.5px;color:var(--ink-2)}
+.vgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.vcard{border:1px solid var(--rule);border-radius:var(--r);padding:10px 12px;display:flex;flex-direction:column;gap:4px;align-items:flex-start;min-width:0}
+.vcard.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.vname{font-family:var(--f-display);font-weight:700;font-size:16px}
+.addbox{border:1px solid var(--accent);border-radius:var(--r);padding:12px 14px;margin-top:12px;background:var(--tint)}
+.ksteps{margin:4px 0 0;padding-left:20px;font-size:13px}
+.ksteps li{margin:2px 0}
 .chk{display:flex;flex-wrap:wrap;gap:6px}
 .chk label{display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--rule);border-radius:16px;padding:3px 10px;cursor:pointer}
 .chk label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
@@ -400,33 +407,65 @@ function switchTab(t){
 document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 
 /* ---------- AI設定・プロジェクト ---------- */
-const VENDORS = {anthropic:"Claude（Anthropic）", openai:"GPT（OpenAI）", gemini:"Gemini（Google）", ollama:"ローカルLLM（Ollama）", mock:"模擬AI（開発用）"};
+/* AI の種類ごとの名前と API キーの案内（/api/meta の vendors。古いサーバー向けに最低限の既定を持つ） */
+const VENDOR_FALLBACK = [
+  {vendor:"anthropic",name:"Claude",maker:"Anthropic",standard:true,keyName:"Claude APIキー",keyPrefix:"sk-ant-",modelHint:"一覧の「Claude API ID」"},
+  {vendor:"openai",name:"ChatGPT",maker:"OpenAI",standard:true,keyName:"ChatGPT（OpenAI）APIキー",keyPrefix:"sk-",modelHint:"一覧に出るモデル名"},
+  {vendor:"gemini",name:"Gemini",maker:"Google",standard:true,keyName:"Gemini APIキー",keyPrefix:"AIza または AQ.",modelHint:"一覧の「Model code」"},
+  {vendor:"ollama",name:"ローカルLLM",maker:"Ollama",standard:false,keyName:null,modelHint:"取り込んだモデル名",endpointDefault:"http://ollama:11434"},
+  {vendor:"mock",name:"模擬AI（開発用）",maker:"要件ナビ",standard:false,keyName:null,modelHint:"mock"},
+];
+const vendorList = () => (S.meta?.vendors?.length ? S.meta.vendors : VENDOR_FALLBACK.filter(v=>v.vendor!=="mock"||S.meta?.allowMock));
+const vinfo = v => vendorList().find(x=>x.vendor===v) || VENDOR_FALLBACK.find(x=>x.vendor===v) || {vendor:v,name:v,keyName:null};
 async function loadProviders(){ S.providers = S.orgId || S.token ? await api(`/api/orgs/${S.orgId}/providers`).catch(()=>[]) : []; }
 function renderAdmin(){
   const isAdmin = S.role === "admin";
   const lim = v => v==null ? "上限なし" : Number(v).toLocaleString();
+  const std = vendorList().filter(v=>v.standard), others = vendorList().filter(v=>!v.standard);
+  const count = v => S.providers.filter(p=>p.vendor===v).length;
+  if (S.addVendor && !vendorList().some(v=>v.vendor===S.addVendor)) S.addVendor = null;
+  const sel = S.addVendor ? vinfo(S.addVendor) : null;
+  const keyCell = p => { const vi=vinfo(p.vendor); return vi.keyName ? `<span class="hint">${esc(vi.keyName)}</span><br><span class="mono">${esc(p.apiKey||"未登録")}</span>` : `<span class="hint">不要</span>`; };
   $("#provPanel").innerHTML = `<h2>AIの登録（組織の管理者）</h2>
-    <p class="hint">APIキーは組織ごとに登録し、暗号化して保存します。表示は末尾4桁のみです。月間上限（トークン）に達したAIは、その月は使われません。</p>
-    <div class="scroll"><table class="t"><thead><tr><th>名前</th><th>種類</th><th>モデル</th><th>キー</th><th>月間上限</th><th></th></tr></thead><tbody>
-    ${S.providers.map(p=>`<tr><td>${esc(p.label)}</td><td>${esc(VENDORS[p.vendor]||p.vendor)}</td><td class="mono">${esc(p.model)}</td><td class="mono">${esc(p.apiKey||"―")}</td><td class="mono">${lim(p.monthlyTokenLimit)}</td>
+    <p class="hint">標準のAIは Claude・ChatGPT・Gemini の3つです。使うAIごとに、そのAIの提供元で発行した APIキーを登録します（キーは組織ごと）。キーは暗号化して保存し、画面には末尾4桁だけを表示します。月間上限（トークン）に達したAIは、その月は使われません。</p>
+    <div class="vgrid" role="list">${std.map(v=>`<div class="vcard${S.addVendor===v.vendor?" on":""}" role="listitem">
+      <div class="vname">${esc(v.name)} <span class="hint">${esc(v.maker)}</span></div>
+      <div class="hint">必要なもの：<b>${esc(v.keyName)}</b></div>
+      <div class="hint">登録済み：${count(v.vendor)}件</div>
+      ${isAdmin?`<button class="btn sm${S.addVendor===v.vendor?"":" ghost"}" data-addv="${v.vendor}" aria-pressed="${S.addVendor===v.vendor}">${esc(v.name)} を登録</button>`:""}
+    </div>`).join("")}</div>
+    ${isAdmin&&others.length?`<p class="hint" style="margin-top:8px">そのほか：${others.map(v=>`<button class="btn sm ghost" data-addv="${v.vendor}" aria-pressed="${S.addVendor===v.vendor}">${esc(v.name)}</button>`).join(" ")}</p>`:""}
+    ${isAdmin&&sel?`<div class="addbox" id="addBox"><h3>${esc(sel.name)} を登録</h3>
+      ${sel.keyName?`<ol class="ksteps">
+        <li>${esc(sel.keyName)}を発行する：${extLink(sel.keyUrl, sel.keyHow||"提供元の管理画面")}${sel.keyPrefix?`（<span class="mono">${esc(sel.keyPrefix)}</span> で始まる文字列）`:""}。キーの全文が見られるのは発行したときだけです</li>
+        <li>使うモデルのIDを確かめる：${extLink(sel.modelsUrl, "モデル一覧")}</li>
+        <li>下に入れて「登録」</li></ol>
+        ${sel.billingNote?`<p class="note warn">${esc(sel.billingNote)}</p>`:""}`:""}
+      <div class="row" style="margin-top:8px">
+      <label class="f">モデルID<input id="pM" placeholder="${esc(sel.modelHint||"")}" value="${sel.vendor==="mock"?"mock":""}"></label>
+      <label class="f">表示名<input id="pL" placeholder="例：${esc(sel.name)}（本番）"></label>
+      ${sel.keyName?`<label class="f" style="flex:1;min-width:220px">${esc(sel.keyName)}<input id="pK" type="password" autocomplete="off" spellcheck="false" placeholder="${esc(sel.keyPrefix?sel.keyPrefix+" で始まるキーを貼り付け":"キーを貼り付け")}"></label>`:""}
+      ${sel.vendor==="ollama"?`<label class="f">接続先<input id="pE" placeholder="${esc(sel.endpointDefault||"")}" value="${esc(sel.endpointDefault||"")}"></label>`:""}
+      <label class="f">月間上限（トークン）<input id="pT" type="number" min="1" step="1000" placeholder="空欄なら上限なし"></label>
+      <button class="btn" id="pAdd">登録</button><button class="btn ghost" id="pCancel">閉じる</button></div>
+      ${sel.keyName?`<details class="hint" style="margin-top:6px"><summary>互換サーバー・社内プロキシを経由する場合</summary><label class="f" style="margin-top:6px">接続先（空欄なら ${esc(sel.name)} の標準）<input id="pE" placeholder="https://…"></label><p>接続先を変えたときは、キーの形式は確かめません。</p></details>`:""}
+      <div id="pMsg"></div></div>`:""}
+    <h3 style="margin-top:16px">登録済みのAI</h3>
+    <div class="scroll"><table class="t"><thead><tr><th>名前</th><th>AI</th><th>モデルID</th><th>APIキー</th><th>月間上限</th><th></th></tr></thead><tbody>
+    ${S.providers.map(p=>{ const vi=vinfo(p.vendor); return `<tr><td>${esc(p.label)}</td><td>${esc(vi.name)}</td><td class="mono">${esc(p.model)}</td><td>${keyCell(p)}</td><td class="mono">${lim(p.monthlyTokenLimit)}</td>
       <td style="white-space:nowrap">${isAdmin?`<button class="btn sm ghost" data-edit="${p.id}">変更</button> <button class="btn sm danger" data-del="${p.id}">削除</button>`:""}</td></tr>
       <tr id="edit-${p.id}" hidden><td colspan="6"><div class="row">
-        <label class="f">モデル名<input id="eM-${p.id}" value="${esc(p.model)}"></label>
+        <label class="f">モデルID<input id="eM-${p.id}" value="${esc(p.model)}"></label>
         <label class="f">表示名<input id="eL-${p.id}" value="${esc(p.label)}"></label>
-        ${p.vendor==="ollama"||p.vendor==="mock"?"":`<label class="f">新しいAPIキー<input id="eK-${p.id}" type="password" autocomplete="off" placeholder="空欄なら変更しない"></label>`}
+        ${vi.keyName?`<label class="f">新しい${esc(vi.keyName)}<input id="eK-${p.id}" type="password" autocomplete="off" spellcheck="false" placeholder="空欄なら今のキーのまま"></label>`:""}
         ${p.vendor==="mock"?"":`<label class="f">接続先<input id="eE-${p.id}" value="${esc(p.endpoint||"")}" placeholder="空欄なら標準"></label>`}
         <label class="f">月間上限（トークン）<input id="eT-${p.id}" type="number" min="1" step="1000" value="${p.monthlyTokenLimit??""}" placeholder="空欄なら上限なし"></label>
-        <button class="btn sm" data-save="${p.id}">保存</button><button class="btn sm ghost" data-cancel="${p.id}">取消</button></div><div id="eMsg-${p.id}"></div></td></tr>`).join("") || `<tr><td colspan="6" class="hint">まだ登録されていません</td></tr>`}
+        <button class="btn sm" data-save="${p.id}">保存</button><button class="btn sm ghost" data-cancel="${p.id}">取消</button></div>
+        ${vi.keyUrl?`<p class="hint">キーの全文はここでは表示できません。分からなくなったときは ${extLink(vi.keyUrl, vi.maker+" の管理画面")} で新しく発行して入れ直してください。</p>`:""}<div id="eMsg-${p.id}"></div></td></tr>`;}).join("") || `<tr><td colspan="6" class="hint">まだ登録されていません。上で使うAIを選んでください</td></tr>`}
     </tbody></table></div>
-    ${isAdmin?`<h3 style="margin-top:16px">追加</h3><div class="row">
-      <label class="f">種類<select id="pV">${Object.entries(VENDORS).filter(([k])=>k!=="mock"||S.meta?.allowMock).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label>
-      <label class="f">モデル名<input id="pM" placeholder="各社の最新モデル名"></label>
-      <label class="f">表示名<input id="pL" placeholder="任意"></label>
-      <label class="f" id="pKw">APIキー<input id="pK" type="password" autocomplete="off"></label>
-      <label class="f" id="pEw" hidden>接続先<input id="pE" placeholder="http://ollama:11434"></label>
-      <label class="f">月間上限（トークン）<input id="pT" type="number" min="1" step="1000" placeholder="空欄なら上限なし"></label>
-      <button class="btn" id="pAdd">登録</button></div><div id="pMsg"></div>`:`<p class="note warn">登録・変更・削除は admin 権限が必要です。</p>`}`;
+    ${isAdmin?"":`<p class="note warn">登録・変更・削除は admin 権限が必要です。</p>`}`;
   const numOrNull = v => v.trim()==="" ? null : Math.floor(Number(v));
+  document.querySelectorAll("[data-addv]").forEach(b=>b.onclick=()=>{ S.addVendor = S.addVendor===b.dataset.addv ? null : b.dataset.addv; renderAdmin(); $("#pM")?.focus(); });
   document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{ try{await api(`/api/orgs/${S.orgId}/providers/${b.dataset.del}`,{method:"DELETE"}); await loadProviders(); renderAdmin(); toast("削除しました")}catch(e){toast(e.message)} });
   document.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>{ const r=$("#edit-"+b.dataset.edit); r.hidden=!r.hidden; });
   document.querySelectorAll("[data-cancel]").forEach(b=>b.onclick=()=>{ $("#edit-"+b.dataset.cancel).hidden=true; });
@@ -438,16 +477,16 @@ function renderAdmin(){
     try{ await api(`/api/orgs/${S.orgId}/providers/${id}`,{method:"PATCH",body}); await loadProviders(); renderAdmin(); toast("変更しました") }
     catch(e){ v("eMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   });
-  if ($("#pV")){
-    const sync=()=>{ const v=$("#pV").value; $("#pKw").hidden = v==="ollama"||v==="mock"; $("#pEw").hidden = v!=="ollama"; if(v==="mock")$("#pM").value="mock"; };
-    $("#pV").onchange=sync; sync();
+  if ($("#pAdd")){
+    $("#pCancel").onclick=()=>{ S.addVendor=null; renderAdmin(); };
     $("#pAdd").onclick=async()=>{
-      const b={vendor:$("#pV").value, model:$("#pM").value.trim()};
+      const v=S.addVendor, vi=vinfo(v), b={vendor:v, model:$("#pM").value.trim()};
+      if(!b.model){ $("#pMsg").innerHTML=`<div class="note err">モデルIDを入れてください（${esc(vi.modelHint||"")}）</div>`; return; }
       if($("#pL").value.trim()) b.label=$("#pL").value.trim();
-      if(!$("#pKw").hidden && $("#pK").value) b.apiKey=$("#pK").value;
-      if(!$("#pEw").hidden && $("#pE").value) b.endpoint=$("#pE").value.trim();
+      if($("#pK")){ if(!$("#pK").value.trim()){ $("#pMsg").innerHTML=`<div class="note err">${esc(vi.keyName)}を入れてください</div>`; return; } b.apiKey=$("#pK").value; }
+      if($("#pE") && $("#pE").value.trim()) b.endpoint=$("#pE").value.trim();
       const t=numOrNull($("#pT").value); if(t) b.monthlyTokenLimit=t;
-      try{ await api(`/api/orgs/${S.orgId}/providers`,{method:"POST",body:b}); await loadProviders(); renderAdmin(); toast("登録しました") }
+      try{ await api(`/api/orgs/${S.orgId}/providers`,{method:"POST",body:b}); S.addVendor=null; await loadProviders(); renderAdmin(); toast(`${vi.name} を登録しました`) }
       catch(e){ $("#pMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
     };
   }

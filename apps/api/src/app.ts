@@ -1,6 +1,9 @@
 import {
   buildDiagrams,
+  checkApiKey,
   compareUmlModels,
+  VENDOR_INFO,
+  vendorName,
   BusinessRule,
   Ears,
   EARS_TYPES,
@@ -176,13 +179,22 @@ async function body<T extends z.ZodTypeAny>(c: Context, schema: T): Promise<z.in
   return parseOrThrow(schema, json);
 }
 
+/** 貼り付けた API キーを確かめる（前後の空白などは取り除く）。キーそのものはメッセージに出さない */
+function keyOrThrow(vendor: ProviderCredential["vendor"], raw: string, customEndpoint: boolean): string {
+  const r = checkApiKey(vendor, raw, { customEndpoint });
+  if (!r.ok) throw new HTTPException(400, { message: r.message });
+  return r.key;
+}
+
 function publicCredential(c: ProviderCredential) {
   return {
     id: c.id,
     vendor: c.vendor,
+    vendorName: vendorName(c.vendor),
     model: c.model,
     label: c.label,
     endpoint: c.endpoint,
+    keyName: VENDOR_INFO[c.vendor]?.keyName ?? null,
     apiKey: maskKey(c.keyLast4),
     isLocal: c.isLocal,
     monthlyTokenLimit: c.monthlyTokenLimit,
@@ -234,6 +246,8 @@ export function createApp(deps: AppDeps) {
     c.json({
       phases: PHASES,
       allowMock: deps.allowMock,
+      // AI の種類ごとの名前と API キーの案内（Claude・ChatGPT・Gemini が標準）
+      vendors: Object.values(VENDOR_INFO).filter((v) => v.vendor !== "mock" || deps.allowMock),
       auth: deps.devAuth ? "dev" : "oidc",
       oidc: deps.oidc ? { orgClaim: deps.oidc.orgClaim, roleClaim: deps.oidc.roleClaim } : null,
     }),
@@ -405,16 +419,19 @@ export function createApp(deps: AppDeps) {
     need(c, orgId, "admin");
     const input = await body(c, CredentialInput);
     if (input.vendor === "mock" && !deps.allowMock) throw new HTTPException(400, { message: "模擬AIは無効化されています" });
-    const needsKey = input.vendor === "anthropic" || input.vendor === "openai" || input.vendor === "gemini";
-    if (needsKey && !input.apiKey) throw new HTTPException(400, { message: `${input.vendor} にはAPIキーが必要です` });
+    const info = VENDOR_INFO[input.vendor];
+    if (info.keyName && !input.apiKey) {
+      throw new HTTPException(400, { message: `${info.name} には${info.keyName}が必要です（${info.keyHow}）` });
+    }
+    const apiKey = input.apiKey ? keyOrThrow(input.vendor, input.apiKey, Boolean(input.endpoint)) : undefined;
     const cred = await store.addCredential({
       orgId,
       vendor: input.vendor,
       model: input.model,
-      label: input.label ?? `${input.vendor} (${input.model})`,
+      label: input.label ?? `${info.name} (${input.model})`,
       endpoint: input.endpoint ?? null,
-      encryptedKey: input.apiKey ? await deps.encryptor.encrypt(input.apiKey, { orgId }) : null,
-      keyLast4: input.apiKey ? input.apiKey.slice(-4) : null,
+      encryptedKey: apiKey ? await deps.encryptor.encrypt(apiKey, { orgId }) : null,
+      keyLast4: apiKey ? apiKey.slice(-4) : null,
       isLocal: input.vendor === "ollama",
       monthlyTokenLimit: input.monthlyTokenLimit ?? null,
     });
@@ -443,8 +460,10 @@ export function createApp(deps: AppDeps) {
       monthlyTokenLimit: input.monthlyTokenLimit,
     };
     if (input.apiKey) {
-      patch.encryptedKey = await deps.encryptor.encrypt(input.apiKey, { orgId });
-      patch.keyLast4 = input.apiKey.slice(-4);
+      const endpoint = input.endpoint !== undefined ? input.endpoint : current.endpoint;
+      const apiKey = keyOrThrow(current.vendor, input.apiKey, Boolean(endpoint));
+      patch.encryptedKey = await deps.encryptor.encrypt(apiKey, { orgId });
+      patch.keyLast4 = apiKey.slice(-4);
     }
     const updated = await store.updateCredential(orgId, current.id, patch);
     if (!updated) throw new HTTPException(404, { message: "見つかりません" });

@@ -14,7 +14,7 @@
 | 区分 | 対象 |
 | --- | --- |
 | 対象工程 | 企画整理 → 要求分析 → 要件定義（機能・非機能）→ 概要設計の入口（UML） |
-| 対応AI | Claude、GPT（OpenAI）、Gemini、ローカルLLM（Ollama） |
+| 対応AI | 標準: Claude（Anthropic）、ChatGPT（OpenAI）、Gemini（Google）。ほかにローカルLLM（Ollama）。API キーは AI ごとの名前（Claude APIキーなど）で案内する |
 | 出力形式 | UML（Mermaid / PlantUML テキスト、SVG / PNG 画像）、仕様書（Markdown / Word / PDF） |
 | 動作環境 | AWS またはローカルDocker（同じコンテナイメージ） |
 

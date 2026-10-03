@@ -65,22 +65,23 @@ describe("API", () => {
   it("APIキーは管理者だけが登録でき、暗号化して保存され、末尾4桁だけ返る", async () => {
     const denied = await t.app.request(
       `/api/orgs/${orgId}/providers`,
-      as("editor", json({ vendor: "anthropic", model: "m", apiKey: "sk-secret-1234" })),
+      as("editor", json({ vendor: "anthropic", model: "m", apiKey: "sk-ant-secret-1234" })),
     );
     expect(denied.status).toBe(403);
 
     const ok = await t.app.request(
       `/api/orgs/${orgId}/providers`,
-      as("admin", json({ vendor: "anthropic", model: "m", apiKey: "sk-secret-1234" })),
+      as("admin", json({ vendor: "anthropic", model: "m", apiKey: "sk-ant-secret-1234" })),
     );
     expect(ok.status).toBe(201);
     const pub = await ok.json();
     expect(pub.apiKey).toBe("••••1234");
-    expect(JSON.stringify(pub)).not.toContain("sk-secret");
+    expect(JSON.stringify(pub)).not.toContain("sk-ant-secret");
+    expect(pub).toMatchObject({ vendorName: "Claude", keyName: "Claude APIキー", label: "Claude (m)" });
 
     const [saved] = await t.store.listCredentials(orgId);
-    expect(saved!.encryptedKey).not.toContain("sk-secret");
-    expect(await t.encryptor.decrypt(saved!.encryptedKey!, { orgId })).toBe("sk-secret-1234");
+    expect(saved!.encryptedKey).not.toContain("sk-ant-secret");
+    expect(await t.encryptor.decrypt(saved!.encryptedKey!, { orgId })).toBe("sk-ant-secret-1234");
     // 別の組織IDでは復号できない（AAD）
     await expect(t.encryptor.decrypt(saved!.encryptedKey!, { orgId: "other" })).rejects.toThrow();
   });
@@ -156,7 +157,7 @@ describe("API", () => {
 
   it("登録したAnthropicの接続情報で実際のAPI形式に従って呼び出す", async () => {
     const cr = await (
-      await t.app.request(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor: "anthropic", model: "m", apiKey: "sk-xxxx9999" })))
+      await t.app.request(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor: "anthropic", model: "m", apiKey: "sk-ant-xxxx9999" })))
     ).json();
     const project = await (
       await t.app.request(`/api/orgs/${orgId}/projects`, as("editor", json({ name: "x", aiConfig: { mode: "single", generatorIds: [cr.id] } })))
@@ -312,10 +313,50 @@ describe("API", () => {
     expect(r.status).toBe(501);
   });
 
+  it("標準のAI（Claude・ChatGPT・Gemini）ごとにキーの名前で案内し、別のAIのキーや貼り間違いを止める", async () => {
+    const meta = await (await t.app.request("/api/meta")).json();
+    const std = meta.vendors.filter((v: { standard: boolean }) => v.standard);
+    expect(std.map((v: { name: string; keyName: string }) => [v.name, v.keyName])).toEqual([
+      ["Claude", "Claude APIキー"],
+      ["ChatGPT", "ChatGPT（OpenAI）APIキー"],
+      ["Gemini", "Gemini APIキー"],
+    ]);
+    expect(std.every((v: { keyUrl: string; modelsUrl: string }) => v.keyUrl.startsWith("https://") && v.modelsUrl.startsWith("https://"))).toBe(true);
+
+    const add = (b: unknown) => t.app.request(`/api/orgs/${orgId}/providers`, as("admin", json(b)));
+    const msg = async (r: Response) => ((await r.json()) as { error?: string; message?: string });
+    const noKey = await add({ vendor: "openai", model: "m" });
+    expect(noKey.status).toBe(400);
+    expect(JSON.stringify(await msg(noKey))).toContain("ChatGPT（OpenAI）APIキーが必要です");
+
+    // Gemini のキーを Claude に貼った
+    const wrong = await add({ vendor: "anthropic", model: "m", apiKey: "AIzaSyTESTKEY000000000000000000000000" });
+    expect(wrong.status).toBe(400);
+    const wm = JSON.stringify(await msg(wrong));
+    expect(wm).toContain("Gemini のキーの形式です");
+    expect(wm).not.toContain("AIzaSyTEST"); // キーそのものは返さない
+    // Claude のキーを ChatGPT に貼った
+    expect((await add({ vendor: "openai", model: "m", apiKey: "sk-ant-api03-xxxx" })).status).toBe(400);
+    // 空白や別の行まで貼った
+    expect((await add({ vendor: "gemini", model: "m", apiKey: "AIzaSyAAAA\nDigest: sha256:abc" })).status).toBe(400);
+
+    // 前後の空白・「Bearer 」は取り除いて保存する。新しい形式（AQ.）の Gemini キーも登録できる
+    const ok = await (await add({ vendor: "gemini", model: "m", apiKey: "  Bearer AQ.Ab8RN6test5678  " })).json();
+    expect(ok).toMatchObject({ vendorName: "Gemini", keyName: "Gemini APIキー", apiKey: "••••5678" });
+    const saved = (await t.store.listCredentials(orgId)).find((x) => x.id === ok.id)!;
+    expect(await t.encryptor.decrypt(saved.encryptedKey!, { orgId })).toBe("AQ.Ab8RN6test5678");
+
+    // 接続先を変えている（互換サーバーなど）ときは形式を確かめない
+    expect((await add({ vendor: "openai", model: "m", apiKey: "proxy-key-1", endpoint: "https://llm.example.com/v1" })).status).toBe(201);
+    // 変更（PATCH）でも同じように確かめる
+    const bad = await t.app.request(`/api/orgs/${orgId}/providers/${ok.id}`, as("admin", { ...json({ apiKey: "sk-proj-abc" }), method: "PATCH" }));
+    expect(bad.status).toBe(400);
+  });
+
   /* ---------- 登録済みAIの変更 ---------- */
   it("登録済みAIのモデル名・APIキー・上限を変更できる。キーを省略すると据え置き", async () => {
     const cr = await (
-      await t.app.request(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor: "anthropic", model: "old", apiKey: "sk-aaaa1111" })))
+      await t.app.request(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor: "anthropic", model: "old", apiKey: "sk-ant-aaaa1111" })))
     ).json();
     const patch = (b: unknown, role = "admin") =>
       t.app.request(`/api/orgs/${orgId}/providers/${cr.id}`, as(role, { ...json(b), method: "PATCH" }));
@@ -327,11 +368,11 @@ describe("API", () => {
     expect(r1).toMatchObject({ model: "new", label: "Claude本番", monthlyTokenLimit: 50000, apiKey: "••••1111" });
     expect(r1.updatedAt).not.toBeNull();
 
-    const r2 = await (await patch({ apiKey: "sk-bbbb2222" })).json();
+    const r2 = await (await patch({ apiKey: "sk-ant-bbbb2222" })).json();
     expect(r2.apiKey).toBe("••••2222");
     expect(r2.model).toBe("new");
     const [saved] = await t.store.listCredentials(orgId);
-    expect(await t.encryptor.decrypt(saved!.encryptedKey!, { orgId })).toBe("sk-bbbb2222");
+    expect(await t.encryptor.decrypt(saved!.encryptedKey!, { orgId })).toBe("sk-ant-bbbb2222");
 
     const r3 = await (await patch({ monthlyTokenLimit: null })).json();
     expect(r3.monthlyTokenLimit).toBeNull();

@@ -23,3 +23,4 @@ export * from "./connect.js";
 export * from "./rules.js";
 export * from "./terms.js";
 export * from "./boundary.js";
+export * from "./vendors.js";

@@ -97,7 +97,7 @@ docker compose ps
 1. 右上の「組織を作成」で組織を作る
 2. 「AI設定・プロジェクト」で AI を登録する
    - お試し: 種類「模擬AI（開発用）」を3つ（生成用2つ・評価用1つ）
-   - 本番の AI: 種類（Claude・GPT・Gemini）・モデル名・API キーを入れる
+   - 本番の AI: 「Claude を登録」「ChatGPT を登録」「Gemini を登録」のカードから、モデルIDとその AI の API キー（Claude APIキー・ChatGPT（OpenAI）APIキー・Gemini APIキー）を入れる。発行する場所は [AI の登録と API キー](ai-keys.md)
 3. 同じタブの「サンプル事例を読み込む」で、本システム自身の要求事項を題材にした事例を開く（要件69件・非機能要件シート・用語集・受け入れ基準入り）
 4. 以降の使い方は [README](../README.md#すぐに試すローカルdocker) の手順のとおり
 
@@ -201,7 +201,7 @@ docker compose start app
 | `Bind for 127.0.0.1:8787 failed: port is already allocated` | ほかのアプリが使っています。`.env` の `ARN_PORT`（DB は `DB_PORT`）を変えて `docker compose up -d` |
 | app がすぐ止まり、ログに「MASTER_KEY …」 | `.env` の `MASTER_KEY` が空か、鍵ではない文字列（`Digest: sha256:…` の行、説明文、途中で切れた文字列など）になっています。メッセージに文字数とバイト数が出ます。[3](#暗号化の鍵master_keyを作る) のコマンドで書き込み直し、`docker compose up -d` で起動し直す。まだ API キーを登録していなければ、鍵を作り直しても影響はありません |
 | ビルドが `npm ci` や証明書の取得で失敗する | ネットワーク・プロキシの設定を確認（Settings → Resources → Proxies）。社内の証明書で通信を検査している場合は、ネットワークの管理者に相談してください |
-| 画面は出るが AI の呼び出しが失敗する | 「AI設定・プロジェクト」で API キー・モデル名を確認。会社のネットワークから AI の提供元に接続できるかも確認 |
+| 画面は出るが AI の呼び出しが失敗する | 「AI設定・プロジェクト」の「登録済みのAI」で、キーの末尾4桁とモデルIDを確認（[確かめ方](ai-keys.md#登録したキーを確かめる)）。API の支払い設定と、会社のネットワークから AI の提供元に接続できるかも確認 |
 | 「組織の作成には初期セットアップ用トークンが必要です」 | `AUTH_MODE=oidc` のときは、`.env` の `BOOTSTRAP_TOKEN` を画面の入力欄に入れて組織を作ります |
 | 動作が遅い・止まる | Docker Desktop のメモリを増やす（Settings → Resources）。ローカルLLMは特にメモリを使います |
 | 最初からやり直したい | `docker compose down -v` の後、`docker compose up -d --build`（データはすべて消えます） |

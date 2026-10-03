@@ -2,7 +2,7 @@
 
 システム開発の専門家でなくても、AIとの対話で **要求分析 → 要件定義** を進め、**UML と仕様書** を出力できるWebシステムのテンプレートです。
 
-- AIは **1つ、または複数** を選べます（Claude / GPT / Gemini / ローカルLLM）
+- AIは **1つ、または複数** を選べます（標準は Claude / ChatGPT / Gemini。ほかにローカルLLM）
 - 複数のときは、各AIの案を **匿名化して別のAIが評価** し、比較と推奨を添えて選択肢として示します
 - AIのAPIキーは **組織ごとに管理者が登録** し、暗号化して保存します。登録後の変更や、**月間トークン上限**（組織全体・AIごと）も設定できます
 - **AWS とローカルDocker のどちらでも** 同じコンテナイメージで動きます
@@ -33,7 +33,7 @@ Windows・Mac の Docker Desktop での詳しい手順（ポートの変更、�
 http://localhost:8787 を開き、次の順に操作します。
 
 1. 右上「組織を作成」
-2. 「AI設定・プロジェクト」で AI を登録（APIキーなしで試すなら「模擬AI（開発用）」を3つ）
+2. 「AI設定・プロジェクト」で AI を登録（Claude・ChatGPT・Gemini のカードから。キーの発行場所は [AI の登録と API キー](docs/ai-keys.md)。APIキーなしで試すなら「そのほか」の「模擬AI（開発用）」を3つ）
 3. プロジェクトを作成（複数AI＋評価AI）→ 資料があれば「資料分析」で取り込んで分析し、見直し案と要件案を採用（[資料分析と EARS](docs/discovery-and-ears.md)）→「ヒアリング」で質問に答える
 4. 案を比較して採用 →「要件一覧」で確認 →「非機能要件」でシステムの性格に答え、26項目を検討（AIの提案を参考にできます）。業務ルール（計算・判定・期限など）は具体例と一緒に決め、「要件一覧」で用語集を整える（[工程の線引き](docs/phase-boundaries.md)）
 5. 「UML」で「AIで設計図を作る」（複数AIモードでは、各AIの設計を匿名で比較して選びます）→ 図ごとに SVG / PNG で保存、Mermaid / PlantUML のソースをコピー
@@ -122,6 +122,7 @@ npm run init:project -- --name "顧客管理システム" --slug crm-system
 
 - [Docker Desktop への展開手順](docs/docker-desktop.md)
 - [GitHub からの展開（公開イメージ・GitHub Actions で AWS）](docs/github-deploy.md)
+- [AI の登録と API キー（Claude・ChatGPT・Gemini）](docs/ai-keys.md)
 - [ログインの設定（Cognito / Keycloak）](docs/auth.md)
 - [実装工程への連携（GitHub / Jira / Backlog）](docs/integrations.md)
 - [画面イメージと、確定後の変更管理](docs/screens-and-changes.md)
