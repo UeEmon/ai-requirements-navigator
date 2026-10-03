@@ -92,7 +92,7 @@ describe("要件定義で決めること（業務ルール・用語集・受け�
     expect(a1.criteria.custom[0]).toMatchObject({ checked: false, checkedBy: null });
     expect(a1.evaluation.accepted).toBe(false);
     expect((await req(`/api/projects/${p.id}/acceptance/check`, as("viewer", json({ id: "C1", checked: true })))).status).toBe(403);
-    const a2 = await (await req(`/api/projects/${p.id}/acceptance/check`, as("reviewer", json({ id: "C1", checked: true }), "biz")))).json();
+    const a2 = await (await req(`/api/projects/${p.id}/acceptance/check`, as("reviewer", json({ id: "C1", checked: true }), "biz"))).json();
     expect(a2.criteria.custom[0]).toMatchObject({ checked: true, checkedBy: "biz" });
     expect(a2.evaluation.accepted).toBe(true);
     // 不合格のテストが報告されると満たさなくなる

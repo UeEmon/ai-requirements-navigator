@@ -111,7 +111,7 @@ describe("コーディング・テスト工程への引き継ぎ", () => {
     expect(r.headers.get("content-disposition")).toContain("handoff.json");
     const b = await r.json();
     expect(b.format).toBe("arn-handoff/1");
-    expect(Object.keys(b)).toEqual(["format", "generatedAt", "project", "baseline", "howToUse", "requirements", "nfr", "design", "screens", "tasks", "tests", "readiness"]);
+    expect(Object.keys(b)).toEqual(["format", "generatedAt", "project", "baseline", "howToUse", "requirements", "nfr", "design", "glossary", "acceptance", "approval", "scope", "screens", "tasks", "tests", "readiness"]);
     expect(b.requirements.find((x: { type: string }) => x.type === "FR").ears.pattern).toBeTruthy();
     expect(b.requirements.filter((x: { nfrKey: string | null }) => x.nfrKey).length).toBeGreaterThan(10);
     expect(b.nfr.items).toHaveLength(26);

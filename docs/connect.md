@@ -67,6 +67,9 @@ claude mcp add --transport http requirements-navigator https://arn.example.com/m
 | `get_test_cases` | 参照 | テストケース（要件・工程で絞り込める） |
 | `get_status` | 参照 | 要件ごとの実装状況とテスト結果 |
 | `list_questions` | 参照 | 質問と回答 |
+| `get_glossary` | 参照 | 用語集（用語・意味・言い換え・コード上の名前） |
+| `get_acceptance` | 参照 | 受け入れ基準と、いまのテスト結果に照らした判定 |
+| `get_changes` | 参照 | 確定版からの変更（追加・変更・削除）と、影響するテスト・ストーリー・画面 |
 | `report_implementation` | 報告 | 実装状況（未着手・実装中・実装済み・止まっている）とプルリクエストなどのURL |
 | `report_test_results` | 報告 | テスト結果（一覧、または JUnit XML の本文） |
 | `ask_question` | 報告 | 要件についての質問 |
@@ -82,8 +85,9 @@ claude mcp add --transport http requirements-navigator https://arn.example.com/m
 | `AGENTS.md` | AIコーディングツール向けの作業の決まり（要件にないものを作らない、要件IDをコミットに書く、テストにテストIDを付ける、報告する、不明点は質問する）、接続先、未決事項 |
 | `CLAUDE.md` | `@AGENTS.md`（Claude Code が AGENTS.md を読むように） |
 | `.mcp.json` | MCP の接続設定（トークンは環境変数 `ARN_TOKEN`） |
-| `requirements/requirements.md` | 要件の一覧（EARS、優先度、版、テストID）と非機能要件の確認方法 |
-| `requirements/design.md` | エンティティ・データ項目定義・権限表・外部とのやり取り・図（Mermaid） |
+| `requirements/requirements.md` | 要件の一覧（EARS、優先度、版、テストID）、業務ルールと具体例、非機能要件の確認方法、受け入れ基準 |
+| `requirements/design.md` | エンティティ・データ項目定義・権限表・外部とのやり取り・画面の入出力項目・状態が変わる条件・帳票・バッチ・図（Mermaid） |
+| `requirements/glossary.md` | 用語集（言い換えは使わない） |
 | `requirements/screens.md`・`tasks.md` | 画面一覧、タスク分解（あれば） |
 | `requirements/handoff.json` | 引き継ぎパッケージ（`arn-handoff/1`） |
 | `tests/acceptance/*.feature` | Gherkin（日本語のキーワード）のテストシナリオ。要件ごと・ストーリーごとに1ファイル。シナリオにテストIDのタグ（`@TC-FR-01-1`）付き |
@@ -137,6 +141,9 @@ JSON でも送れます：`{ "tool": "playwright", "results": [{ "testId": "TC-F
 | GET | `/api/v1/projects/{id}/handoff` | 参照 |
 | GET | `/api/v1/projects/{id}/agent-pack.zip` | 参照 |
 | GET | `/api/v1/projects/{id}/status` | 参照 |
+| GET | `/api/v1/projects/{id}/glossary` | 参照 |
+| GET | `/api/v1/projects/{id}/acceptance` | 参照 |
+| GET | `/api/v1/projects/{id}/diff?from=&to=` | 参照 |
 | POST | `/api/v1/projects/{id}/implementation` | 報告 |
 | GET・POST | `/api/v1/projects/{id}/test-runs` | 参照・報告 |
 | GET・POST | `/api/v1/projects/{id}/questions` | 参照・報告 |
@@ -151,6 +158,7 @@ JSON でも送れます：`{ "tool": "playwright", "results": [{ "testId": "TC-F
 | --- | --- |
 | `baseline.created` | 要件定義の確定版を作った |
 | `change.decided` | 変更要求を判断した（変更した場合は新しい確定版の番号） |
+| `review.requested`・`review.decided` | 要件定義のレビューを依頼した・承認または差し戻した |
 | `question.created`・`question.answered` | 開発から質問があった・回答した |
 | `implementation.reported` | 実装状況の報告があった |
 | `test_run.recorded` | テスト結果が登録された |

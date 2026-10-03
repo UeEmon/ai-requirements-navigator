@@ -57,9 +57,9 @@
 | F4-4 | 採用・部分採用 | 必須 | 済 | `POST /api/rounds/:id/decision` |
 | F4-5 | 決定記録 | 必須 | 済 | `decisions` テーブル |
 | F5-1 | 要件リポジトリ（ID採番） | 必須 | 済 | `requirements` テーブル |
-| F5-2 | 要件の編集・削除と版の履歴 | 必須 | 済（差分表示は今後） | `PATCH/DELETE /api/requirements/:id`、`GET .../versions` |
+| F5-2 | 要件の編集・削除と版の履歴、確定版どうしの差分 | 必須 | 済 | `PATCH/DELETE /api/requirements/:id`、`GET .../versions` |
 | F5-3 | トレーサビリティ（要件 → 案・決定 → ストーリー → 課題） | 推奨 | 済 | `requirements.round_id`、`GET /api/projects/:id/trace` |
-| F5-4 | レビュー・承認 | 推奨 | 未 | ― |
+| F5-4 | レビュー・承認（依頼・承認・差し戻し、承認後の要件変更の検出、確定に承認を必須にする設定） | 推奨 | 済 | `apps/api/src/scope.ts`、`/api/projects/:id/reviews` |
 | F5-7 | EARS 記法による要件文（機能要件・非機能要件。構造で保存し、文型と表現を検査） | 推奨 | 済 | `ai-core/src/ears.ts`、`POST /api/ears/preview` |
 | F5-8 | 非機能要件シート（システムの性格からの推奨水準、26項目の検討、矛盾の検出、複数AIの提案、EARS要件化、確定前の確認） | 推奨 | 済 | `ai-core/src/nfr.ts`、`apps/api/src/nfr-sheet.ts`、[nfr.md](./nfr.md) |
 | F5-9 | 非機能要件の適正化（規模・目的・予算、似た事例（参考類型・社内の過去事例）との比較、過大の検出、AIによる見直し） | 推奨 | 済 | `ai-core/src/nfr-cases.ts`、`POST /api/projects/:id/nfr/review` |
@@ -88,6 +88,12 @@
 | F10-3 | 外部連携 API と OpenAPI 定義（CI・テスト管理ツール向け。JUnit XML のテスト結果の取り込み） | 推奨 | 済 | `/api/v1/*`、`GET /api/v1/openapi.json` |
 | F10-4 | 開発用パッケージ（AGENTS.md・CLAUDE.md・.mcp.json・要件と設計の Markdown・Gherkin のテストシナリオ・テスト結果の送信スクリプト） | 推奨 | 済 | `GET /api/v1/projects/:id/agent-pack.zip` |
 | F10-5 | 実装状況・テスト結果・質問の確認と回答（要件ごと、報告後の要件変更の検出）と Webhook による通知（署名つき） | 推奨 | 済 | `GET /api/projects/:id/connect`、`/api/orgs/:orgId/webhooks` |
+| F11-0 | 工程の線引き（要件定義・設計・テストで決めること）を要件定義書の冒頭と AGENTS.md に載せる | 推奨 | 済 | `ai-core/src/boundary.ts`、[phase-boundaries.md](./phase-boundaries.md) |
+| F11-1 | 業務ルール（要件の区分 RL。種類と具体例、ヒアリングの段階、検査、具体例からのテストケース） | 推奨 | 済 | `ai-core/src/rules.ts` |
+| F11-2 | 画面の入出力項目（画面の要素とデータ項目のひも付け）、状態が変わる条件、保存期間、失敗したときの業務上の扱い、帳票・出力、バッチの一覧 | 推奨 | 済 | `ai-core/src/design-tables.ts` |
+| F11-3 | 用語集（AIの下書き・編集・表記ゆれの検出） | 推奨 | 済 | `ai-core/src/terms.ts`、`/api/projects/:id/glossary` |
+| F11-4 | 受け入れ基準（合格率・不合格の上限・確認すること）とテスト結果に照らした判定 | 推奨 | 済 | `/api/projects/:id/acceptance` |
+| F11-5 | 確定版の差分（影響するテスト・ストーリー・画面つき） | 推奨 | 済 | `/api/projects/:id/baselines/diff`、MCP `get_changes` |
 
 ## 4. 非機能要件
 

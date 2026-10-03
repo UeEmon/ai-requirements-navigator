@@ -129,6 +129,13 @@ jobs:
           curl -fs localhost:8787/api/projects/$PJ/readiness "${H[@]}" | jq -c '{verdict, score, counts}'
           curl -fs localhost:8787/api/projects/$PJ/handoff.json "${H[@]}" | jq -e 'select(.format == "arn-handoff/1") | {requirements: (.requirements | length), tests: (.tests.cases | length)}'
           curl -fs localhost:8787/api/projects/$PJ/spec.md "${H[@]}" | grep -qE '## [0-9]+\. テスト仕様' && echo "::notice::引き継ぎOK（テストケース $TC 件）"
+          # 要件定義で決めること: 業務ルール・用語集・受け入れ基準・レビュー・差分
+          curl -fs localhost:8787/api/meta | jq -e '[.phases[].key] | index("rules")' > /dev/null
+          curl -fs -X PUT localhost:8787/api/projects/$PJ/glossary "${H[@]}" -d '{"terms":[{"term":"予約","definition":"来店の約束","synonyms":["申込"],"codeName":"Reservation"}]}' | jq -ce '{terms: (.terms | length), variants: (.variants | length)}'
+          curl -fs localhost:8787/api/projects/$PJ/acceptance "${H[@]}" | jq -ce '{defined, accepted: .evaluation.accepted, items: (.evaluation.items | length)}'
+          curl -fs localhost:8787/api/projects/$PJ/reviews "${H[@]}" | jq -ce '{status}'
+          curl -fs "localhost:8787/api/projects/$PJ/baselines/diff?from=1&to=2" "${H[@]}" | jq -ce '{added: (.added | length), modified: (.modified | length), tests: (.affected.tests | length)}'
+          curl -fs localhost:8787/api/projects/$PJ/spec.md "${H[@]}" | grep -q 'この要件定義書の範囲' && echo "::notice::要件定義の範囲OK（業務ルール・用語集・受け入れ基準・レビュー・差分）"
           # 開発・テストのツールとの連携: トークン → MCP → JUnit XML の取り込み → 開発用パッケージ
           TOK=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/api-tokens "${H[@]}" -d "{\"name\":\"CI\",\"scopes\":[\"report\"],\"projectIds\":[\"$PJ\"]}" | jq -r .token)
           A=(-H "authorization: Bearer $TOK" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream')

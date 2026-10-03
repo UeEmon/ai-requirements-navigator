@@ -79,7 +79,7 @@ describe("非専門家向けの支援・要件の手直し・非同期実行・�
 
     const cov = await (await req(`/api/projects/${p.id}/coverage`, as("viewer"))).json();
     expect(cov.phases[0]).toMatchObject({ key: "purpose", checked: true });
-    expect(cov.overall).toBeCloseTo(3 / 28);
+    expect(cov.overall).toBeCloseTo(3 / 32); // 7段階の観点の合計 32
 
     // 観点がそろわなくても、利用者の判断で次へ進める
     const moved = await (await req(`/api/projects/${p.id}/phase`, as("editor", json({ phaseKey: "actors" })))).json();
