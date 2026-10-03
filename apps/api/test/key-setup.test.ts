@@ -192,6 +192,42 @@ describe("API キーの自動発行と確認", () => {
     expect((await post(`/api/orgs/${orgId}/providers/auto/openai/projects`, { adminKey: "sk-admin-good" }, "editor")).status).toBe(403);
   });
 
+  it("モデルIDを省略すると、発行したキーでモデル一覧を取得して預かり、選んだモデルで登録する", async () => {
+    const r = await post(`/api/orgs/${orgId}/providers/auto/openai`, { adminKey: "sk-admin-good", projectId: "proj_A1" });
+    expect(r.status).toBe(200);
+    const b = await r.json();
+    expect(b.models.map((m: { id: string }) => m.id)).toEqual(["gpt-test-5", "gpt-test-4"]); // 発行したキーで取得
+    expect(b.issued).toMatchObject({ projectId: "proj_A1", serviceAccountId: "svc_acct_1" });
+    expect(b.pending).not.toContain("ISSUED"); // キーは暗号化して預ける
+    expect(await store.listCredentials(orgId)).toHaveLength(0); // まだ登録しない
+
+    // 一覧の取り直し
+    const again = await (await post(`/api/orgs/${orgId}/providers/auto/models`, { pending: b.pending })).json();
+    expect(again).toMatchObject({ ok: true });
+    // ほかの利用者・別の組織は使えない
+    expect((await post(`/api/orgs/${orgId}/providers/auto/finish`, { pending: b.pending, model: "gpt-test-5" }, "admin", "admin2")).status).toBe(403);
+
+    const f = await post(`/api/orgs/${orgId}/providers/auto/finish`, { pending: b.pending, model: "gpt-test-5", label: "ChatGPT 本番", monthlyTokenLimit: 5000 });
+    expect(f.status).toBe(201);
+    const cred = await f.json();
+    expect(cred).toMatchObject({ vendor: "openai", model: "gpt-test-5", label: "ChatGPT 本番", apiKey: "••••abcd", monthlyTokenLimit: 5000 });
+    expect(cred.issued).toMatchObject({ by: "openai-admin-key", serviceAccountId: "svc_acct_1" });
+    const saved = (await store.listCredentials(orgId))[0]!;
+    expect(await enc.decrypt(saved.encryptedKey!, { orgId })).toBe("sk-svcacct-ISSUED-abcd");
+    // 二重登録はしない
+    expect((await post(`/api/orgs/${orgId}/providers/auto/finish`, { pending: b.pending, model: "gpt-test-5" })).status).toBe(409);
+    // 壊れた・期限切れの預かり
+    expect((await post(`/api/orgs/${orgId}/providers/auto/finish`, { pending: `${orgId}.AAAAAAAAAA`, model: "gpt-test-5" })).status).toBe(400);
+
+    // Gemini でも同じ
+    const st = new URL((await (await app.request(`/api/orgs/${orgId}/providers/auto/google/start`, as("admin"))).json()).url).searchParams.get("state")!;
+    const loc = (await app.request(`/api/oauth/google/callback?code=CODE1&state=${encodeURIComponent(st)}`)).headers.get("location")!;
+    const session = decodeURIComponent(loc.split("google-session=")[1]!);
+    const g = await (await post(`/api/orgs/${orgId}/providers/auto/google`, { session, projectId: "my-gemini-1" })).json();
+    expect(g.models).toEqual([{ id: "gemini-test-pro", name: "Gemini Test Pro" }]);
+    expect((await post(`/api/orgs/${orgId}/providers/auto/finish`, { pending: g.pending, model: "gemini-test-pro" })).status).toBe(201);
+  });
+
   it("入力が正しくなければ発行しない。発行後に登録できなかったときは、作ったキーを消して残さない", async () => {
     const r = await post(`/api/orgs/${orgId}/providers/auto/openai`, { adminKey: "sk-admin-good", projectId: "proj_A1", model: "gpt-test-5", label: "x".repeat(101) });
     expect(r.status).toBe(400);

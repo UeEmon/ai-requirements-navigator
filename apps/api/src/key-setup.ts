@@ -47,10 +47,23 @@ const GEMINI_SERVICE = "generativelanguage.googleapis.com";
 const VendorSchema = z.enum(["anthropic", "openai", "gemini", "ollama", "mock"]);
 const CheckInput = z.object({ vendor: VendorSchema, apiKey: z.string().max(500).optional(), endpoint: z.string().url().optional() });
 const Common = {
-  model: z.string().min(1).max(200),
+  /**
+   * モデルID。省略すると、発行したキーでモデルの一覧を取得して返し（pending）、
+   * 画面で選んだモデルで /providers/auto/finish から登録する
+   */
+  model: z.string().min(1).max(200).optional(),
   label: z.string().max(100).optional(),
   monthlyTokenLimit: z.number().int().positive().nullable().optional(),
 };
+const PendingInput = z.object({ pending: z.string().min(10).max(8000) });
+const FinishInput = z.object({
+  pending: z.string().min(10).max(8000),
+  model: z.string().min(1).max(200),
+  label: z.string().max(100).optional(),
+  monthlyTokenLimit: z.number().int().positive().nullable().optional(),
+});
+/** 発行したキーを、モデルを選ぶまで預かる時間（暗号化して画面に渡す） */
+const PENDING_TTL_MS = 30 * 60_000;
 const OpenAIProjectsInput = z.object({ adminKey: z.string().min(1).max(500) });
 const OpenAIIssueInput = z.object({
   adminKey: z.string().min(1).max(500),
@@ -128,6 +141,53 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
       return { ok: false as const, reason: "other" as const, message: redactSecrets((e as Error).message).slice(0, 200) };
     }
   };
+  /**
+   * 自動発行したキーの登録。モデルIDがあればすぐに登録する。なければ、発行したキーでモデルの一覧を取得し、
+   * キーを暗号化して預ける（pending。組織・利用者・期限で束縛）。画面でモデルを選んで /providers/auto/finish で登録する
+   */
+  async function issuedKey(
+    c: Context,
+    orgId: string,
+    vendor: Vendor,
+    key: string,
+    via: Record<string, unknown>,
+    input: { model?: string; label?: string; monthlyTokenLimit?: number | null },
+    cleanup: () => Promise<unknown>,
+    notice?: string,
+  ) {
+    if (input.model) {
+      try {
+        const cred = await opts.register(c, orgId, { vendor, model: input.model, label: input.label, apiKey: key, monthlyTokenLimit: input.monthlyTokenLimit }, via);
+        return c.json({ ...cred, issued: via, ...(notice ? { notice } : {}) }, 201);
+      } catch (e) {
+        // 登録できなかったときは、作ったキーを消して残さない
+        await cleanup().catch(() => undefined);
+        throw e;
+      }
+    }
+    // 新しいキーは反映まで少し掛かることがある（Gemini）。何度か試す
+    let r = await checkResult(vendor, { apiKey: key });
+    for (let i = 0; i < 3 && !r.ok && vendor === "gemini" && (r.reason === "auth" || r.reason === "permission"); i++) {
+      await sleep(pollMs * 3);
+      r = await checkResult(vendor, { apiKey: key });
+    }
+    const pending = await seal(ctx.encryptor, orgId, { k: "pk", a: ctx.actorOf(c), v: vendor, key, via, e: Date.now() + PENDING_TTL_MS });
+    return c.json({
+      pending,
+      issued: via,
+      expiresInMinutes: PENDING_TTL_MS / 60_000,
+      ...(r.ok ? { models: r.models } : { models: [], modelsError: r.message }),
+      ...(notice ? { notice } : {}),
+    });
+  }
+  async function pendingOf(c: Context, orgId: string, pending: string) {
+    const { orgId: o, data } = await unseal(ctx.encryptor, pending, Date.now()).catch(() => {
+      throw new HTTPException(400, { message: "発行したキーの預かり期限（30分）が切れたか、情報が正しくありません。もう一度発行してください（前に発行したキーは、提供元の画面で削除できます）" });
+    });
+    if (o !== orgId || data.k !== "pk" || data.a !== ctx.actorOf(c)) throw new HTTPException(403, { message: "この発行の情報は使えません" });
+    return data as { v: Vendor; key: string; via: Record<string, unknown> };
+  }
+
   /** 別名（例: 日付なしのモデル名）でも見つかったことにする */
   const modelFound = (models: Array<{ id: string }>, model: string) => models.some((m) => m.id === model || m.id.startsWith(`${model}-`));
 
@@ -272,14 +332,28 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
       const key = sa?.api_key?.value;
       if (typeof key !== "string" || !key) throw new HTTPException(502, { message: "OpenAI からキーを受け取れませんでした（サービスアカウントは作られている可能性があります。OpenAI Platform で確認してください）" });
       const via = { by: "openai-admin-key", projectId: project.id, projectName: project.name, serviceAccountId: sa.id, serviceAccountName: sa.name ?? saName, keyId: sa.api_key.id ?? null };
-      try {
-        const cred = await opts.register(c, orgId, { vendor: "openai", model: input.model, label: input.label, apiKey: key, monthlyTokenLimit: input.monthlyTokenLimit }, via);
-        return c.json({ ...cred, issued: via }, 201);
-      } catch (e) {
-        // 登録できなかったときは、作ったサービスアカウント（とキー）を消して残さない
-        await openai(adminKey, `/organization/projects/${project.id}/service_accounts/${sa.id}`, { method: "DELETE" }).catch(() => undefined);
-        throw e;
-      }
+      return issuedKey(c, orgId, "openai", key, via, input, () => openai(adminKey, `/organization/projects/${project.id}/service_accounts/${sa.id}`, { method: "DELETE" }));
+    });
+
+    /** 自動発行したキーで、モデルの一覧を取得し直す */
+    app.post("/api/orgs/:orgId/providers/auto/models", async (c) => {
+      const orgId = c.req.param("orgId");
+      ctx.need(c, orgId, "admin");
+      const pk = await pendingOf(c, orgId, (await ctx.body(c, PendingInput)).pending);
+      return c.json(await checkResult(pk.v, { apiKey: pk.key }));
+    });
+
+    /** 自動発行したキーを、選んだモデルで登録する */
+    app.post("/api/orgs/:orgId/providers/auto/finish", async (c) => {
+      const orgId = c.req.param("orgId");
+      ctx.need(c, orgId, "admin");
+      const input = await ctx.body(c, FinishInput);
+      const pk = await pendingOf(c, orgId, input.pending);
+      // 同じキーを二重に登録しない
+      const dup = (await store.listCredentials(orgId)).find((x) => x.vendor === pk.v && x.keyLast4 === pk.key.slice(-4) && x.model === input.model);
+      if (dup) throw new HTTPException(409, { message: "このキーとモデルは、もう登録されています" });
+      const cred = await opts.register(c, orgId, { vendor: pk.v, model: input.model, label: input.label, apiKey: pk.key, monthlyTokenLimit: input.monthlyTokenLimit }, pk.via);
+      return c.json({ ...cred, issued: pk.via }, 201);
     });
 
     /* ----- Gemini（Google でログイン） ----- */
@@ -402,13 +476,7 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
       const key = ks?.keyString;
       if (typeof key !== "string" || !key) throw new HTTPException(502, { message: "Google Cloud からキーを受け取れませんでした（キーは作られている可能性があります。Google Cloud コンソールの「認証情報」で確認してください）" });
       const via = { by: "google-oauth", projectId: p, keyName, displayName, restrictedTo: GEMINI_SERVICE };
-      try {
-        const cred = await opts.register(c, orgId, { vendor: "gemini", model: input.model, label: input.label, apiKey: key, monthlyTokenLimit: input.monthlyTokenLimit }, via);
-        return c.json({ ...cred, issued: via, notice: "新しいキーは、使えるようになるまで1〜2分かかることがあります" }, 201);
-      } catch (e) {
-        await google(token, `${ak}/${keyName}`, "API キーの削除", { method: "DELETE" }).catch(() => undefined);
-        throw e;
-      }
+      return issuedKey(c, orgId, "gemini", key, via, input, () => google(token, `${ak}/${keyName}`, "API キーの削除", { method: "DELETE" }), "新しいキーは、使えるようになるまで1〜2分かかることがあります");
     });
   }
 

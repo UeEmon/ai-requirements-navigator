@@ -101,6 +101,7 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
 details.kguide{border:1px solid var(--rule);border-radius:var(--r);padding:8px 12px;margin-top:8px}
 details.kguide[open]{border-color:var(--accent)}
 details.kguide summary{cursor:pointer}
+label.mp select,label.mp input{width:100%}
 .seg{display:flex;gap:4px;flex-wrap:wrap}
 pre.code{font-family:var(--f-mono);font-size:12px;background:var(--sheet);border:1px solid var(--rule);border-radius:var(--r);padding:8px 10px;overflow-x:auto;white-space:pre;margin:6px 0}
 tr.sub td{border-bottom:none;padding-top:0}
@@ -431,40 +432,67 @@ async function loadProviders(){ S.providers = S.orgId || S.token ? await api(`/a
 /* AI の登録フォーム（標準のAIは、提供元が用意している方法で API キーを自動発行できる） */
 const autoAvail = v => v.autoIssue?.mode==="admin-key" || (v.autoIssue?.mode==="google-oauth");
 function addModeOf(sel){ if(!S.addMode || S.addModeFor!==sel.vendor){ S.addModeFor=sel.vendor; S.addMode = autoAvail(sel) ? "auto" : "paste"; } return S.addMode; }
-const modelField = sel => `<label class="f">モデルID<span class="row" style="gap:4px;flex-wrap:nowrap"><input id="pM" placeholder="${esc(sel.modelHint||"")}" value="${sel.vendor==="mock"?"mock":""}"><span id="pMselW"></span></span>${sel.modelsUrl?`<span class="hint">${extLink(sel.modelsUrl,"モデル一覧")}</span>`:""}</label>`;
+/* モデルIDの選択: 提供元から自動で取得した一覧のプルダウン。一覧にないものは「一覧にないモデルIDを入力…」で手入力 */
+const CUSTOM="__custom";
+const modelPicker = (id, sel, wait="APIキーを入れると、モデルの一覧を自動で取得します") => `<label class="f mp" style="min-width:240px">モデルID
+  <select id="${id}Sel" disabled aria-describedby="${id}Note"><option value="">${esc(wait)}</option></select>
+  <input id="${id}" hidden placeholder="${esc(sel.modelHint||"モデルID")}" spellcheck="false">
+  <span class="hint" id="${id}Note">${sel.modelsUrl?extLink(sel.modelsUrl,"提供元のモデル一覧"):""}</span></label>`;
+/** 取得した一覧でプルダウンを作る（current があれば選んだ状態にする） */
+function fillModels(id, list, current="", note=""){
+  const s=document.getElementById(id+"Sel"), inp=document.getElementById(id), nt=document.getElementById(id+"Note"); if(!s) return;
+  const has = list.some(m=>m.id===current);
+  s.innerHTML = (list.length?`<option value="">選んでください（${list.length}件）</option>`:`<option value="">一覧を取得できませんでした</option>`)
+    + list.map(m=>`<option value="${esc(m.id)}">${esc(m.name&&m.name!==m.id?`${m.name}（${m.id}）`:m.id)}</option>`).join("")
+    + `<option value="${CUSTOM}">一覧にないモデルIDを入力…</option>`;
+  s.disabled=false;
+  if(has) s.value=current; else if(current){ s.value=CUSTOM; inp.value=current; } else if(list.length===1) s.value=list[0].id; else if(!list.length) s.value=CUSTOM;
+  inp.hidden = s.value!==CUSTOM;
+  s.onchange=()=>{ inp.hidden = s.value!==CUSTOM; if(!inp.hidden) inp.focus(); };
+  if(nt && note) nt.innerHTML=note;
+}
+function waitModels(id, text){ const s=document.getElementById(id+"Sel"); if(s){ s.disabled=true; s.innerHTML=`<option value="">${esc(text)}</option>`; } const i=document.getElementById(id); if(i) i.hidden=true; }
+const modelOf = id => { const s=document.getElementById(id+"Sel"); if(!s) return ""; return (s.value===CUSTOM ? document.getElementById(id).value : s.value).trim(); };
 const commonFields = sel => `<label class="f">表示名<input id="pL" placeholder="例：${esc(sel.name)}（本番）"></label>
   <label class="f">月間上限（トークン）<input id="pT" type="number" min="1" step="1000" placeholder="空欄なら上限なし"></label>`;
 function addBoxHtml(sel){
   const mode = addModeOf(sel), au = sel.autoIssue||{mode:"none"};
-  const tabs = sel.keyName && au.mode!=="none" ? `<div class="seg" role="tablist">
-      ${au.mode!=="none"?`<button role="tab" class="btn sm${mode==="auto"?"":" ghost"}" data-amode="auto" aria-selected="${mode==="auto"}">自動で発行</button>`:""}
+  const pend = S.pending && S.pending.vendor===sel.vendor ? S.pending : null;
+  const tabs = sel.keyName && au.mode!=="none" && !pend ? `<div class="seg" role="tablist">
+      <button role="tab" class="btn sm${mode==="auto"?"":" ghost"}" data-amode="auto" aria-selected="${mode==="auto"}">自動で発行</button>
       <button role="tab" class="btn sm${mode==="paste"?"":" ghost"}" data-amode="paste" aria-selected="${mode==="paste"}">キーを貼り付け</button></div>` : "";
   const billing = sel.billingNote?`<p class="note warn">${esc(sel.billingNote)}</p>`:"";
   let body = "";
-  if(!sel.keyName){
-    body = `<div class="row" style="margin-top:8px">${modelField(sel)}
-      ${sel.vendor==="ollama"?`<label class="f">接続先<input id="pE" value="${esc(sel.endpointDefault||"")}"></label><button class="btn ghost" id="pCheck">接続してモデルを取得</button>`:""}
+  if(pend){
+    // 自動発行したキーで取得したモデルの一覧から選んで登録する
+    const where = pend.issued?.by==="openai-admin-key" ? `OpenAI のプロジェクト「${pend.issued.projectName||pend.issued.projectId}」` : `Google Cloud のプロジェクト「${pend.issued?.projectId||""}」`;
+    body = `<p class="note" style="background:var(--accent-soft)">✓ ${esc(where)}に要件ナビ専用のキーを作りました。モデルを選んで「登録」してください（${pend.expiresInMinutes||30}分以内）。${pend.notice?`<br>${esc(pend.notice)}`:""}</p>
+      ${pend.modelsError?`<p class="note warn">モデルの一覧を取得できませんでした：${esc(pend.modelsError)}　<button class="btn sm ghost" id="pnRefetch">一覧を取得し直す</button></p>`:""}
+      <div class="row" style="margin-top:8px">${modelPicker("pM", sel, "一覧を取得しています…")}${commonFields(sel)}<button class="btn" id="pnFinish">登録</button><button class="btn ghost" data-aclose>閉じる</button></div>`;
+  } else if(!sel.keyName){
+    body = `<div class="row" style="margin-top:8px">${sel.vendor==="ollama"?`<label class="f">接続先<input id="pE" value="${esc(sel.endpointDefault||"")}"></label>`:""}
+      ${modelPicker("pM", sel, "モデルの一覧を取得しています…")}
       ${commonFields(sel)}<button class="btn" id="pAdd">登録</button><button class="btn ghost" data-aclose>閉じる</button></div><div id="pCheckOut"></div>`;
   } else if(mode==="paste"){
     body = `${au.mode==="none"?`<p class="hint">${esc(au.note)}</p>`:""}<ol class="ksteps">
         <li>${esc(sel.keyName)}を発行する：${extLink(sel.keyUrl, "発行の画面")}（${esc(sel.keyHow||"")}）${sel.keyPrefix?`（<span class="mono">${esc(sel.keyPrefix)}</span> で始まる文字列）`:""}。キーの全文が見られるのは発行したときだけです</li>
-        <li>下に貼り付けて「キーを確かめる」（モデルの一覧も自動で取得します）</li>
-        <li>モデルを選んで「登録」</li></ol><button class="btn sm ghost" type="button" data-kg="${{anthropic:"claude",openai:"openai",gemini:"gemini"}[sel.vendor]||""}">詳しい取得方法</button>${billing}
+        <li>下に貼り付ける（キーを確かめて、モデルの一覧を自動で取得します）</li>
+        <li>モデルを一覧から選んで「登録」</li></ol><button class="btn sm ghost" type="button" data-kg="${{anthropic:"claude",openai:"openai",gemini:"gemini"}[sel.vendor]||""}">詳しい取得方法</button>${billing}
       <div class="row" style="margin-top:8px"><label class="f" style="flex:1;min-width:220px">${esc(sel.keyName)}<input id="pK" type="password" autocomplete="off" spellcheck="false" placeholder="${esc(sel.keyPrefix?sel.keyPrefix+" で始まるキーを貼り付け":"キーを貼り付け")}"></label>
-        <button class="btn ghost" id="pCheck">キーを確かめる</button></div><div id="pCheckOut"></div>
-      <div class="row" style="margin-top:8px">${modelField(sel)}${commonFields(sel)}<button class="btn" id="pAdd">登録</button><button class="btn ghost" data-aclose>閉じる</button></div>
-      <details class="hint" style="margin-top:6px"><summary>互換サーバー・社内プロキシを経由する場合</summary><label class="f" style="margin-top:6px">接続先（空欄なら ${esc(sel.name)} の標準）<input id="pE" placeholder="https://…"></label><p>接続先を変えたときは、キーの形式は確かめません。</p></details>`;
+        <button class="btn ghost" id="pCheck">一覧を取得し直す</button></div><div id="pCheckOut" aria-live="polite"></div>
+      <div class="row" style="margin-top:8px">${modelPicker("pM", sel)}${commonFields(sel)}<button class="btn" id="pAdd">登録</button><button class="btn ghost" data-aclose>閉じる</button></div>
+      <details class="hint" style="margin-top:6px"><summary>互換サーバー・社内プロキシを経由する場合</summary><label class="f" style="margin-top:6px">接続先（空欄なら ${esc(sel.name)} の標準）<input id="pE" placeholder="https://…"></label><p>接続先を変えたときは、キーの形式は確かめません。モデルの一覧は接続先から取得します。</p></details>`;
   } else if(au.mode==="admin-key"){
     body = `<p class="hint">${esc(au.note)}</p><ol class="ksteps">
         <li>${esc(au.adminKeyName)}を作る：${extLink(au.adminKeyUrl, "OpenAI Platform の Admin keys")}（${esc(au.adminKeyHow)}）</li>
         <li>下に貼り付けて「プロジェクトを読み込む」</li>
-        <li>キーを作るプロジェクトとモデルIDを選んで「発行して登録」</li></ol><button class="btn sm ghost" type="button" data-kg="openai-admin">管理用キーの詳しい作り方</button>${billing}
+        <li>キーを作るプロジェクトを選んで「キーを発行」（発行したキーでモデルの一覧を自動で取得します）</li>
+        <li>モデルを一覧から選んで「登録」</li></ol><button class="btn sm ghost" type="button" data-kg="openai-admin">管理用キーの詳しい作り方</button>${billing}
       <div class="row" style="margin-top:8px"><label class="f" style="flex:1;min-width:220px">${esc(au.adminKeyName)}<input id="oaK" type="password" autocomplete="off" spellcheck="false" placeholder="${esc(au.adminKeyPrefix)} で始まるキー（保存しません）"></label>
         <button class="btn ghost" id="oaLoad">プロジェクトを読み込む</button></div>
       <div class="row" style="margin-top:8px"><label class="f">キーを作るプロジェクト<select id="oaP"><option value="">新しいプロジェクト「要件ナビ」を作る</option></select></label>
-        <label class="f">キーの有効期限<select id="oaX"><option value="">期限なし</option><option value="90">90日</option><option value="180">180日</option><option value="365">365日</option></select></label></div>
-      <div class="row" style="margin-top:8px">${modelField(sel)}${commonFields(sel)}<button class="btn" id="oaIssue">発行して登録</button><button class="btn ghost" data-aclose>閉じる</button></div>
-      <p class="hint">登録した後に、発行したキーで接続を確かめ、モデルの一覧を取得します。</p>`;
+        <label class="f">キーの有効期限<select id="oaX"><option value="">期限なし</option><option value="90">90日</option><option value="180">180日</option><option value="365">365日</option></select></label>
+        <button class="btn" id="oaIssue">キーを発行</button><button class="btn ghost" data-aclose>閉じる</button></div>`;
   } else if(au.mode==="google-oauth"){
     if(!S.meta?.keyAutoIssue?.gemini){
       body = `<p class="note warn">Google でのログインが、このサーバーでは設定されていません（サーバーの <span class="mono">GOOGLE_OAUTH_CLIENT_ID</span>・<span class="mono">GOOGLE_OAUTH_CLIENT_SECRET</span>。設定方法は docs/ai-keys.md）。</p>
@@ -477,31 +505,37 @@ gcloud services api-keys get-key-string arn-gemini</pre>
     } else if(!S.gSession){
       body = `<p class="hint">${esc(au.note)}</p><ol class="ksteps">
           <li>「Google でログイン」を押し、Google Cloud のプロジェクトのオーナー（または編集者）のアカウントでログインして、操作を許可する</li>
-          <li>キーを作るプロジェクトとモデルIDを選んで「キーを作って登録」</li></ol>${billing}
+          <li>キーを作るプロジェクトを選んで「キーを作る」（作ったキーでモデルの一覧を自動で取得します）</li>
+          <li>モデルを一覧から選んで「登録」</li></ol>${billing}
         <div class="row"><button class="btn" id="gLogin">Google でログイン</button><button class="btn ghost" data-aclose>閉じる</button></div>`;
     } else {
       body = `<p class="note">Google にログインしました。キーを作るプロジェクトを選んでください（Gemini API の有効化と、Gemini API だけに使えるキーの作成を自動で行います）。</p>${billing}
-        <div class="row" style="margin-top:8px"><label class="f">Google Cloud のプロジェクト<select id="gP"><option value="">読み込み中…</option></select></label></div>
-        <div class="row" style="margin-top:8px">${modelField(sel)}${commonFields(sel)}<button class="btn" id="gIssue">キーを作って登録</button><button class="btn ghost" id="gOut">ログインをやめる</button></div>`;
+        <div class="row" style="margin-top:8px"><label class="f">Google Cloud のプロジェクト<select id="gP"><option value="">読み込み中…</option></select></label>
+        <button class="btn" id="gIssue">キーを作る</button><button class="btn ghost" id="gOut">ログインをやめる</button></div>`;
     }
   }
   return `<div class="addbox" id="addBox"><div class="row" style="justify-content:space-between;align-items:center"><h3 style="margin:0">${esc(sel.name)} を登録</h3>${tabs}</div>${body}<div id="pMsg" aria-live="polite">${S.gError&&sel.vendor==="gemini"?`<div class="note err">${esc(S.gError)}</div>`:""}</div></div>`;
 }
-function showModels(list, keepVal){
-  const w=$("#pMselW"); if(!w) return;
-  if(!list?.length){ w.innerHTML=""; return; }
-  w.innerHTML=`<select id="pMsel" aria-label="モデルを一覧から選ぶ"><option value="">一覧から選ぶ（${list.length}件）</option>${list.map(m=>`<option value="${esc(m.id)}">${esc(m.name===m.id?m.id:`${m.name}（${m.id}）`)}</option>`).join("")}</select>`;
-  $("#pMsel").onchange=()=>{ if($("#pMsel").value) $("#pM").value=$("#pMsel").value; };
-  if(!keepVal && !$("#pM").value) { $("#pMsel").focus(); }
-}
-const checkNote = r => r.ok ? `<div class="note" style="background:var(--accent-soft)">✓ ${esc(r.message||`キーは有効です。モデルを ${r.models.length} 件取得しました`)}</div>` : `<div class="note err">${esc(r.message)}</div>`;
-/** 登録の直後に、保存したキーで接続を確かめる（モデルIDが一覧になければ、変更欄に一覧を出す） */
+const checkNote = r => r.ok ? `<div class="note" style="background:var(--accent-soft)">✓ ${esc(r.message||`キーは有効です。モデルを ${r.models.length} 件取得しました。一覧から選んでください`)}</div>` : `<div class="note err">${esc(r.message)}</div>`;
+/** 登録の直後に、保存したキーで接続を確かめる（モデルIDが一覧になければ、変更欄を開く） */
 async function verifyProvider(id){
   try{
     const r=await api(`/api/orgs/${S.orgId}/providers/${id}/check`,{method:"POST",body:{}});
     S.checks[id]=r; renderProviders();
-    if(r.ok && !r.modelFound){ const row=$("#edit-"+id); if(row) row.hidden=false; }
+    if(r.ok && !r.modelFound) openEdit(id);
   }catch(e){ S.checks[id]={ok:false,message:e.message}; renderProviders(); }
+}
+/** 変更欄を開き、保存したキーでモデルの一覧を取得してプルダウンにする */
+async function openEdit(id){
+  const row=$("#edit-"+id); if(!row) return;
+  row.hidden=false;
+  const p=S.providers.find(x=>x.id===id); if(!p) return;
+  const r=S.checks[id];
+  if(r?.ok && r.models){ fillModels("eM-"+id, r.models, p.model); return; }
+  waitModels("eM-"+id, "モデルの一覧を取得しています…");
+  try{ const c=await api(`/api/orgs/${S.orgId}/providers/${id}/check`,{method:"POST",body:{}}); S.checks[id]=c;
+    if(c.ok) fillModels("eM-"+id, c.models, p.model); else { fillModels("eM-"+id, [], p.model, `<span class="st bad">${esc(c.message)}</span>`); } }
+  catch(e){ fillModels("eM-"+id, [], p.model, `<span class="st bad">${esc(e.message)}</span>`); }
 }
 function renderProviders(){
   const isAdmin = S.role === "admin";
@@ -511,11 +545,12 @@ function renderProviders(){
   const count = v => S.providers.filter(p=>p.vendor===v).length;
   if (S.addVendor && !vendorList().some(v=>v.vendor===S.addVendor)) S.addVendor = null;
   const sel = S.addVendor ? vinfo(S.addVendor) : null;
+  const openEdits = [...document.querySelectorAll('tr[id^="edit-"]:not([hidden])')].map(r=>r.id.slice(5));
   const autoLabel = v => v.autoIssue?.mode==="admin-key" ? "管理用キーで自動発行できます" : v.autoIssue?.mode==="google-oauth" ? (S.meta?.keyAutoIssue?.gemini ? "Google でログインして自動発行できます" : "Google Cloud Shell のコマンドで作れます") : "提供元の画面で発行（自動発行はできません）";
   const keyCell = p => { const vi=vinfo(p.vendor); return vi.keyName ? `<span class="hint">${esc(vi.keyName)}</span><br><span class="mono">${esc(p.apiKey||"未登録")}</span>` : `<span class="hint">不要</span>`; };
   const chk = p => { const r=S.checks[p.id]; if(!r) return ""; return r.ok ? (r.modelFound===false?`<br><span class="st warn">⚠ モデルIDが一覧にない</span>`:`<br><span class="st good">✓ 接続OK</span>`) : `<br><span class="st bad">✗ 接続できない</span>`; };
   $("#provPanel").innerHTML = `<h2>AIの登録（組織の管理者）</h2>
-    <p class="hint">標準のAIは Claude・ChatGPT・Gemini の3つです。使うAIごとに、そのAIの API キーを登録します（キーは組織ごと）。ChatGPT と Gemini はキーを自動で発行でき、Claude は提供元の画面で発行したキーを貼り付けます。キーは暗号化して保存し、画面には末尾4桁だけを表示します。月間上限（トークン）に達したAIは、その月は使われません。</p>
+    <p class="hint">標準のAIは Claude・ChatGPT・Gemini の3つです。使うAIごとに、そのAIの API キーを登録します（キーは組織ごと）。ChatGPT と Gemini はキーを自動で発行でき、Claude は提供元の画面で発行したキーを貼り付けます。モデルIDは、キーで提供元から一覧を取得して選びます。キーは暗号化して保存し、画面には末尾4桁だけを表示します。月間上限（トークン）に達したAIは、その月は使われません。</p>
     <div class="vgrid" role="list">${std.map(v=>`<div class="vcard${S.addVendor===v.vendor?" on":""}" role="listitem">
       <div class="vname">${esc(v.name)} <span class="hint">${esc(v.maker)}</span></div>
       <div class="hint">必要なもの：<b>${esc(v.keyName)}</b></div>
@@ -531,60 +566,87 @@ function renderProviders(){
       <td style="white-space:nowrap">${isAdmin?`<button class="btn sm ghost" data-pcheck="${p.id}">接続確認</button> <button class="btn sm ghost" data-edit="${p.id}">変更</button> <button class="btn sm danger" data-del="${p.id}">削除</button>`:""}</td></tr>
       ${r?`<tr class="sub"><td colspan="6">${checkNote(r)}</td></tr>`:""}
       <tr id="edit-${p.id}" hidden><td colspan="6"><div class="row">
-        <label class="f">モデルID<span class="row" style="gap:4px;flex-wrap:nowrap"><input id="eM-${p.id}" value="${esc(p.model)}">${r?.ok&&r.models?.length?`<select data-emsel="${p.id}" aria-label="モデルを一覧から選ぶ"><option value="">一覧から選ぶ（${r.models.length}件）</option>${r.models.map(m=>`<option value="${esc(m.id)}">${esc(m.id)}</option>`).join("")}</select>`:""}</span></label>
+        ${modelPicker("eM-"+p.id, vi, "モデルの一覧を取得しています…")}
         <label class="f">表示名<input id="eL-${p.id}" value="${esc(p.label)}"></label>
         ${vi.keyName?`<label class="f">新しい${esc(vi.keyName)}<input id="eK-${p.id}" type="password" autocomplete="off" spellcheck="false" placeholder="空欄なら今のキーのまま"></label>`:""}
         ${p.vendor==="mock"?"":`<label class="f">接続先<input id="eE-${p.id}" value="${esc(p.endpoint||"")}" placeholder="空欄なら標準"></label>`}
         <label class="f">月間上限（トークン）<input id="eT-${p.id}" type="number" min="1" step="1000" value="${p.monthlyTokenLimit??""}" placeholder="空欄なら上限なし"></label>
         <button class="btn sm" data-save="${p.id}">保存</button><button class="btn sm ghost" data-cancel="${p.id}">取消</button></div>
-        ${vi.keyUrl?`<p class="hint">キーの全文はここでは表示できません。分からなくなったときは ${extLink(vi.keyUrl, vi.maker+" の管理画面")} で新しく発行して入れ直してください${vi.autoIssue?.mode!=="none"?"（上の「"+esc(vi.name)+" を登録」から自動で発行し直すこともできます）":""}。</p>`:""}<div id="eMsg-${p.id}"></div></td></tr>`;}).join("") || `<tr><td colspan="6" class="hint">まだ登録されていません。上で使うAIを選んでください</td></tr>`}
+        ${vi.keyUrl?`<p class="hint">キーの全文はここでは表示できません。分からなくなったときは ${extLink(vi.keyUrl, vi.maker+" の管理画面")} で新しく発行して入れ直してください${vi.autoIssue?.mode!=="none"?"（上の「"+esc(vi.name)+" を登録」から自動で発行し直すこともできます）":""}。キーを入れ直すと、保存したときに新しいキーで一覧を確かめます。</p>`:""}<div id="eMsg-${p.id}"></div></td></tr>`;}).join("") || `<tr><td colspan="6" class="hint">まだ登録されていません。上で使うAIを選んでください</td></tr>`}
     </tbody></table></div>
     ${isAdmin?"":`<p class="note warn">登録・変更・削除は admin 権限が必要です。</p>`}`;
   const numOrNull = v => v.trim()==="" ? null : Math.floor(Number(v));
   const msg = (h) => { const m=$("#pMsg"); if(m) m.innerHTML=h; };
   const err = e => msg(`<div class="note err">${esc(e.message||e)}</div>`);
-  const common = () => { const b={model:$("#pM").value.trim()}; if($("#pL").value.trim()) b.label=$("#pL").value.trim(); const t=numOrNull($("#pT").value); if(t) b.monthlyTokenLimit=t; return b; };
-  const needModel = vi => { if($("#pM").value.trim()) return true; err(`モデルIDを入れてください（${vi.modelHint||""}）`); $("#pM").focus(); return false; };
+  const extra = () => { const b={}; if($("#pL").value.trim()) b.label=$("#pL").value.trim(); const t=numOrNull($("#pT").value); if(t) b.monthlyTokenLimit=t; return b; };
+  const needModel = () => { if(modelOf("pM")) return true; err("モデルを一覧から選んでください（一覧にない場合は「一覧にないモデルIDを入力…」）"); $("#pMSel")?.focus(); return false; };
   const busy = (btn, on, text) => { if(!btn) return; if(on){ btn.dataset.t=btn.textContent; btn.textContent=text; btn.disabled=true; } else { btn.textContent=btn.dataset.t||btn.textContent; btn.disabled=false; } };
-  const done = async (cred, vi, extra="") => { S.addVendor=null; S.gSession=null; await loadProviders(); renderAdmin(); toast(`${vi.name} を登録しました${extra}`); verifyProvider(cred.id); };
-  document.querySelectorAll("[data-addv]").forEach(b=>b.onclick=()=>{ S.addVendor = S.addVendor===b.dataset.addv ? null : b.dataset.addv; renderProviders(); $("#addBox")?.scrollIntoView({block:"nearest"}); });
+  const done = async (cred, vi, extraMsg="") => { S.addVendor=null; S.gSession=null; S.pending=null; await loadProviders(); renderAdmin(); toast(`${vi.name} を登録しました${extraMsg}`); verifyProvider(cred.id); };
+  document.querySelectorAll("[data-addv]").forEach(b=>b.onclick=()=>{ if(S.pending && !confirm("発行したキーをまだ登録していません。閉じますか？（キーは提供元に残ります。不要なら提供元の画面で削除してください）")) return; S.pending=null; S.addVendor = S.addVendor===b.dataset.addv ? null : b.dataset.addv; renderProviders(); $("#addBox")?.scrollIntoView({block:"nearest"}); });
   document.querySelectorAll("[data-amode]").forEach(b=>b.onclick=()=>{ S.addMode=b.dataset.amode; renderProviders(); });
   document.querySelectorAll("[data-kg]").forEach(b=>b.onclick=()=>openKeyGuide(b.dataset.kg));
-  document.querySelectorAll("[data-aclose]").forEach(b=>b.onclick=()=>{ S.addVendor=null; renderProviders(); });
+  document.querySelectorAll("[data-aclose]").forEach(b=>b.onclick=()=>{ if(S.pending && !confirm("発行したキーをまだ登録していません。閉じますか？（キーは提供元に残ります。不要なら提供元の画面で削除してください）")) return; S.pending=null; S.addVendor=null; renderProviders(); });
   document.querySelectorAll("[data-pcheck]").forEach(b=>b.onclick=async()=>{ busy(b,true,"確認中…"); await verifyProvider(b.dataset.pcheck); });
-  document.querySelectorAll("[data-emsel]").forEach(s=>s.onchange=()=>{ if(s.value) $("#eM-"+s.dataset.emsel).value=s.value; });
   document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{ try{await api(`/api/orgs/${S.orgId}/providers/${b.dataset.del}`,{method:"DELETE"}); delete S.checks[b.dataset.del]; await loadProviders(); renderAdmin(); toast("削除しました")}catch(e){toast(e.message)} });
-  document.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>{ const r=$("#edit-"+b.dataset.edit); r.hidden=!r.hidden; });
+  document.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>{ const r=$("#edit-"+b.dataset.edit); if(r.hidden) openEdit(b.dataset.edit); else r.hidden=true; });
   document.querySelectorAll("[data-cancel]").forEach(b=>b.onclick=()=>{ $("#edit-"+b.dataset.cancel).hidden=true; });
   document.querySelectorAll("[data-save]").forEach(b=>b.onclick=async()=>{
     const id=b.dataset.save, v=k=>document.getElementById(`${k}-${id}`);
-    const body={model:v("eM").value.trim(), label:v("eL").value.trim(), monthlyTokenLimit:numOrNull(v("eT").value)};
+    const model=modelOf("eM-"+id); if(!model){ v("eMsg").innerHTML=`<div class="note err">モデルを一覧から選んでください</div>`; return; }
+    const body={model, label:v("eL").value.trim(), monthlyTokenLimit:numOrNull(v("eT").value)};
     if(v("eK")&&v("eK").value) body.apiKey=v("eK").value;
     if(v("eE")) body.endpoint=v("eE").value.trim()||null;
     try{ await api(`/api/orgs/${S.orgId}/providers/${id}`,{method:"PATCH",body}); delete S.checks[id]; await loadProviders(); renderAdmin(); toast("変更しました"); verifyProvider(id); }
     catch(e){ v("eMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   });
+  openEdits.forEach(id=>openEdit(id)); // 描き直しても、開いていた変更欄は開いたままにする
   S.gError=null;
   if(!sel || !isAdmin) return;
   const vi = sel;
-  // キーを確かめて、モデル一覧を取得する（貼り付け・ローカルLLM）
-  if($("#pCheck")) $("#pCheck").onclick=async()=>{
-    const b={vendor:vi.vendor}; if($("#pK")) b.apiKey=$("#pK").value; if($("#pE")&&$("#pE").value.trim()) b.endpoint=$("#pE").value.trim();
-    if($("#pK") && !b.apiKey.trim()){ err(`${vi.keyName}を入れてください`); return; }
-    busy($("#pCheck"),true,"確認中…");
-    try{ const r=await api(`/api/orgs/${S.orgId}/providers/check`,{method:"POST",body:b}); $("#pCheckOut").innerHTML=checkNote(r); if(r.ok) showModels(r.models); }
-    catch(e){ $("#pCheckOut").innerHTML=checkNote({ok:false,message:e.message}); }
-    finally{ busy($("#pCheck"),false); }
+  // 貼り付けたキー（とローカルLLMの接続先）で、モデルの一覧を自動で取得する
+  let seq=0;
+  const fetchModels = async () => {
+    const b={vendor:vi.vendor};
+    if($("#pK")){ b.apiKey=$("#pK").value; if(!b.apiKey.trim()){ waitModels("pM","APIキーを入れると、モデルの一覧を自動で取得します"); $("#pCheckOut").innerHTML=""; return; } }
+    if($("#pE")&&$("#pE").value.trim()) b.endpoint=$("#pE").value.trim();
+    const my=++seq; waitModels("pM","モデルの一覧を取得しています…");
+    try{ const r=await api(`/api/orgs/${S.orgId}/providers/check`,{method:"POST",body:b}); if(my!==seq) return;
+      if($("#pCheckOut")) $("#pCheckOut").innerHTML = vi.keyName || !r.ok ? checkNote(r) : "";
+      fillModels("pM", r.ok?r.models:[], modelOf("pM")); }
+    catch(e){ if(my!==seq) return; if($("#pCheckOut")) $("#pCheckOut").innerHTML=checkNote({ok:false,message:e.message}); fillModels("pM", [], ""); }
   };
+  let timer=null; const later=()=>{ clearTimeout(timer); timer=setTimeout(fetchModels, 600); };
+  if($("#pK")){ $("#pK").addEventListener("input", later); $("#pK").addEventListener("paste", ()=>setTimeout(fetchModels,0)); }
+  if($("#pE")) $("#pE").addEventListener("change", fetchModels);
+  if($("#pCheck")) $("#pCheck").onclick=fetchModels;
+  if(!vi.keyName && $("#pAdd")) fetchModels(); // ローカルLLM・模擬AIは、開いたらすぐ取得
   if($("#pAdd")) $("#pAdd").onclick=async()=>{
-    if(!needModel(vi)) return;
-    const b={vendor:vi.vendor, ...common()};
-    if($("#pK")){ if(!$("#pK").value.trim()){ err(`${vi.keyName}を入れてください`); return; } b.apiKey=$("#pK").value; }
+    if($("#pK") && !$("#pK").value.trim()){ err(`${vi.keyName}を入れてください`); return; }
+    if(!needModel()) return;
+    const b={vendor:vi.vendor, model:modelOf("pM"), ...extra()};
+    if($("#pK")) b.apiKey=$("#pK").value;
     if($("#pE") && $("#pE").value.trim()) b.endpoint=$("#pE").value.trim();
     busy($("#pAdd"),true,"登録中…");
     try{ const cred=await api(`/api/orgs/${S.orgId}/providers`,{method:"POST",body:b}); await done(cred, vi); }
     catch(e){ busy($("#pAdd"),false); err(e); }
   };
+  // 自動発行したキー: 取得したモデルの一覧から選んで登録
+  if(S.pending && $("#pnFinish")){
+    fillModels("pM", S.pending.models||[], "");
+    $("#pnFinish").onclick=async()=>{
+      if(!needModel()) return;
+      busy($("#pnFinish"),true,"登録中…");
+      try{ const cred=await api(`/api/orgs/${S.orgId}/providers/auto/finish`,{method:"POST",body:{pending:S.pending.pending, model:modelOf("pM"), ...extra()}}); const w=S.pending.issued; await done(cred, vi, w?.projectName?`（プロジェクト「${w.projectName}」のキー）`:w?.projectId?`（プロジェクト「${w.projectId}」のキー）`:""); }
+      catch(e){ busy($("#pnFinish"),false); err(e); }
+    };
+    if($("#pnRefetch")) $("#pnRefetch").onclick=async()=>{
+      busy($("#pnRefetch"),true,"取得中…");
+      try{ const r=await api(`/api/orgs/${S.orgId}/providers/auto/models`,{method:"POST",body:{pending:S.pending.pending}});
+        if(r.ok){ S.pending.models=r.models; S.pending.modelsError=null; renderProviders(); } else { err(r.message); busy($("#pnRefetch"),false); } }
+      catch(e){ err(e); busy($("#pnRefetch"),false); }
+    };
+  }
+  const issued = r => { S.pending={vendor:vi.vendor, ...r}; renderProviders(); $("#addBox")?.scrollIntoView({block:"nearest"}); };
   // ChatGPT: 管理用キーで発行
   if($("#oaLoad")) $("#oaLoad").onclick=async()=>{
     if(!$("#oaK").value.trim()){ err(`${vi.autoIssue.adminKeyName}を入れてください`); return; }
@@ -596,10 +658,9 @@ function renderProviders(){
   };
   if($("#oaIssue")) $("#oaIssue").onclick=async()=>{
     if(!$("#oaK").value.trim()){ err(`${vi.autoIssue.adminKeyName}を入れてください`); return; }
-    if(!needModel(vi)) return;
-    const b={adminKey:$("#oaK").value, ...common()}; if($("#oaP").value) b.projectId=$("#oaP").value; if($("#oaX").value) b.expiresInDays=Number($("#oaX").value);
+    const b={adminKey:$("#oaK").value}; if($("#oaP").value) b.projectId=$("#oaP").value; if($("#oaX").value) b.expiresInDays=Number($("#oaX").value);
     busy($("#oaIssue"),true,"発行中…");
-    try{ const cred=await api(`/api/orgs/${S.orgId}/providers/auto/openai`,{method:"POST",body:b}); $("#oaK").value=""; await done(cred, vi, `（プロジェクト「${cred.issued.projectName}」にキーを発行）`); }
+    try{ const r=await api(`/api/orgs/${S.orgId}/providers/auto/openai`,{method:"POST",body:b}); $("#oaK").value=""; issued(r); }
     catch(e){ busy($("#oaIssue"),false); err(e); }
   };
   // Gemini: Google でログインして発行
@@ -617,9 +678,8 @@ function renderProviders(){
   })();
   if($("#gIssue")) $("#gIssue").onclick=async()=>{
     if(!$("#gP").value){ err("キーを作るプロジェクトを選んでください"); return; }
-    if(!needModel(vi)) return;
     busy($("#gIssue"),true,"作成中…（1分ほどかかることがあります）");
-    try{ const cred=await api(`/api/orgs/${S.orgId}/providers/auto/google`,{method:"POST",body:{session:S.gSession, projectId:$("#gP").value, ...common()}}); await done(cred, vi, `（プロジェクト「${cred.issued.projectId}」にキーを作成。使えるまで1〜2分かかることがあります）`); }
+    try{ const r=await api(`/api/orgs/${S.orgId}/providers/auto/google`,{method:"POST",body:{session:S.gSession, projectId:$("#gP").value}}); S.gSession=null; issued(r); }
     catch(e){ busy($("#gIssue"),false); err(e); }
   };
 }
