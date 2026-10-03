@@ -296,7 +296,7 @@ jobs:
           for i in $(seq 1 60); do curl -fs localhost:8787/health && break; sleep 2; done
           ORG=$(curl -fs -X POST localhost:8787/api/orgs -H 'content-type: application/json' -d '{"name":"kit"}' | jq -r .id)
           curl -fs localhost:8787/api/meta | jq -e '[.phases[].key] | index("rules")' > /dev/null
-          curl -fs localhost:8787/ | grep -q '要件ナビ'
+          curl -fs -o index.html localhost:8787/ && grep -q '要件ナビ' index.html
           docker compose down -v
           echo "::notice::公開イメージ ${IMAGE}:${SHA_TAG} を Docker キットで起動できました"
       - name: Can the image be pulled without logging in?
