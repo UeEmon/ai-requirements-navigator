@@ -1,7 +1,11 @@
-# ローカルDockerでの起動:
-#   cp .env.example .env   # MASTER_KEY を設定（npm run gen:key）
-#   docker compose up --build
+# ローカルDocker（Docker Desktop）での起動。手順の詳細: docs/docker-desktop.md
+#   cp .env.example .env   # MASTER_KEY を設定
+#   docker compose up -d --build
 #   → http://localhost:8787
+#
+# 既定では、このPCからだけ接続できます（127.0.0.1）。開発用の認証（AUTH_MODE=dev）は
+# 誰でも管理者を名乗れるため、ほかのPCに公開するときは AUTH_MODE=oidc にしてから
+# ARN_BIND=0.0.0.0 にしてください。
 #
 # 任意のプロファイル:
 #   --profile local-llm  … Ollama（ローカルLLM、MIT）
@@ -11,14 +15,18 @@ services:
   app:
     build: .
     ports:
-      - "8787:8787"
+      - "${ARN_BIND:-127.0.0.1}:${ARN_PORT:-8787}:8787"
     env_file: .env
+    # .env の値より優先する（コンテナの中での場所・接続先）
     environment:
       NODE_ENV: ${NODE_ENV:-development}
+      PORT: "8787"
       STORE: postgres
       DATABASE_URL: postgres://arn:arn@db:5432/arn
+      DATABASE_SSL: "false"
       KEY_ENCRYPTION: local
       STORAGE: local
+      STORAGE_DIR: /data/artifacts
       AUTH_MODE: ${AUTH_MODE:-dev}
     volumes:
       - artifacts:/data/artifacts
@@ -32,8 +40,9 @@ services:
       POSTGRES_USER: arn
       POSTGRES_PASSWORD: arn
       POSTGRES_DB: arn
+    # DBはこのPCからだけ（ほかのDBと重なるときは DB_PORT=15432 などに変える）
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -45,7 +54,7 @@ services:
     image: ollama/ollama:latest
     profiles: ["local-llm"]
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama:/root/.ollama
 

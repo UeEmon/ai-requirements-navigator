@@ -160,6 +160,48 @@ jobs:
         shell: bash
         run: docker logs app 2>&1 | tail -40 | while IFS= read -r l; do echo "::error::$l"; done
 
+  # Docker Desktop の手順（docs/docker-desktop.md）どおりに docker compose で起動して使えるか
+  compose:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start with docker compose (same steps as docs/docker-desktop.md)
+        shell: bash
+        run: |
+          cp .env.example .env
+          KEY=$(docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+          sed -i "s|^MASTER_KEY=.*|MASTER_KEY=$KEY|" .env
+          docker compose up -d --build
+          for i in $(seq 1 60); do curl -fs localhost:8787/health && break; sleep 2; done
+          # 既定ではこのPCからだけ接続できる
+          docker compose port app 8787 | grep -q '^127.0.0.1:'
+      - name: Use the app (organization → AI → sample → spec saved to the volume → MCP)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORG=$(curl -fs -X POST localhost:8787/api/orgs -H 'content-type: application/json' -d '{"name":"compose"}' | jq -r .id)
+          H=(-H 'content-type: application/json' -H "x-org-id: $ORG" -H 'x-role: admin' -H 'x-user-id: admin')
+          for l in m1 m2 judge; do curl -fs -X POST localhost:8787/api/orgs/$ORG/providers "${H[@]}" -d "{\"vendor\":\"mock\",\"model\":\"mock\",\"label\":\"$l\"}" > /dev/null; done
+          PJ=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/samples "${H[@]}" -d '{}' | jq -r .project.id)
+          # 仕様書を保存先（Docker ボリューム）に残せる
+          KEYPATH=$(curl -fsS -D - -o spec.docx -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"docx"}' | tr -d '\r' | awk -F': ' 'tolower($1)=="x-artifact-key"{print $2}')
+          test -n "$KEYPATH"
+          docker compose exec -T app ls -l "/data/artifacts/$KEYPATH"
+          # 再起動してもデータが残る
+          docker compose restart app
+          for i in $(seq 1 60); do curl -fs localhost:8787/health && break; sleep 2; done
+          curl -fs localhost:8787/api/projects/$PJ/requirements "${H[@]}" | jq -e 'length == 69' > /dev/null
+          TOK=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/api-tokens "${H[@]}" -d "{\"name\":\"local\",\"projectIds\":[\"$PJ\"]}" | jq -r .token)
+          curl -fs -X POST localhost:8787/mcp -H "authorization: Bearer $TOK" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_project_overview","arguments":{}}}' | jq -e '.result.isError == false' > /dev/null
+          echo "::notice::docker compose の手順OK（保存先 /data/artifacts/$KEYPATH、再起動後も要件 69件）"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs app | tail -60
+      - name: Clean up
+        if: always()
+        run: docker compose down -v
+
   cdk:
     runs-on: ubuntu-latest
     defaults:

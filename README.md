@@ -20,9 +20,12 @@
 
 ```bash
 cp .env.example .env
-# MASTER_KEY を設定（Nodeがあれば npm run gen:key、なければ openssl rand -base64 32）
-docker compose up --build
+# MASTER_KEY を設定（次のコマンドの出力を .env に貼る）
+docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+docker compose up -d --build
 ```
+
+Windows・Mac の Docker Desktop での詳しい手順（ポートの変更、ローカルLLM、ログイン画面、更新、バックアップ、うまくいかないとき）は [Docker Desktop への展開手順](docs/docker-desktop.md) にあります。
 
 http://localhost:8787 を開き、次の順に操作します。
 
@@ -38,11 +41,11 @@ http://localhost:8787 を開き、次の順に操作します。
 10. 「テスト・引き継ぎ」で着手前チェックを確認し、足りないものを直してから、テストケース（CSV）と引き継ぎパッケージ（JSON）を開発・テストの担当者に渡す（[コーディング・テスト工程への引き継ぎ](docs/handoff.md)）
 11. 管理者がトークンを発行し、AIコーディングツール（Claude Code・Cursor・GitHub Copilot など）を MCP で接続する。開発用パッケージ（zip）をリポジトリに置くと、AIツールは要件を読み、実装状況とテスト結果を報告し、不明点を質問する（[開発・テストのツールとの連携](docs/connect.md)）
 
-本システム自身の要求事項を題材にした **サンプル事例**（資料の分析・EARSの要件65件・非機能要件シート入り）を「AI設定・プロジェクト」から読み込めます。内容は [docs/sample/requirements-navigator.md](docs/sample/requirements-navigator.md) で読めます。
+本システム自身の要求事項を題材にした **サンプル事例**（資料の分析・要件69件（業務ルール4件を含む）・非機能要件シート・用語集・受け入れ基準入り）を「AI設定・プロジェクト」から読み込めます。内容は [docs/sample/requirements-navigator.md](docs/sample/requirements-navigator.md) で読めます。
 
 APIキーなしで画面の流れだけを見たい場合は http://localhost:8787/demo.html を開いてください（応答はすべて模擬）。
 
-ローカルLLMを使う場合: `docker compose --profile local-llm up --build` で Ollama も起動し、
+ローカルLLMを使う場合: `docker compose --profile local-llm up -d --build` で Ollama も起動し、
 AIの登録で種類「ローカルLLM」、接続先 `http://ollama:11434` を指定します（モデルは事前に `docker compose exec ollama ollama pull <モデル名>`）。
 
 ## AWS へのデプロイ
@@ -114,6 +117,7 @@ npm run init:project -- --name "顧客管理システム" --slug crm-system
 
 ## ドキュメント
 
+- [Docker Desktop への展開手順](docs/docker-desktop.md)
 - [ログインの設定（Cognito / Keycloak）](docs/auth.md)
 - [実装工程への連携（GitHub / Jira / Backlog）](docs/integrations.md)
 - [画面イメージと、確定後の変更管理](docs/screens-and-changes.md)
