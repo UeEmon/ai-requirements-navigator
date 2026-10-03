@@ -221,7 +221,7 @@ describe("AIコーディングツール・テストツールとの連携", () =>
     expect(batch[0].result.structuredContent.summary).toMatchObject({ passed: 1 });
     const bad = await (await rpc(rw.token, { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "report_implementation", arguments: { items: [{ requirementCode: "FR-02", status: "done" }] } } })).json();
     expect(bad.result.isError).toBe(true);
-    expect(bad.result.content[0].text).toContain("入力が正しくありません");
+    expect(bad.result.content[0].text).toContain("not_started"); // 使える値を示す
     const st = await (await rpc(rw.token, { jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "get_status", arguments: {} } })).json();
     expect(st.result.structuredContent.rows.find((x: { code: string }) => x.code === "FR-02")).toMatchObject({ impl: { status: "blocked" }, tests: { passed: 1 } });
 

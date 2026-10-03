@@ -204,6 +204,10 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
       <div><h2 style="margin:0">テストケース</h2><p class="hint" style="margin:4px 0 0">EARS の文型から規則的に作った観点と、非機能要件の確認方法、ストーリーの受け入れ条件です。要件を直すと自動で作り直されます。</p></div>
       <label class="f" style="margin:0">工程<select id="hoLevel"><option value="">すべて</option><option value="system">システムテスト</option><option value="nfr">非機能テスト</option><option value="acceptance">受け入れテスト</option></select></label></div>
       <div id="hoTests"></div></div>
+    <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div><h2 style="margin:0">開発・テストのツールとの連携</h2><p class="hint" style="margin:4px 0 0">AIコーディングツール（Claude Code・Cursor・GitHub Copilot など）やCI・テストツールが、要件を読み、実装状況とテスト結果を報告し、質問できます。接続には組織の管理者が「AI設定・プロジェクト」で発行するトークンを使います。</p></div>
+      <div class="row"><button class="btn sm" id="hoPack">開発用パッケージ（zip）</button></div></div>
+      <div id="hoConnect"></div></div>
   </section>
   <section class="view" id="v-change">
     <div class="panel" id="basePanel"></div>
@@ -214,7 +218,7 @@ span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.go
   <section class="view" id="v-admin"><div class="grid2">
     <div class="panel" id="provPanel"></div>
     <div class="panel" id="projPanel"></div>
-  </div><div class="panel" id="integPanel"></div><div class="panel" id="usagePanel" hidden></div><div class="panel" id="auditPanel" hidden></div></section>
+  </div><div class="panel" id="integPanel"></div><div class="panel" id="devPanel"></div><div class="panel" id="usagePanel" hidden></div><div class="panel" id="auditPanel" hidden></div></section>
 </div>
 <div class="toast" id="toast" hidden></div>
 
@@ -466,6 +470,7 @@ function renderAdmin(){
     catch(e){ $("#jMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   };
   loadIntegrations();
+  loadDevConnect();
   if (isAdmin) { loadUsage(); auditState.entries=[]; auditState.next=null; loadAudit(); }
   else { $("#usagePanel").hidden=true; $("#auditPanel").hidden=true; }
 }
@@ -1001,6 +1006,7 @@ async function loadHandoff(){
   try{
     const [r,d,t]=await Promise.all([api(`/api/projects/${S.project.id}/readiness`), api(`/api/projects/${S.project.id}/design/tables`), api(`/api/projects/${S.project.id}/tests`)]);
     hoState.tests=t; renderReadiness(r); renderDesignTables(d); renderTests();
+    loadConnectStatus();
   }catch(e){ $("#hoReady").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
 function renderReadiness(r){
@@ -1042,6 +1048,125 @@ document.querySelectorAll("[data-hfile]").forEach(b=>b.onclick=async()=>{
     saveBlob(await res.blob(), `${fileSafe(S.project.name)}_${f==="tests.csv"?"テストケース.csv":"引き継ぎ.json"}`);
   }catch(e){ toast(e.message) }
 });
+
+/* ---------- 開発・テストのツールとの連携 ---------- */
+const IMPL={not_started:["未着手",""],in_progress:["実装中","warn"],implemented:["実装済み","good"],blocked:["止まっている","bad"]};
+const RTEST={passed:["合格","good"],failed:["不合格あり","bad"],partial:["一部未実施","warn"],not_run:["未実施",""]};
+const QST={open:["回答待ち","warn"],answered:["回答済み","good"],closed:["閉じた",""]};
+const extLink=(url,label)=>safeHref(url)?`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`:esc(label);
+async function loadConnectStatus(){
+  if(!S.project){ $("#hoConnect").innerHTML=""; return }
+  try{ renderConnect(await api(`/api/projects/${S.project.id}/connect`)) }
+  catch(e){ $("#hoConnect").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+}
+function renderConnect(v){
+  const sm=v.status.summary, pid=S.project.id;
+  const open=v.questions.filter(q=>q.status==="open");
+  const setup=`claude mcp add --transport http requirements-navigator ${v.server}/mcp --header "Authorization: Bearer $ARN_TOKEN"`;
+  const curl=`curl -X POST "${v.server}/api/v1/projects/${pid}/test-runs?tool=vitest&revision=$(git rev-parse --short HEAD)" \\\n  -H "Authorization: Bearer $ARN_TOKEN" -H "Content-Type: application/xml" --data-binary @junit.xml`;
+  const rows=v.status.rows.filter(r=>["FR","NFR"].includes(r.type));
+  $("#hoConnect").innerHTML=`
+    <details style="margin-top:10px"><summary><b>接続のしかた</b></summary>
+      <p class="cmt" style="margin:6px 0 2px">AIコーディングツール（MCP）：Claude Code の例。開発用パッケージの <span class="mono">.mcp.json</span> にも同じ設定が入っています。</p>
+      <div class="row"><pre class="mono" style="flex:1;white-space:pre-wrap;margin:0;padding:8px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px">${esc(setup)}</pre><button class="btn sm ghost" data-copy="setup">コピー</button></div>
+      <p class="cmt" style="margin:8px 0 2px">CI・テストツール：JUnit XML をそのまま送れます。テスト名にテストID（TC-FR-01-1 など）を含めると要件に結びつきます。</p>
+      <div class="row"><pre class="mono" style="flex:1;white-space:pre-wrap;margin:0;padding:8px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px">${esc(curl)}</pre><button class="btn sm ghost" data-copy="curl">コピー</button></div>
+      <p class="cmt" style="margin:8px 0 0">API の定義：<a href="/api/v1/openapi.json" target="_blank" rel="noopener">OpenAPI（JSON）</a>　プロジェクトID：<span class="mono">${esc(pid)}</span></p>
+    </details>
+    <div class="row" style="margin:12px 0;gap:18px">
+      <span>実装済み <b class="mono">${sm.implemented}</b></span><span>実装中 <b class="mono">${sm.in_progress}</b></span><span>止まっている <b class="mono">${sm.blocked}</b></span><span>報告なし <b class="mono">${sm.unreported}</b></span>
+      <span>テスト合格 <b class="mono">${sm.testPassed}</b></span><span>不合格あり <b class="mono">${sm.testFailed}</b></span>${sm.stale?`<span class="st warn">報告後に要件が変わった ${sm.stale}</span>`:""}</div>
+    ${open.length?`<h3 style="margin:14px 0 4px">開発からの質問（回答待ち ${open.length}件）</h3>`:`<h3 style="margin:14px 0 4px">開発からの質問</h3>`}
+    ${v.questions.length?v.questions.map(q=>{const [ql,qc]=QST[q.status]||[q.status,""]; return `<div style="border-top:1px solid var(--rule);padding:8px 0">
+      <div><span class="mono">${esc(q.code)}</span> ${q.requirementCode?`<span class="tag">${esc(q.requirementCode)}</span>`:""} <span class="st ${qc}">${ql}</span> <span class="hint">${esc(q.askedBy)}・${esc(q.createdAt.slice(0,16).replace("T"," "))}</span></div>
+      <div style="margin:4px 0">${esc(q.text)}</div>${q.context?`<div class="cmt">状況：${esc(q.context)}</div>`:""}
+      ${q.status==="open"?(canEdit()?`<div class="row" style="align-items:flex-end;margin-top:6px"><label class="f" style="flex:1">回答<textarea id="qa-${q.id}" rows="2"></textarea></label><button class="btn sm" data-qans="${q.id}">回答する</button><button class="btn sm ghost" data-qclose="${q.id}">回答せず閉じる</button></div>
+        <p class="hint" style="margin:2px 0 0">要件を変える必要があるときは、回答とあわせて「変更管理」で変更要求を出してください。</p>`:""):`<div class="cmt">回答（${esc(q.answeredBy||"")}）：${esc(q.answer)}</div>`}</div>`}).join(""):'<p class="hint">まだありません。AIツールは推測で実装せず、ここに質問するよう AGENTS.md に書かれています。</p>'}
+    <h3 style="margin:14px 0 4px">要件ごとの実装状況とテスト結果</h3>
+    <div class="scroll"><table class="t"><thead><tr><th>要件</th><th>内容</th><th>実装</th><th>テスト</th></tr></thead><tbody>
+    ${rows.map(r=>{const [il,ic]=r.impl?IMPL[r.impl.status]:["報告なし",""]; const [tl,tc]=RTEST[r.tests.status];
+      return `<tr><td class="mono">${esc(r.code)}</td><td>${esc(r.title)}</td>
+      <td style="white-space:nowrap"><span class="st ${ic}">${il}</span>${r.impl?.stale?'<br><span class="tag">報告後に要件が変更</span>':""}${(r.impl?.refs||[]).map(x=>`<br>${extLink(x.url,x.label)}`).join("")}${r.impl?.note?`<br><span class="cmt">${esc(r.impl.note)}</span>`:""}</td>
+      <td style="white-space:nowrap"><span class="st ${tc}">${tl}</span><br><span class="hint mono">${r.tests.passed}/${r.tests.total}${r.tests.failed?` ×${r.tests.failed}`:""}</span>${r.tests.failures.map(f=>`<br><span class="cmt" title="${esc(f.message||"")}">${esc(f.testId)}</span>`).join("")}</td></tr>`}).join("")||'<tr><td colspan="4" class="hint">機能要件・非機能要件がまだありません</td></tr>'}</tbody></table></div>
+    <h3 style="margin:14px 0 4px">テストの実行結果</h3>
+    ${v.runs.length?`<div class="scroll"><table class="t"><thead><tr><th>日時</th><th>ツール</th><th>版</th><th>合格</th><th>不合格</th><th>スキップ</th><th>結びつかない</th></tr></thead><tbody>
+      ${v.runs.map(x=>`<tr><td class="mono">${esc(x.createdAt.slice(0,16).replace("T"," "))}</td><td>${x.url?extLink(x.url,x.tool||"―"):esc(x.tool||"―")}</td><td class="mono">${esc(x.revision||"―")}</td>
+        <td class="mono">${x.summary.passed}</td><td class="mono">${x.summary.failed}</td><td class="mono">${x.summary.skipped}</td><td class="mono" title="${esc(x.unmatched.join("\n"))}">${x.summary.unmatched}</td></tr>`).join("")}</tbody></table></div>`:'<p class="hint">まだありません</p>'}`;
+  const texts={setup, curl};
+  document.querySelectorAll("#hoConnect [data-copy]").forEach(b=>b.onclick=()=>copyText(texts[b.dataset.copy]));
+  const answer=async(id,status)=>{
+    const t=$("#qa-"+id).value.trim();
+    if(!t){ toast(status==="closed"?"閉じる理由を書いてください":"回答を書いてください"); return }
+    try{ await api(`/api/questions/${id}/answer`,{method:"POST",body:{answer:t,status}}); toast(status==="closed"?"閉じました":"回答しました"); loadHandoff() }catch(e){ toast(e.message) }
+  };
+  document.querySelectorAll("[data-qans]").forEach(b=>b.onclick=()=>answer(b.dataset.qans,"answered"));
+  document.querySelectorAll("[data-qclose]").forEach(b=>b.onclick=()=>answer(b.dataset.qclose,"closed"));
+}
+$("#hoPack").onclick=async()=>{
+  if(!S.project) return;
+  try{
+    const res=await fetch(`/api/v1/projects/${S.project.id}/agent-pack.zip`,{headers:authHeaders()});
+    if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.error||`HTTP ${res.status}`) }
+    saveBlob(await res.blob(), `${fileSafe(S.project.name)}_開発用パッケージ.zip`);
+  }catch(e){ toast(e.message) }
+};
+
+/* ---------- 外部連携のトークンと Webhook（組織の管理者） ---------- */
+const WH_EVENTS={"baseline.created":"確定版の作成","change.decided":"変更の決定","question.created":"開発からの質問","question.answered":"質問への回答","implementation.reported":"実装状況の報告","test_run.recorded":"テスト結果の登録"};
+async function loadDevConnect(){
+  const panel=$("#devPanel"); if(!S.orgId && !S.token){ panel.innerHTML=""; return }
+  if(S.role!=="admin"){ panel.innerHTML=`<h2>開発・テストのツールとの連携</h2><p class="hint">AIコーディングツール・CI 用のトークンと Webhook は、組織の管理者が登録します。</p>`; return }
+  const [tokens,hooks]=await Promise.all([api(`/api/orgs/${S.orgId}/api-tokens`).catch(()=>[]), api(`/api/orgs/${S.orgId}/webhooks`).catch(()=>[])]);
+  const now=new Date().toISOString();
+  const tst=t=>t.revokedAt?["失効","bad"]:t.expiresAt&&t.expiresAt<now?["期限切れ","bad"]:["有効","good"];
+  panel.innerHTML=`<h2>開発・テストのツールとの連携（組織の管理者）</h2>
+    <p class="hint">AIコーディングツール（MCP）・CI・テストツールが使うトークンです。トークンは発行したときに一度だけ表示し、保存はしません（表示は末尾4文字のみ）。「参照」は要件・設計・テストを読むだけ、「報告」は実装状況・テスト結果の報告と質問もできます。</p>
+    <div class="scroll"><table class="t"><thead><tr><th>名前</th><th>トークン</th><th>権限</th><th>プロジェクト</th><th>有効期限</th><th>最後に使った日時</th><th>状態</th><th></th></tr></thead><tbody>
+    ${tokens.map(t=>{const [l,c]=tst(t); return `<tr><td>${esc(t.name)}</td><td class="mono">${esc(t.token)}</td><td>${t.scopes.includes("report")?"参照・報告":"参照"}</td>
+      <td>${t.projectIds?`${t.projectIds.length}件${S.project&&t.projectIds.includes(S.project.id)?"（開いているプロジェクトを含む）":""}`:"すべて"}</td><td class="mono">${esc((t.expiresAt||"").slice(0,10))}</td>
+      <td class="mono">${esc((t.lastUsedAt||"―").slice(0,16).replace("T"," "))}</td><td><span class="st ${c}">${l}</span></td>
+      <td>${t.revokedAt?"":`<button class="btn sm danger" data-trev="${t.id}">失効</button>`}</td></tr>`}).join("")||'<tr><td colspan="8" class="hint">まだ発行していません</td></tr>'}</tbody></table></div>
+    <h3 style="margin-top:14px">トークンを発行</h3>
+    <div class="row" style="align-items:flex-end"><label class="f">名前<input id="tkName" placeholder="例：Claude Code（山田）／GitHub Actions"></label>
+      <label class="f">権限<select id="tkScope"><option value="read">参照だけ</option><option value="report">参照・報告</option></select></label>
+      <label class="f">プロジェクト<select id="tkProj">${S.project?`<option value="one">開いているプロジェクトだけ（${esc(S.project.name)}）</option>`:""}<option value="all">組織のすべて</option></select></label>
+      <label class="f">有効期限<select id="tkDays"><option value="30">30日</option><option value="90" selected>90日</option><option value="180">180日</option><option value="365">365日</option></select></label>
+      <button class="btn" id="tkGo">発行</button></div><div id="tkOut"></div>
+    <h3 style="margin-top:18px">Webhook（外部システムへの通知）</h3>
+    <p class="hint">確定版の作成や質問などを、指定した URL に JSON で知らせます。本文は秘密の文字列で署名します（ヘッダー X-ARN-Signature：sha256=HMAC(秘密, タイムスタンプ + "." + 本文)）。社内アドレスには送れません（ローカルで使うときは WEBHOOK_ALLOW_PRIVATE=true）。</p>
+    <div class="scroll"><table class="t"><thead><tr><th>送り先</th><th>知らせること</th><th>最後の送信</th><th></th></tr></thead><tbody>
+    ${hooks.map(w=>`<tr><td class="mono">${esc(w.url)}</td><td>${w.events.map(e=>esc(WH_EVENTS[e]||e)).join("、")}</td><td>${w.lastStatus?`<span class="st ${/^HTTP 2/.test(w.lastStatus)?"good":"bad"}">${esc(w.lastStatus)}</span> <span class="hint">${esc((w.lastAt||"").slice(0,16).replace("T"," "))}</span>`:'<span class="hint">―</span>'}</td>
+      <td style="white-space:nowrap"><button class="btn sm ghost" data-whtest="${w.id}">送信テスト</button> <button class="btn sm danger" data-whdel="${w.id}">削除</button></td></tr>`).join("")||'<tr><td colspan="4" class="hint">まだ登録していません</td></tr>'}</tbody></table></div>
+    <div class="row" style="align-items:flex-end;margin-top:8px"><label class="f" style="flex:1;min-width:16em">送り先のURL<input id="whUrl" placeholder="https://"></label>
+      <fieldset style="border:0;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:4px 10px">${Object.entries(WH_EVENTS).map(([k,v])=>`<label class="cmt"><input type="checkbox" name="whEv" value="${k}" checked> ${v}</label>`).join("")}</fieldset>
+      <button class="btn" id="whGo">登録</button></div><div id="whOut"></div>`;
+  $("#tkGo").onclick=async()=>{
+    const name=$("#tkName").value.trim(); if(!name){ toast("名前を入れてください"); return }
+    const body={name, scopes:[$("#tkScope").value], expiresInDays:Number($("#tkDays").value), projectIds:$("#tkProj").value==="one"&&S.project?[S.project.id]:null};
+    try{
+      const t=await api(`/api/orgs/${S.orgId}/api-tokens`,{method:"POST",body});
+      await loadDevConnect();
+      $("#tkOut").innerHTML=`<div class="note" style="background:var(--accent-soft)"><b>トークンを発行しました。この画面を離れると二度と表示できません。</b>
+        <div class="row" style="margin-top:6px"><input class="mono" id="tkVal" value="${esc(t.token)}" readonly style="flex:1"><button class="btn sm" id="tkCopy">コピー</button></div>
+        <p class="cmt" style="margin:6px 0 0">使う側では環境変数 <span class="mono">ARN_TOKEN</span> に入れてください。リポジトリには入れないでください。</p></div>`;
+      $("#tkCopy").onclick=()=>copyText(t.token);
+    }catch(e){ $("#tkOut").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+  panel.querySelectorAll("[data-trev]").forEach(b=>b.onclick=async()=>{ if(!confirm("このトークンを失効させますか？使っているツールは接続できなくなります。")) return; try{ await api(`/api/orgs/${S.orgId}/api-tokens/${b.dataset.trev}`,{method:"DELETE"}); toast("失効させました"); loadDevConnect() }catch(e){ toast(e.message) } });
+  $("#whGo").onclick=async()=>{
+    const events=[...document.querySelectorAll("input[name=whEv]:checked")].map(x=>x.value);
+    if(!events.length){ toast("知らせることを選んでください"); return }
+    try{
+      const w=await api(`/api/orgs/${S.orgId}/webhooks`,{method:"POST",body:{url:$("#whUrl").value.trim(), events}});
+      await loadDevConnect();
+      $("#whOut").innerHTML=`<div class="note" style="background:var(--accent-soft)"><b>登録しました。署名の秘密はこの画面でだけ表示します。</b>
+        <div class="row" style="margin-top:6px"><input class="mono" id="whSec" value="${esc(w.secret)}" readonly style="flex:1"><button class="btn sm" id="whCopy">コピー</button></div></div>`;
+      $("#whCopy").onclick=()=>copyText(w.secret);
+    }catch(e){ $("#whOut").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+  panel.querySelectorAll("[data-whtest]").forEach(b=>b.onclick=async()=>{ b.disabled=true; try{ const r=await api(`/api/orgs/${S.orgId}/webhooks/${b.dataset.whtest}/test`,{method:"POST"}); toast(r.ok?"送信できました":`送信できませんでした（${r.status}）`); loadDevConnect() }catch(e){ toast(e.message) }finally{ b.disabled=false } });
+  panel.querySelectorAll("[data-whdel]").forEach(b=>b.onclick=async()=>{ if(!confirm("この Webhook を削除しますか？")) return; try{ await api(`/api/orgs/${S.orgId}/webhooks/${b.dataset.whdel}`,{method:"DELETE"}); toast("削除しました"); loadDevConnect() }catch(e){ toast(e.message) } });
+}
 
 /* ---------- 連携先（課題管理ツール） ---------- */
 const INTEG_FIELDS={

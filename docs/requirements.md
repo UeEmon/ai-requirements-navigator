@@ -83,6 +83,11 @@
 | F9-2 | 設計の材料（データ項目定義：キー・必須・桁や形式・区分値、権限表（CRUD）、外部とのやり取りの一覧、業務の言葉とコード上の名前の対応） | 推奨 | 済 | `ai-core/src/design-tables.ts`、`GET /api/projects/:id/design/tables` |
 | F9-3 | 着手前チェック（引き渡せる状態かの点検、未決事項の一覧、直す画面への案内） | 推奨 | 済 | `ai-core/src/readiness.ts`、`GET /api/projects/:id/readiness` |
 | F9-4 | 引き継ぎパッケージ（要件・非機能要件・設計・画面・タスク・テストをまとめた JSON。開発者のツールや AI コーディングツール向け） | 推奨 | 済 | `GET /api/projects/:id/handoff.json` |
+| F10-1 | 外部連携用の API トークン（組織の管理者が発行、参照／報告の権限・使えるプロジェクト・有効期限、ハッシュで保存、失効） | 推奨 | 済 | `apps/api/src/connect.ts`、`/api/orgs/:orgId/api-tokens`、[connect.md](./connect.md) |
+| F10-2 | MCP サーバー（AIコーディングツールが要件・設計・テストを読み、実装状況・テスト結果を報告し、質問する） | 推奨 | 済 | `POST /mcp` |
+| F10-3 | 外部連携 API と OpenAPI 定義（CI・テスト管理ツール向け。JUnit XML のテスト結果の取り込み） | 推奨 | 済 | `/api/v1/*`、`GET /api/v1/openapi.json` |
+| F10-4 | 開発用パッケージ（AGENTS.md・CLAUDE.md・.mcp.json・要件と設計の Markdown・Gherkin のテストシナリオ・テスト結果の送信スクリプト） | 推奨 | 済 | `GET /api/v1/projects/:id/agent-pack.zip` |
+| F10-5 | 実装状況・テスト結果・質問の確認と回答（要件ごと、報告後の要件変更の検出）と Webhook による通知（署名つき） | 推奨 | 済 | `GET /api/projects/:id/connect`、`/api/orgs/:orgId/webhooks` |
 
 ## 4. 非機能要件
 
@@ -94,6 +99,7 @@
 | セキュリティ | APIキー保管 | 組織ごとに管理者が登録。KMS または AES-256-GCM で暗号化、組織IDで束縛。表示は末尾4桁 |
 | セキュリティ | データ送信制御 | 機密プロジェクトはローカルLLMのみ |
 | セキュリティ | 通信 | ALBでHTTPS終端（証明書指定時）、RDSへはTLS（証明書検証あり） |
+| セキュリティ | 外部連携 | APIトークンは SHA-256 のみ保存し、発行時に一度だけ表示。権限（参照／報告）・プロジェクト・有効期限（最長365日）で制限。Webhook は https のみ、社内アドレスへの送信を拒否（送信のたびに名前解決を確認）、HMAC-SHA256 で署名。JUnit XML は DOCTYPE・ENTITY を拒否 |
 | 監査 | AI呼出の記録 | 監査ログに、利用者・日時・操作・送信した回答・使ったAIとトークン数を記録。APIキーは記録しない。`AUDIT_RETENTION_DAYS`（既定365日）を過ぎたものは自動削除 |
 | 性能 | AI処理の待ち | AI処理はジョブとして実行し、画面は進み具合を表示。複数コンテナでも1回だけ実行（PostgreSQL の SKIP LOCKED） |
 | コスト | 利用上限 | 組織全体とAIごとに月間トークン上限。組織の上限で停止、AIの上限ではそのAIを除外して続行。月の区切りは `USAGE_TIMEZONE`（既定 Asia/Tokyo） |

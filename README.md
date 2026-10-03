@@ -36,6 +36,7 @@ http://localhost:8787 を開き、次の順に操作します。
 8. 「変更管理」で要件定義を確定。以後の変更は変更要求として登録し、影響分析の結果を見て判断（[画面と変更管理](docs/screens-and-changes.md)）
 9. 「実装連携」で「AIでタスクに分解する」→ CSV で出力するか、管理者が登録した GitHub・Jira・Backlog に課題として登録（[連携の設定](docs/integrations.md)）
 10. 「テスト・引き継ぎ」で着手前チェックを確認し、足りないものを直してから、テストケース（CSV）と引き継ぎパッケージ（JSON）を開発・テストの担当者に渡す（[コーディング・テスト工程への引き継ぎ](docs/handoff.md)）
+11. 管理者がトークンを発行し、AIコーディングツール（Claude Code・Cursor・GitHub Copilot など）を MCP で接続する。開発用パッケージ（zip）をリポジトリに置くと、AIツールは要件を読み、実装状況とテスト結果を報告し、不明点を質問する（[開発・テストのツールとの連携](docs/connect.md)）
 
 本システム自身の要求事項を題材にした **サンプル事例**（資料の分析・EARSの要件65件・非機能要件シート入り）を「AI設定・プロジェクト」から読み込めます。内容は [docs/sample/requirements-navigator.md](docs/sample/requirements-navigator.md) で読めます。
 
@@ -119,6 +120,7 @@ npm run init:project -- --name "顧客管理システム" --slug crm-system
 - [資料の取り込み・分析と、EARS 記法](docs/discovery-and-ears.md)
 - [非機能要件シート](docs/nfr.md)
 - [コーディング・テスト工程への引き継ぎ](docs/handoff.md)
+- [開発・テストのツールとの連携（MCP・外部連携API・Webhook）](docs/connect.md)
 - [要件定義書（ベースライン・実装状況）](docs/requirements.md)
 - [UML](docs/uml/)
 - [設計判断（ADR）](docs/adr/)

@@ -155,7 +155,14 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
   const pending = new Set<Promise<void>>();
 
   const tokenOf = (c: AnyContext): ApiToken | undefined => c.get("token");
-  const serverUrl = (c: AnyContext) => (opts.publicUrl ?? new URL(c.req.url).origin).replace(/\/+$/, "");
+  /** 外から見たURL。PUBLIC_URL がなければリクエストから作る（ロードバランサーで HTTPS を終端していれば X-Forwarded-Proto を使う） */
+  const serverUrl = (c: AnyContext) => {
+    if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
+    const u = new URL(c.req.url);
+    const proto = (c.req.header("x-forwarded-proto") ?? "").split(",")[0]!.trim();
+    if (proto === "https" || proto === "http") u.protocol = `${proto}:`;
+    return u.origin;
+  };
   const publicToken = (t: ApiToken) => ({
     id: t.id,
     name: t.name,
