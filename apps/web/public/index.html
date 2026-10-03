@@ -1616,6 +1616,103 @@ const INTEG_FIELDS={
   backlog:[["spaceUrl","スペースのURL","https://example.backlog.jp"],["projectKey","プロジェクトキー","例：APP"],["issueType","種別名","タスク"]],
 };
 const TOKEN_LABEL={github:"個人用アクセストークン（Issues の読み書き）",jira:"APIトークン",backlog:"APIキー"};
+/* 連携設定の自動化: トークンで見られる候補を読み込み、プルダウンで選ぶ */
+const CONN_FIELDS={
+  github:[["apiBase","APIのURL（GitHub Enterprise Server のみ）","https://api.github.com"]],
+  jira:[["baseUrl","Jira の URL","https://example.atlassian.net"],["email","メールアドレス（Jira Cloud）","空欄なら Data Center の個人用アクセストークン"]],
+  backlog:[["spaceUrl","スペースの URL","https://example.backlog.jp"]],
+};
+const roleName = r => ({epic:"エピック",story:"ストーリー",subtask:"サブタスク"}[r]||"");
+/** 読み込んだ候補で、選ぶ欄を作る */
+function integChoicesHtml(kind, d){
+  const c=d.config||{}, opt=(v,t,sel)=>`<option value="${esc(v)}" ${sel?"selected":""}>${esc(t)}</option>`;
+  let h="";
+  if(kind==="github"){
+    const cur=c.owner&&c.repo?`${c.owner}/${c.repo}`:"";
+    h+=`<label class="f" style="min-width:260px">リポジトリ<select id="d-repo"><option value="">選んでください（${(d.repos||[]).length}件）</option>${(d.repos||[]).map(r=>opt(r.fullName, `${r.fullName}${r.private?"（非公開）":""}${r.hasIssues?"":"（Issues 無効）"}`, r.fullName===cur)).join("")}</select></label>`;
+    if(cur) h+=`<label class="f" style="min-width:220px">付けるラベル（カンマ区切り）<input id="d-labels" value="${esc(c.labels??"requirements-navigator")}" list="d-labelList"><datalist id="d-labelList">${(d.labels||[]).map(l=>`<option value="${esc(l)}">`).join("")}</datalist></label>`;
+  } else {
+    h+=`<label class="f" style="min-width:240px">プロジェクト<select id="d-project"><option value="">選んでください（${(d.projects||[]).length}件）</option>${(d.projects||[]).map(p=>opt(p.key, `${p.name}（${p.key}）`, p.key===c.projectKey)).join("")}</select></label>`;
+    const types=(d.issueTypes||[]).filter(t=>t.role!=="subtask");
+    const tsel=(id,label,val)=>`<label class="f">${label}<select id="${id}">${types.map(t=>opt(t.name, t.name+(roleName(t.role)&&!t.name.includes(roleName(t.role))&&!/^(epic|story)$/i.test(t.name)?`（${roleName(t.role)}）`:""), t.name===val)).join("")}</select></label>`;
+    if(c.projectKey && types.length){
+      if(kind==="jira") h+=tsel("d-epicType","エピックの種別",c.epicType)+tsel("d-storyType","ストーリーの種別",c.storyType);
+      else h+=tsel("d-issueType","課題の種別",c.issueType);
+    }
+  }
+  return h;
+}
+function setupIntegNew(){
+  let last=null, seq=0;
+  const kind=()=>$("#iKind").value;
+  const conn=()=>Object.fromEntries(CONN_FIELDS[kind()].map(([k])=>[k, ($("#c-"+k)?.value||"").trim()]));
+  const sync=()=>{
+    const k=kind(); last=null;
+    $("#iConn").innerHTML=CONN_FIELDS[k].map(([f,l,ph])=>`<label class="f" style="min-width:240px" ${k==="github"?'data-adv="1"':""}>${l}<input id="c-${f}" placeholder="${esc(ph)}"></label>`).join("");
+    if(k==="github") $("#iConn").hidden=true; else $("#iConn").hidden=false;
+    $("#iTokW").firstChild.textContent=TOKEN_LABEL[k]; $("#iDisc").innerHTML=""; $("#iAddMsg").innerHTML="";
+    $("#n-url").placeholder = k==="github" ? "例：https://github.com/acme/app（任意。GitHub Enterprise Server はこの URL で接続先を判別）" : k==="jira" ? "例：https://acme.atlassian.net/jira/software/projects/APP/boards/1" : "例：https://acme.backlog.jp/projects/APP";
+  };
+  /** 候補を読み込む（選んだリポジトリ・プロジェクトがあれば、その中身まで） */
+  const discover=async(extra={})=>{
+    const token=$("#n-token").value.trim(); if(!token){ $("#iDisc").innerHTML=""; return; }
+    const k=kind(), my=++seq;
+    const config={...conn(), ...(last?.config?{owner:last.config.owner,repo:last.config.repo,projectKey:last.config.projectKey}:{}), ...extra};
+    for(const key of Object.keys(config)) if(config[key]===undefined) delete config[key];
+    $("#iDisc").innerHTML=`<div class="note">読み込んでいます…</div>`;
+    try{
+      const r=await api(`/api/orgs/${S.orgId}/integrations/discover`,{method:"POST",body:{kind:k, token, url:$("#n-url").value.trim()||undefined, config}});
+      if(my!==seq) return;
+      if(!r.ok){ last=null; $("#iDisc").innerHTML=`<div class="note err">${esc(r.message)}</div>`; return; }
+      last=r;
+      // URL から読み取った接続先を、接続の欄に反映
+      for(const [f] of CONN_FIELDS[k]) if(r.config[f] && $("#c-"+f) && !$("#c-"+f).value) $("#c-"+f).value=r.config[f];
+      $("#iDisc").innerHTML=`<div class="note" style="background:var(--accent-soft)">✓ ${esc(r.account||"トークンの持ち主")} として接続できました。登録先を選んでください</div>
+        ${r.warnings?.length?r.warnings.map(w=>`<div class="note warn">${esc(w)}</div>`).join(""):""}
+        <div class="row" style="margin-top:8px">${integChoicesHtml(k, r)}</div>
+        <div class="row" style="margin-top:8px"><label class="f">表示名<input id="n-label" placeholder="任意（空欄なら登録先の名前）"></label><button class="btn" id="iAdd">登録</button></div>`;
+      if($("#d-repo")) $("#d-repo").onchange=()=>{ const [owner,repo]=($("#d-repo").value||"/").split("/"); last.config.owner=owner||undefined; last.config.repo=repo||undefined; discover({owner:owner||undefined, repo:repo||undefined}); };
+      if($("#d-project")) $("#d-project").onchange=()=>{ last.config.projectKey=$("#d-project").value||undefined; discover({projectKey:$("#d-project").value||undefined}); };
+      $("#iAdd").onclick=add;
+    }catch(e){ if(my===seq) $("#iDisc").innerHTML=`<div class="note err">${esc(e.message)}</div>`; }
+  };
+  const add=async()=>{
+    const k=kind(), c={...last.config};
+    if(k==="github"){ if(!c.owner||!c.repo){ $("#iAddMsg").innerHTML=`<div class="note err">リポジトリを選んでください</div>`; return; } c.labels=($("#d-labels")?.value??c.labels??"").trim(); }
+    else{ if(!c.projectKey){ $("#iAddMsg").innerHTML=`<div class="note err">プロジェクトを選んでください</div>`; return; }
+      if(k==="jira"){ if($("#d-epicType")) c.epicType=$("#d-epicType").value; if($("#d-storyType")) c.storyType=$("#d-storyType").value; }
+      else if($("#d-issueType")) c.issueType=$("#d-issueType").value; }
+    for(const key of Object.keys(c)) if(c[key]===undefined||(c[key]===""&&key!=="labels"&&key!=="email")) delete c[key];
+    const body={kind:k, config:c, token:$("#n-token").value, setup:true};
+    if($("#n-label").value.trim()) body.label=$("#n-label").value.trim();
+    $("#iAdd").disabled=true;
+    try{ const r=await api(`/api/orgs/${S.orgId}/integrations`,{method:"POST",body});
+      toast(r.check?.ok?`登録して接続を確認しました（${r.check.message}）`:"登録しました");
+      await loadIntegrations();
+      $("#iMsg").innerHTML=[...(r.setup||[]).map(x=>`<div class="note" style="background:var(--accent-soft)">${esc(x)}</div>`), r.check?`<div class="note ${r.check.ok?"":"err"}" style="${r.check.ok?"background:var(--accent-soft)":""}">${r.check.ok?"✓ ":""}${esc(r.check.message)}</div>`:""].join("");
+    }catch(e){ $("#iAdd").disabled=false; $("#iAddMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
+  let timer=null; const later=()=>{ clearTimeout(timer); timer=setTimeout(()=>{ last=null; discover(); },700); };
+  $("#iKind").onchange=sync; sync();
+  $("#iGuide").onclick=()=>openKeyGuide(kind());
+  $("#n-token").addEventListener("input", later);
+  $("#n-url").addEventListener("change", ()=>{ last=null; discover(); });
+  $("#iConn").addEventListener("change", ()=>{ last=null; discover(); });
+  $("#iLoad").onclick=()=>{ last=null; discover(); };
+}
+/** 変更欄: 保存したトークンで候補を読み込み、選べるようにする */
+async function suggestIntegEdit(i){
+  if(!i) return; const pre="e"+i.id, box=$("#ieMsg-"+i.id); if(!box) return;
+  box.innerHTML=`<div class="note">候補を読み込んでいます…</div>`;
+  try{
+    const r=await api(`/api/orgs/${S.orgId}/integrations/discover`,{method:"POST",body:{kind:i.kind, integrationId:i.id}});
+    if(!r.ok){ box.innerHTML=`<div class="note err">候補を読み込めませんでした：${esc(r.message)}</div>`; return; }
+    const set=(k,list)=>{ const inp=document.getElementById(`${pre}-${k}`); if(!inp||!list?.length) return; const id=`${pre}-${k}-list`; inp.setAttribute("list", id); inp.insertAdjacentHTML("afterend", `<datalist id="${id}">${list.map(v=>`<option value="${esc(v)}">`).join("")}</datalist>`); };
+    if(i.kind==="github"){ set("owner",[...new Set((r.repos||[]).map(x=>x.owner))]); set("repo",(r.repos||[]).map(x=>x.repo)); set("labels",r.labels); }
+    else { set("projectKey",(r.projects||[]).map(x=>x.key)); const types=(r.issueTypes||[]).filter(t=>t.role!=="subtask").map(t=>t.name); if(i.kind==="jira"){ set("epicType",types); set("storyType",types); } else set("issueType",types); }
+    box.innerHTML=`<div class="note" style="background:var(--accent-soft)">✓ ${esc(r.account||"")} として接続できました。入力欄をクリックすると候補から選べます</div>${(r.warnings||[]).map(w=>`<div class="note warn">${esc(w)}</div>`).join("")}`;
+  }catch(e){ box.innerHTML=`<div class="note err">${esc(e.message)}</div>`; }
+}
 async function loadIntegrations(){
   const panel=$("#integPanel"); if(!S.orgId && !S.token){ panel.innerHTML=""; return }
   const isAdmin=S.role==="admin";
@@ -1630,22 +1727,15 @@ async function loadIntegrations(){
         <label class="f">新しい${TOKEN_LABEL[i.kind]}<input id="e${i.id}-token" type="password" autocomplete="off" placeholder="空欄なら変更しない"></label>
         <button class="btn sm" data-isave="${i.id}">保存</button></div><div id="ieMsg-${i.id}"></div></td></tr>`:""}`).join("")||'<tr><td colspan="5" class="hint">まだ登録されていません</td></tr>'}
     </tbody></table></div><div id="iMsg"></div>
-    ${isAdmin?`<h3 style="margin-top:14px">新しく登録</h3><div class="row"><label class="f">種類<select id="iKind">${Object.entries(ITOOL).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label><label class="f">表示名<input id="n-label" placeholder="任意"></label></div>
-      <div class="row" id="iFields"></div>
-      <div class="row"><label class="f" id="iTokW">トークン<input id="n-token" type="password" autocomplete="off"></label><button class="btn" id="iAdd">登録</button><button class="btn ghost" type="button" id="iGuide">トークンの取得方法</button></div><div id="iAddMsg"></div>`:""}`;
-  const collect=(kind, pre)=>Object.fromEntries(INTEG_FIELDS[kind].map(([k])=>[k, document.getElementById(`${pre}-${k}`).value.trim()]).filter(([,v])=>v!==""));
-  if($("#iKind")){
-    const sync=()=>{ const k=$("#iKind").value; $("#iFields").innerHTML=fields(k); $("#iTokW").firstChild.textContent=TOKEN_LABEL[k]; };
-    if($("#iGuide")) $("#iGuide").onclick=()=>openKeyGuide($("#iKind").value);
-    $("#iKind").onchange=sync; sync();
-    $("#iAdd").onclick=async()=>{
-      const kind=$("#iKind").value, body={kind, config:collect(kind,"n"), token:$("#n-token").value};
-      if($("#n-label").value.trim()) body.label=$("#n-label").value.trim();
-      try{ await api(`/api/orgs/${S.orgId}/integrations`,{method:"POST",body}); toast("登録しました"); loadIntegrations() }
-      catch(e){ $("#iAddMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
-    };
-  }
-  panel.querySelectorAll("[data-iedit]").forEach(b=>b.onclick=()=>{const r=$("#ie-"+b.dataset.iedit); r.hidden=!r.hidden});
+    ${isAdmin?`<h3 style="margin-top:14px">新しく登録</h3>
+      <p class="hint">トークンを貼り付けると、そのトークンで見られるリポジトリ・プロジェクトと、課題の種別・ラベルを自動で読み込みます。選んで「登録」すると、ラベルの作成（GitHub）と接続確認も自動で行います。</p>
+      <div class="row"><label class="f">種類<select id="iKind">${Object.entries(ITOOL).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label>
+        <label class="f" style="flex:1;min-width:260px" id="iUrlW">URL（任意）<input id="n-url" placeholder="リポジトリ・ボード・課題の URL を貼ると、接続先とプロジェクトを読み取ります"></label></div>
+      <div class="row" id="iConn"></div>
+      <div class="row"><label class="f" id="iTokW" style="flex:1;min-width:260px">トークン<input id="n-token" type="password" autocomplete="off" spellcheck="false"></label><button class="btn ghost" id="iLoad">読み込む</button><button class="btn ghost" type="button" id="iGuide">トークンの取得方法</button></div>
+      <div id="iDisc" aria-live="polite"></div><div id="iAddMsg"></div>`:""}`;
+  if($("#iKind")) setupIntegNew();
+  panel.querySelectorAll("[data-iedit]").forEach(b=>b.onclick=()=>{const r=$("#ie-"+b.dataset.iedit); r.hidden=!r.hidden; if(!r.hidden) suggestIntegEdit(list.find(x=>x.id===b.dataset.iedit)); });
   panel.querySelectorAll("[data-idel]").forEach(b=>b.onclick=async()=>{ if(!confirm("この連携先を削除しますか？（登録済みの課題との対応記録は残ります）")) return; try{ await api(`/api/orgs/${S.orgId}/integrations/${b.dataset.idel}`,{method:"DELETE"}); toast("削除しました"); loadIntegrations() }catch(e){ toast(e.message) } });
   panel.querySelectorAll("[data-itest]").forEach(b=>b.onclick=async()=>{
     b.disabled=true;

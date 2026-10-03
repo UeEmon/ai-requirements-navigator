@@ -367,3 +367,188 @@ export async function exportPlan(req: ExportRequest): Promise<ExportItem[]> {
   }
   return items;
 }
+
+/* ------------------------------------------------------------------ */
+/* 連携設定の自動化（トークンで、選べる候補を取得する）                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 貼り付けた URL から、接続先と対象を読み取る。
+ * - GitHub: https://github.com/acme/app（GitHub Enterprise Server は https://ホスト/acme/app → API は https://ホスト/api/v3）
+ * - Jira: https://acme.atlassian.net/jira/software/projects/ABC/boards/1 や …/browse/ABC-12
+ * - Backlog: https://acme.backlog.jp/projects/ABC や …/view/ABC-12
+ */
+export function parseIntegrationUrl(kind: IntegrationKind, raw: string): Record<string, string> {
+  let u: URL;
+  try {
+    u = new URL(raw.trim());
+  } catch {
+    throw new IntegrationError("URL の形式が正しくありません（https:// から貼り付けてください）");
+  }
+  if (u.protocol !== "https:") throw new IntegrationError("https:// で始まる URL を貼り付けてください");
+  const seg = u.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  const keyFrom = (s?: string) => (s && /^[A-Z][A-Z0-9_]+(-\d+)?$/.test(s) ? s.replace(/-\d+$/, "") : undefined);
+  if (kind === "github") {
+    const ghe = u.host !== "github.com" && u.host !== "api.github.com";
+    const out: Record<string, string> = ghe ? { apiBase: `${u.origin}/api/v3` } : {};
+    const [owner, repo] = u.host === "api.github.com" ? seg.slice(1) : seg;
+    if (owner && /^[A-Za-z0-9_.-]+$/.test(owner)) out.owner = owner;
+    if (repo) out.repo = repo.replace(/\.git$/, "");
+    return out;
+  }
+  if (kind === "jira") {
+    const out: Record<string, string> = { baseUrl: u.origin };
+    const i = seg.findIndex((s) => s === "projects" || s === "browse");
+    const key = i >= 0 ? keyFrom(seg[i + 1]) : undefined;
+    if (key) out.projectKey = key;
+    return out;
+  }
+  const out: Record<string, string> = { spaceUrl: u.origin };
+  const i = seg.findIndex((s) => s === "projects" || s === "view" || s === "find" || s === "board");
+  const key = i >= 0 ? keyFrom(seg[i + 1]) : undefined;
+  if (key) out.projectKey = key;
+  return out;
+}
+
+export interface DiscoverResult {
+  /** トークンの持ち主（確認できた相手） */
+  account: string;
+  /** 決まった設定（候補が1つしかない・URL から読み取った・おすすめ） */
+  config: Record<string, string>;
+  repos?: Array<{ owner: string; repo: string; fullName: string; private: boolean; hasIssues: boolean; canPush: boolean | null }>;
+  projects?: Array<{ key: string; name: string }>;
+  issueTypes?: Array<{ name: string; role: "epic" | "story" | "subtask" | "other" }>;
+  labels?: string[];
+  /** 気をつけること（Issues が無効・親子課題が無効など） */
+  warnings: string[];
+}
+
+const DEFAULT_LABEL = "requirements-navigator";
+
+/**
+ * トークンで、選べるリポジトリ・プロジェクト・種別・ラベルを取得する。
+ * config に対象（owner/repo、projectKey）があれば、その中身（ラベル・種別）まで取得し、おすすめの設定を返す。
+ */
+export async function discoverIntegration(
+  kind: IntegrationKind,
+  given: Record<string, string>,
+  secret: string,
+  fetchImpl: FetchLike,
+  timeoutMs = 15_000,
+): Promise<DiscoverResult> {
+  const warnings: string[] = [];
+  if (kind === "github") {
+    const apiBase = (given.apiBase || "https://api.github.com").replace(/\/+$/, "");
+    const call = http(fetchImpl, { authorization: `Bearer ${secret}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }, timeoutMs);
+    const me = await call("GET", `${apiBase}/user`);
+    const repos: NonNullable<DiscoverResult["repos"]> = [];
+    for (let page = 1; page <= 5; page++) {
+      const list: any[] = (await call("GET", `${apiBase}/user/repos?per_page=100&sort=updated&page=${page}`)) ?? [];
+      for (const r of list) {
+        if (r?.archived) continue;
+        repos.push({ owner: String(r.owner?.login), repo: String(r.name), fullName: String(r.full_name), private: Boolean(r.private), hasIssues: r.has_issues !== false, canPush: typeof r.permissions?.push === "boolean" ? r.permissions.push : null });
+      }
+      if (list.length < 100) break;
+    }
+    const config: Record<string, string> = { apiBase, labels: given.labels || DEFAULT_LABEL };
+    let owner = given.owner, repo = given.repo;
+    if (!owner && repos.length === 1) ({ owner, repo } = repos[0]!);
+    let labels: string[] | undefined;
+    if (owner && repo) {
+      const r = await call("GET", `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+      config.owner = String(r?.owner?.login ?? owner);
+      config.repo = String(r?.name ?? repo);
+      if (r?.has_issues === false) warnings.push("このリポジトリでは Issues が無効です。リポジトリの Settings → General → Features で Issues を有効にしてください");
+      if (r?.permissions && r.permissions.push === false && r.permissions.triage === false) warnings.push("このアカウントには、ラベルを付ける権限（書き込み・トリアージ）がありません。ラベルなしで登録されます");
+      labels = ((await call("GET", `${apiBase}/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/labels?per_page=100`)) ?? []).map((l: any) => String(l.name));
+    } else if (!repos.length) {
+      warnings.push("このトークンで見られるリポジトリがありません。トークンの「Repository access」で対象のリポジトリを選んでください");
+    }
+    return { account: String(me?.login ?? ""), config, repos, labels, warnings };
+  }
+
+  if (kind === "jira") {
+    const baseUrl = (given.baseUrl ?? "").replace(/\/+$/, "");
+    if (!baseUrl) throw new IntegrationError("Jira の URL を入れてください（例: https://acme.atlassian.net）");
+    const email = given.email ?? "";
+    const auth = email ? `Basic ${Buffer.from(`${email}:${secret}`).toString("base64")}` : `Bearer ${secret}`;
+    const call = http(fetchImpl, { authorization: auth }, timeoutMs);
+    const me = await call("GET", `${baseUrl}/rest/api/2/myself`);
+    let projects: Array<{ key: string; name: string }> = [];
+    try {
+      // Jira Cloud（ページ分割あり）
+      for (let start = 0; start < 500; start += 100) {
+        const r = await call("GET", `${baseUrl}/rest/api/2/project/search?maxResults=100&startAt=${start}`);
+        projects.push(...(r?.values ?? []).map((p: any) => ({ key: String(p.key), name: String(p.name) })));
+        if (r?.isLast !== false) break;
+      }
+    } catch (e) {
+      if (!(e instanceof IntegrationError) || e.status !== 404) throw e;
+      // Jira Data Center
+      projects = ((await call("GET", `${baseUrl}/rest/api/2/project`)) ?? []).map((p: any) => ({ key: String(p.key), name: String(p.name) }));
+    }
+    const config: Record<string, string> = { baseUrl, email };
+    const key = given.projectKey || (projects.length === 1 ? projects[0]!.key : "");
+    let issueTypes: DiscoverResult["issueTypes"];
+    if (key) {
+      const p = await call("GET", `${baseUrl}/rest/api/2/project/${encodeURIComponent(key)}`);
+      config.projectKey = String(p?.key ?? key);
+      issueTypes = ((p?.issueTypes ?? []) as any[]).map((t) => ({
+        name: String(t.name),
+        role: t.subtask ? "subtask" : t.hierarchyLevel === 1 || /^(epic|エピック)$/i.test(t.name) ? "epic" : /^(story|ストーリー)$/i.test(t.name) ? "story" : "other",
+      }));
+      const epic = issueTypes.find((t) => t.role === "epic");
+      const story = issueTypes.find((t) => t.role === "story") ?? issueTypes.find((t) => t.role === "other" && !/^(bug|バグ)$/i.test(t.name));
+      if (epic) config.epicType = epic.name;
+      else warnings.push("このプロジェクトにエピックの種別がありません。エピックも、選んだ種別で登録します");
+      if (story) config.storyType = story.name;
+      if (!epic && story) config.epicType = story.name;
+    }
+    return { account: String(me?.displayName ?? me?.name ?? me?.emailAddress ?? ""), config, projects, issueTypes, warnings };
+  }
+
+  const spaceUrl = (given.spaceUrl ?? "").replace(/\/+$/, "");
+  if (!spaceUrl) throw new IntegrationError("Backlog のスペースの URL を入れてください（例: https://acme.backlog.jp）");
+  const call = http(fetchImpl, {}, timeoutMs);
+  const api = (path: string) => `${spaceUrl}/api/v2${path}${path.includes("?") ? "&" : "?"}apiKey=${encodeURIComponent(secret)}`;
+  const me = await call("GET", api("/users/myself"));
+  const projects: Array<{ key: string; name: string }> = ((await call("GET", api("/projects?archived=false"))) ?? []).map((p: any) => ({ key: String(p.projectKey), name: String(p.name) }));
+  const config: Record<string, string> = { spaceUrl };
+  const key = given.projectKey || (projects.length === 1 ? projects[0]!.key : "");
+  let issueTypes: DiscoverResult["issueTypes"];
+  if (key) {
+    const p = await call("GET", api(`/projects/${encodeURIComponent(key)}`));
+    config.projectKey = String(p?.projectKey ?? key);
+    if (p?.useParentChildIssue === false) warnings.push("このプロジェクトでは親子課題が無効です。エピックとストーリーを親子で登録するには、Backlog のプロジェクト設定 →「基本設定」で「親子課題」を有効にしてください");
+    const types: any[] = (await call("GET", api(`/projects/${encodeURIComponent(config.projectKey)}/issueTypes`))) ?? [];
+    issueTypes = types.map((t) => ({ name: String(t.name), role: "other" as const }));
+    const pick = types.find((t) => t.name === (given.issueType || "タスク")) ?? types.find((t) => /task|タスク/i.test(t.name)) ?? types[0];
+    if (pick) config.issueType = String(pick.name);
+  }
+  return { account: String(me?.name ?? me?.userId ?? ""), config, projects, issueTypes, warnings };
+}
+
+/**
+ * 登録時の準備（GitHub: 使うラベルがなければ作る）。失敗しても登録は続け、結果を返す
+ */
+export async function prepareIntegration(kind: IntegrationKind, config: Record<string, string>, secret: string, fetchImpl: FetchLike, timeoutMs = 15_000): Promise<string[]> {
+  if (kind !== "github") return [];
+  const { owner, repo, apiBase } = config as Record<string, string>;
+  const call = http(fetchImpl, { authorization: `Bearer ${secret}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }, timeoutMs);
+  const base = `${apiBase}/repos/${encodeURIComponent(owner!)}/${encodeURIComponent(repo!)}`;
+  const want = [...new Set([...(config.labels ?? "").split(",").map((x) => x.trim()).filter(Boolean), ...(config.labels ? ["epic"] : [])])];
+  if (!want.length) return [];
+  const notes: string[] = [];
+  try {
+    const have = new Set((((await call("GET", `${base}/labels?per_page=100`)) ?? []) as any[]).map((l) => String(l.name).toLowerCase()));
+    for (const name of want) {
+      if (have.has(name.toLowerCase())) continue;
+      await call("POST", `${base}/labels`, { name, color: name === "epic" ? "6f42c1" : "1f5fa8", description: name === "epic" ? "エピック（要件ナビ）" : "要件ナビから登録した課題" });
+      notes.push(`ラベル「${name}」を作りました`);
+    }
+  } catch (e) {
+    if (!(e instanceof IntegrationError)) throw e;
+    notes.push(`ラベルを作れませんでした（${e.message}）。課題はラベルなしで登録されます`);
+  }
+  return notes;
+}

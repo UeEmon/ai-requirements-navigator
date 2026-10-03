@@ -40,7 +40,11 @@ function fakeTools() {
 
     if (u.host === "api.github.com") {
       if (headers.authorization !== `Bearer ${GH_TOKEN}`) return res(401, { message: "Bad credentials" });
-      if (method === "GET" && u.pathname === "/repos/acme/app") return res(200, { full_name: "acme/app", has_issues: true });
+      if (method === "GET" && u.pathname === "/repos/acme/app") return res(200, { full_name: "acme/app", name: "app", owner: { login: "acme" }, has_issues: true, permissions: { push: true, triage: true } });
+      if (method === "GET" && u.pathname === "/user") return res(200, { login: "dev-taro" });
+      if (method === "GET" && u.pathname === "/user/repos") return res(200, [{ name: "app", full_name: "acme/app", owner: { login: "acme" }, private: true, has_issues: true, permissions: { push: true } }, { name: "old", full_name: "acme/old", owner: { login: "acme" }, archived: true }, { name: "docs", full_name: "acme/docs", owner: { login: "acme" }, private: false, has_issues: false, permissions: { push: false } }]);
+      if (method === "GET" && u.pathname === "/repos/acme/app/labels") return res(200, [{ name: "bug" }, { name: "epic" }]);
+      if (method === "POST" && u.pathname === "/repos/acme/app/labels") return res(201, { name: body.name });
       if (method === "POST" && u.pathname === "/repos/acme/app/issues") {
         if (opts.rejectLabels && body.labels) return res(422, { message: "Validation Failed", errors: [{ code: "invalid", field: "labels" }] });
         if (opts.failTitlesOnce.delete(body.title)) return res(500, { message: "Server Error" });
@@ -53,7 +57,10 @@ function fakeTools() {
     if (u.host === "acme.atlassian.net") {
       const expected = `Basic ${Buffer.from(`dev@example.com:${JIRA_TOKEN}`).toString("base64")}`;
       if (headers.authorization !== expected) return res(401, { errorMessages: ["認証が必要です"] });
-      if (method === "GET" && u.pathname === "/rest/api/2/project/APP") return res(200, { name: "予約アプリ" });
+      if (method === "GET" && u.pathname === "/rest/api/2/project/APP")
+        return res(200, { key: "APP", name: "予約アプリ", issueTypes: [{ name: "タスク", subtask: false, hierarchyLevel: 0 }, { name: "バグ", subtask: false, hierarchyLevel: 0 }, { name: "ストーリー", subtask: false, hierarchyLevel: 0 }, { name: "エピック", subtask: false, hierarchyLevel: 1 }, { name: "サブタスク", subtask: true, hierarchyLevel: -1 }] });
+      if (method === "GET" && u.pathname === "/rest/api/2/myself") return res(200, { displayName: "開発 太郎" });
+      if (method === "GET" && u.pathname === "/rest/api/2/project/search") return res(200, { values: [{ key: "APP", name: "予約アプリ" }, { key: "OPS", name: "運用" }], isLast: true });
       if (method === "POST" && u.pathname === "/rest/api/2/issue") {
         if (opts.rejectJiraParent && body.fields.parent) return res(400, { errors: { parent: "親を設定できません" } });
         n++;
@@ -63,7 +70,10 @@ function fakeTools() {
     }
     if (u.host === "acme.backlog.jp") {
       if (u.searchParams.get("apiKey") !== BL_KEY) return res(401, { errors: [{ message: "Authentication failure." }] });
-      if (u.pathname === "/api/v2/projects/APP") return res(200, { id: 77, projectKey: "APP" });
+      if (u.pathname === "/api/v2/projects/APP") return res(200, { id: 77, projectKey: "APP", name: "予約アプリ", useParentChildIssue: false });
+      if (u.pathname === "/api/v2/users/myself") return res(200, { name: "開発 花子" });
+      if (u.pathname === "/api/v2/projects") return res(200, [{ projectKey: "APP", name: "予約アプリ" }]);
+      if (u.pathname === "/api/v2/projects/APP/issueTypes") return res(200, [{ id: 1, name: "バグ" }, { id: 2, name: "タスク" }]);
       if (u.pathname === "/api/v2/projects/77/issueTypes") return res(200, [{ id: 1, name: "バグ" }, { id: 2, name: "タスク" }]);
       if (method === "POST" && u.pathname === "/api/v2/issues") {
         if (opts.rejectBacklogParent && body.parentIssueId) return res(400, { errors: [{ message: "親子課題が無効です" }] });
@@ -136,6 +146,53 @@ describe("実装工程への連携", () => {
   beforeEach(async () => {
     t = setup();
     orgId = (await (await req("/api/orgs", json({ name: "組織" }))).json()).id;
+  });
+
+  /* ---------- 連携設定の自動化 ---------- */
+  it("連携設定の自動化: トークンで候補を取得し、URL から対象を読み取り、おすすめの設定を返す", async () => {
+    const disc = async (b: unknown, role = "admin") => (await req(`/api/orgs/${orgId}/integrations/discover`, as(role, json(b)))).json();
+    // GitHub: トークンの持ち主・リポジトリの一覧（アーカイブ済みは除く）
+    const g1 = await disc({ kind: "github", token: GH_TOKEN });
+    expect(g1).toMatchObject({ ok: true, account: "dev-taro" });
+    expect(g1.repos.map((r: { fullName: string }) => r.fullName)).toEqual(["acme/app", "acme/docs"]);
+    // リポジトリの URL を貼ると、対象とラベルまで
+    const g2 = await disc({ kind: "github", token: GH_TOKEN, url: "https://github.com/acme/app/issues" });
+    expect(g2.config).toEqual({ apiBase: "https://api.github.com", labels: "requirements-navigator", owner: "acme", repo: "app" });
+    expect(g2.labels).toEqual(["bug", "epic"]);
+    expect(g2.warnings).toEqual([]);
+    // 間違ったトークン
+    const g3 = await disc({ kind: "github", token: "ghp_wrong" });
+    expect(g3.ok).toBe(false);
+    expect(g3.message).toContain("401");
+    expect(JSON.stringify(g3)).not.toContain(GH_TOKEN);
+
+    // Jira: ボードの URL から接続先とプロジェクト、種別からエピック・ストーリーを選ぶ
+    const j = await disc({ kind: "jira", token: JIRA_TOKEN, url: "https://acme.atlassian.net/jira/software/projects/APP/boards/1", config: { email: "dev@example.com" } });
+    expect(j).toMatchObject({ ok: true, account: "開発 太郎", config: { baseUrl: "https://acme.atlassian.net", email: "dev@example.com", projectKey: "APP", epicType: "エピック", storyType: "ストーリー" } });
+    expect(j.projects).toEqual([{ key: "APP", name: "予約アプリ" }, { key: "OPS", name: "運用" }]);
+    expect(j.issueTypes.find((x: { name: string }) => x.name === "サブタスク").role).toBe("subtask");
+
+    // Backlog: プロジェクトが1つならそれを選び、種別「タスク」、親子課題が無効なら知らせる
+    const b = await disc({ kind: "backlog", token: BL_KEY, url: "https://acme.backlog.jp/dashboard" });
+    expect(b).toMatchObject({ ok: true, account: "開発 花子", config: { spaceUrl: "https://acme.backlog.jp", projectKey: "APP", issueType: "タスク" } });
+    expect(b.warnings[0]).toContain("親子課題");
+    expect(JSON.stringify(b)).not.toContain(BL_KEY);
+
+    // http の接続先・管理者以外は使えない
+    expect((await disc({ kind: "jira", token: "x", url: "http://jira.local/browse/APP-1" })).message).toContain("https://");
+    expect((await req(`/api/orgs/${orgId}/integrations/discover`, as("editor", json({ kind: "github", token: GH_TOKEN })))).status).toBe(403);
+
+    // 登録と同時に準備（ラベル作成）と接続確認
+    const r = await req(`/api/orgs/${orgId}/integrations`, as("admin", json({ kind: "github", config: g2.config, token: GH_TOKEN, setup: true })));
+    expect(r.status).toBe(201);
+    const reg = await r.json();
+    expect(reg.setup).toEqual(["ラベル「requirements-navigator」を作りました"]);
+    expect(reg.check).toEqual({ ok: true, message: "acme/app に接続できました" });
+    const made = t.tools.calls.filter((c) => c.method === "POST" && c.url.endsWith("/repos/acme/app/labels"));
+    expect(made.map((c) => c.body.name)).toEqual(["requirements-navigator"]); // epic は既にある
+    // 登録済みの連携先のトークンで、候補を取り直せる（変更のとき）
+    const again = await disc({ kind: "github", integrationId: reg.id });
+    expect(again.config).toMatchObject({ owner: "acme", repo: "app" });
   });
 
   /* ---------- 連携先の登録 ---------- */

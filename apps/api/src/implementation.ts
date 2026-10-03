@@ -23,7 +23,16 @@ import { z } from "zod";
 import { audit } from "./audit.js";
 import type { Role } from "./auth.js";
 import { maskKey, type KeyEncryptor } from "./crypto.js";
-import { checkIntegration, exportPlan, INTEGRATION_CONFIG, integrationTarget, IntegrationError } from "./integrations.js";
+import {
+  checkIntegration,
+  discoverIntegration,
+  exportPlan,
+  INTEGRATION_CONFIG,
+  integrationTarget,
+  IntegrationError,
+  parseIntegrationUrl,
+  prepareIntegration,
+} from "./integrations.js";
 import type { ExportItem, Integration, JobProgress, Project, Requirement, Store, TaskExport, TaskPlanRecord } from "./store.js";
 import { usageOf } from "./store.js";
 
@@ -54,7 +63,21 @@ const IntegrationInput = z.object({
   config: z.record(z.string(), z.string()),
   /** GitHub: 個人用アクセストークン（Issues の書き込み権限） / Jira: APIトークン / Backlog: APIキー */
   token: z.string().min(1).max(500),
+  /** true: 登録の後に準備（GitHub のラベル作成）と接続確認を自動で行い、結果を返す */
+  setup: z.boolean().optional(),
 });
+/** 連携設定の自動化: トークン（または登録済みの連携先）で、選べる候補を取得する */
+const DiscoverInput = z
+  .object({
+    kind: KindSchema,
+    token: z.string().min(1).max(500).optional(),
+    /** 登録済みの連携先のトークンを使う（変更のとき） */
+    integrationId: z.string().min(1).optional(),
+    /** リポジトリ・ボード・課題などの URL（接続先と対象を読み取る） */
+    url: z.string().max(500).optional(),
+    config: z.record(z.string(), z.string().max(200)).optional(),
+  })
+  .refine((v) => v.token || v.integrationId, "トークンを入れてください");
 const IntegrationPatchInput = z
   .object({
     label: z.string().min(1).max(100).optional(),
@@ -341,7 +364,43 @@ export function implementation(ctx: ImplementationContext) {
         targetId: i.id,
         detail: { kind: i.kind, label: i.label, config },
       });
-      return c.json(publicIntegration(i), 201);
+      if (!input.setup) return c.json(publicIntegration(i), 201);
+      // 準備（GitHub のラベル作成）と接続確認を自動で行う。失敗しても登録はそのまま
+      const setup = await prepareIntegration(i.kind, config, input.token, ctx.fetchImpl).catch((e) => [`準備に失敗しました（${(e as Error).message}）`]);
+      const check = await checkIntegration(i.kind, config, input.token, ctx.fetchImpl).then(
+        (message) => ({ ok: true, message }),
+        (e) => ({ ok: false, message: e instanceof IntegrationError ? e.message : "接続確認に失敗しました" }),
+      );
+      return c.json({ ...publicIntegration(i), setup, check }, 201);
+    });
+
+    /** 連携設定の自動化: トークンの持ち主を確かめ、選べるリポジトリ・プロジェクト・種別・ラベルを返す（トークンは保存しない） */
+    app.post("/api/orgs/:orgId/integrations/discover", async (c) => {
+      const orgId = c.req.param("orgId");
+      ctx.need(c, orgId, "admin");
+      const input = await ctx.body(c, DiscoverInput);
+      let token = input.token?.trim() ?? "";
+      let base: Record<string, string> = {};
+      if (input.integrationId) {
+        const cur = await findIntegration(orgId, input.integrationId);
+        if (cur.kind !== input.kind) throw new HTTPException(400, { message: "連携先の種類が違います" });
+        base = { ...cur.config };
+        if (!token) token = await ctx.encryptor.decrypt(cur.encryptedSecret, { orgId });
+      }
+      try {
+        const fromUrl = input.url?.trim() ? parseIntegrationUrl(input.kind, input.url) : {};
+        // 空の値は「指定なし」として扱う
+        const given = Object.fromEntries(Object.entries({ ...base, ...fromUrl, ...(input.config ?? {}) }).filter(([, v]) => v !== ""));
+        if (input.kind === "jira" && input.config && "email" in input.config) given.email = input.config.email ?? "";
+        for (const k of ["apiBase", "baseUrl", "spaceUrl"]) {
+          if (given[k] && !/^https:\/\//.test(given[k]!)) return c.json({ ok: false, message: "接続先の URL は https:// で始めてください" });
+        }
+        const r = await discoverIntegration(input.kind, given, token, ctx.fetchImpl);
+        return c.json({ ok: true, ...r, fromUrl });
+      } catch (e) {
+        if (e instanceof IntegrationError) return c.json({ ok: false, message: e.message });
+        throw e;
+      }
     });
 
     app.patch("/api/orgs/:orgId/integrations/:id", async (c) => {

@@ -31,6 +31,26 @@
 
 ## 連携先の登録（組織の管理者）
 
+### 自動で設定する（おすすめ）
+
+トークンを貼り付けると、要件ナビがそのトークンで提供元に接続し、選べる候補を自動で読み込みます。手で入れるのは、トークンと（Jira・Backlog の）接続先の URL だけです。
+
+| 種類 | 自動で行うこと |
+| --- | --- |
+| GitHub | トークンの持ち主の確認、トークンで見られるリポジトリの一覧（アーカイブ済みを除く）、選んだリポジトリのラベルの一覧と Issues が有効かの確認。登録時に、使うラベル（`requirements-navigator`・`epic`）がなければ作る |
+| Jira | トークンの持ち主の確認、プロジェクトの一覧、選んだプロジェクトの課題タイプから、エピック（階層レベル 1）とストーリーの種別を選ぶ |
+| Backlog | API キーの持ち主の確認、プロジェクトの一覧（1つなら自動で選ぶ）、種別の一覧（「タスク」があれば選ぶ）、親子課題が無効なら知らせる |
+
+- リポジトリ・ボード・課題の **URL を貼る** と、接続先とプロジェクトを読み取ります（例: `https://github.com/acme/app`、`https://acme.atlassian.net/jira/software/projects/APP/boards/1`、`https://acme.backlog.jp/projects/APP`。GitHub Enterprise Server は URL から API の接続先を判別します）
+- 「登録」の後に、接続確認を自動で行い、結果を表示します
+- 登録済みの連携先の「変更」を開くと、保存したトークンで候補を読み込み、入力欄で選べるようにします
+- 読み込みに使ったトークンは、「登録」するまで保存しません
+
+API: `POST /api/orgs/{orgId}/integrations/discover` `{kind, token | integrationId, url?, config?}` → `{ok, account, config, repos?, projects?, issueTypes?, labels?, warnings}`。登録は `POST /api/orgs/{orgId}/integrations` に `setup: true` を付けると、準備（ラベルの作成）と接続確認の結果（`setup`・`check`）も返します。
+
+### 手で設定する
+
+
 「プロジェクト設定」タブの「課題管理ツールとの連携」で登録します。トークンの取得方法は、「トークンの取得方法」ボタン（「AI設定」タブの「APIキー・トークンの取得方法」）か [docs/ai-keys.md](ai-keys.md#自動で取得できないキーとトークンの取得方法) にあります。登録後に **接続確認** で、トークンでリポジトリ・プロジェクトを読めるか確認できます。
 
 | 種類 | 設定 | トークン |
