@@ -23,6 +23,7 @@ export type AuditAction =
   | "ai.tasks"
   | "tasks.export"
   | "integration.create"
+  | "integration.repo.create"
   | "integration.update"
   | "integration.delete"
   | "ai.screens"

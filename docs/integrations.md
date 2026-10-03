@@ -48,6 +48,29 @@
 
 API: `POST /api/orgs/{orgId}/integrations/discover` `{kind, token | integrationId, url?, config?}` → `{ok, account, config, repos?, projects?, issueTypes?, labels?, warnings}`。登録は `POST /api/orgs/{orgId}/integrations` に `setup: true` を付けると、準備（ラベルの作成）と接続確認の結果（`setup`・`check`）も返します。
 
+### リポジトリを自動で作る（GitHub）
+
+プロジェクトの課題を登録するリポジトリがまだないときは、要件ナビから作れます。
+
+1. 「プロジェクト設定」でプロジェクトを開き、「このプロジェクトのリポジトリを作る（GitHub）」を押す（または「課題管理ツールとの連携」で種類「GitHub Issues」を選ぶ）
+2. トークンを貼り付け、リポジトリで「＋ 新しいリポジトリを作る」を選ぶ
+3. 所有者（自分か組織）・リポジトリ名（プロジェクト名から候補を出します）・公開範囲（既定は非公開）を確かめて「作成して登録」
+
+要件ナビは次を自動で行います。
+
+| 手順 | 内容 |
+| --- | --- |
+| リポジトリの作成 | Issues を有効にし、README で初期化 |
+| 最初のコミット | プロジェクトの開発用パッケージ（`AGENTS.md`・`CLAUDE.md`・`.mcp.json`・`requirements/` の要件・設計・用語集・タスク・`tests/` の受け入れテスト（Gherkin）とテストケース・テスト結果の報告スクリプト）を1つのコミットで入れる |
+| 連携先の登録 | 作ったリポジトリを課題の登録先として登録し、ラベル（`requirements-navigator`・`epic`）を作って接続確認 |
+
+- トークンには、通常の権限（Issues）に加えて **Administration** と **Contents** の書き込み権限が必要です。Fine-grained token は「Repository access」を「All repositories」にします（組織に作る場合は「Resource owner」をその組織に）
+- リポジトリにトークンは入れません。AI コーディングツールの接続には、「開発・テストのツールとの連携」で発行したトークンを、開発者が環境変数 `ARN_TOKEN` に入れます
+- 作ったリポジトリは、後の手順（ファイルの追加・連携先の登録）が失敗しても消しません。結果に理由を表示します
+- 監査ログに「リポジトリの作成」として残ります
+
+API: `POST /api/orgs/{orgId}/integrations/github/repos` `{token | integrationId, owner, name, private?, description?, projectId?, apiBase?, label?, labels?}` → `{repo, integration, setup, check}`。リポジトリ名の候補は `GET /api/projects/{id}/repo-name`。
+
 ### 手で設定する
 
 

@@ -727,7 +727,7 @@ function renderProject(){
   const isAdmin = S.role === "admin";
   const gens = S.providers.map(p=>`<label><input type="checkbox" name="g" value="${p.id}" id="g-${p.id}">${esc(p.label)}</label>`).join("");
   $("#projPanel").innerHTML = `<h2>プロジェクト</h2>
-    ${S.project?`<p>現在: <b>${esc(S.project.name)}</b> <span class="mono">${esc(S.project.id)}</span></p>`:""}
+    ${S.project?`<p>現在: <b>${esc(S.project.name)}</b> <span class="mono">${esc(S.project.id)}</span>${S.role==="admin"?` <button class="btn sm ghost" type="button" id="jRepo">このプロジェクトのリポジトリを作る（GitHub）</button>`:""}</p>`:""}
     <div class="row"><label class="f" style="flex:1">既存のプロジェクトIDを開く<input id="jOpen" placeholder="プロジェクトID"></label><button class="btn ghost" id="jOpenGo">開く</button></div>
     ${canEdit()?`<div class="note" style="background:var(--accent-soft)">使い方を見るには、本システム自身の要求事項を題材にした<b>サンプル事例</b>を読み込めます（資料・分析・EARSの要件・非機能要件シート入り。AIは呼び出しません）。<button class="btn sm ghost" id="jSample" style="margin-left:6px">サンプル事例を読み込む</button></div>`:""}
     <h3 style="margin-top:16px">新規作成</h3>
@@ -743,6 +743,7 @@ function renderProject(){
   $("#jMode").onchange=()=>{$("#jEvW").hidden=$("#jMode").value==="single"};
   $("#jOpenGo").onclick=()=>openProject($("#jOpen").value.trim());
   if($("#jToAi")) $("#jToAi").onclick=()=>switchTab("admin");
+  if($("#jRepo")) $("#jRepo").onclick=()=>{ const k=$("#iKind"); if(!k) return; k.value="github"; k.dispatchEvent(new Event("change")); $("#integPanel").scrollIntoView({block:"start"}); $("#n-token").focus(); toast("GitHub のトークンを貼り付けて、リポジトリの「＋ 新しいリポジトリを作る」を選んでください"); };
   if($("#jSample")) $("#jSample").onclick=async()=>{
     try{ const r=await api(`/api/orgs/${S.orgId}/samples`,{method:"POST",body:{}}); await openProject(r.project.id); toast(`サンプル事例を読み込みました（要件 ${r.requirements}件）`); switchTab("reqs") }
     catch(e){ $("#jMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
@@ -763,7 +764,7 @@ function renderProject(){
 const ACTION={"org.create":"組織の作成","org.limits.update":"組織の上限変更","provider.create":"AIの登録","provider.update":"AIの変更","provider.delete":"AIの削除",
   "project.create":"プロジェクト作成","project.phase":"フェーズ移動","ai.round":"AIで案を生成","ai.guide":"AIで質問を作成","ai.uml":"AIでUML生成",
   "decision.create":"案の採用","uml.adopt":"UML案の採用","requirement.update":"要件の編集","requirement.delete":"要件の削除","spec.export":"仕様書の出力","auth.login":"ログイン",
-  "ai.tasks":"AIでタスク分解","tasks.export":"課題の登録","integration.create":"連携先の登録","integration.update":"連携先の変更","integration.delete":"連携先の削除"};
+  "ai.tasks":"AIでタスク分解","tasks.export":"課題の登録","integration.create":"連携先の登録","integration.repo.create":"リポジトリの作成","integration.update":"連携先の変更","integration.delete":"連携先の削除"};
 const auditState={entries:[], next:null, action:""};
 function auditSummary(e){
   const d=e.detail||{};
@@ -781,6 +782,7 @@ function auditSummary(e){
     case "spec.export": return `${d.format}${d.images?`（図${d.images}件）`:""}`;
     case "ai.tasks": return `要件${d.sent?.requirements??0}件／${(d.generators||[]).map(g=>g.label).join("、")}${d.uncovered?.length?`／未対応：${d.uncovered.join(", ")}`:""}`;
     case "tasks.export": return `${d.integration?.label||""}（${d.integration?.target||""}）：登録${d.created}・済${d.skipped}・失敗${d.failed}`;
+    case "integration.repo.create": return `${d.repo||""}${d.private?"（非公開）":""}${d.seeded?`、ファイル ${d.seeded}件`:""}`;
     case "integration.create": case "integration.update": case "integration.delete": return `${d.label||d.after?.label||""}${d.tokenChanged?"、トークン":""}`;
     default: return d.name || d.role || "";
   }
@@ -1629,7 +1631,7 @@ function integChoicesHtml(kind, d){
   let h="";
   if(kind==="github"){
     const cur=c.owner&&c.repo?`${c.owner}/${c.repo}`:"";
-    h+=`<label class="f" style="min-width:260px">リポジトリ<select id="d-repo"><option value="">選んでください（${(d.repos||[]).length}件）</option>${(d.repos||[]).map(r=>opt(r.fullName, `${r.fullName}${r.private?"（非公開）":""}${r.hasIssues?"":"（Issues 無効）"}`, r.fullName===cur)).join("")}</select></label>`;
+    h+=`<label class="f" style="min-width:260px">リポジトリ<select id="d-repo"><option value="">選んでください（${(d.repos||[]).length}件）</option><option value="__new">＋ 新しいリポジトリを作る</option>${(d.repos||[]).map(r=>opt(r.fullName, `${r.fullName}${r.private?"（非公開）":""}${r.hasIssues?"":"（Issues 無効）"}`, r.fullName===cur)).join("")}</select></label>`;
     if(cur) h+=`<label class="f" style="min-width:220px">付けるラベル（カンマ区切り）<input id="d-labels" value="${esc(c.labels??"requirements-navigator")}" list="d-labelList"><datalist id="d-labelList">${(d.labels||[]).map(l=>`<option value="${esc(l)}">`).join("")}</datalist></label>`;
   } else {
     h+=`<label class="f" style="min-width:240px">プロジェクト<select id="d-project"><option value="">選んでください（${(d.projects||[]).length}件）</option>${(d.projects||[]).map(p=>opt(p.key, `${p.name}（${p.key}）`, p.key===c.projectKey)).join("")}</select></label>`;
@@ -1670,11 +1672,47 @@ function setupIntegNew(){
       $("#iDisc").innerHTML=`<div class="note" style="background:var(--accent-soft)">✓ ${esc(r.account||"トークンの持ち主")} として接続できました。登録先を選んでください</div>
         ${r.warnings?.length?r.warnings.map(w=>`<div class="note warn">${esc(w)}</div>`).join(""):""}
         <div class="row" style="margin-top:8px">${integChoicesHtml(k, r)}</div>
-        <div class="row" style="margin-top:8px"><label class="f">表示名<input id="n-label" placeholder="任意（空欄なら登録先の名前）"></label><button class="btn" id="iAdd">登録</button></div>`;
-      if($("#d-repo")) $("#d-repo").onchange=()=>{ const [owner,repo]=($("#d-repo").value||"/").split("/"); last.config.owner=owner||undefined; last.config.repo=repo||undefined; discover({owner:owner||undefined, repo:repo||undefined}); };
+        <div id="d-new"></div>
+        <div class="row" style="margin-top:8px" id="d-addRow"><label class="f">表示名<input id="n-label" placeholder="任意（空欄なら登録先の名前）"></label><button class="btn" id="iAdd">登録</button></div>`;
+      if($("#d-repo")) $("#d-repo").onchange=()=>{
+        if($("#d-repo").value==="__new"){ showNewRepo(r); return; }
+        const [owner,repo]=($("#d-repo").value||"/").split("/"); last.config.owner=owner||undefined; last.config.repo=repo||undefined; discover({owner:owner||undefined, repo:repo||undefined}); };
       if($("#d-project")) $("#d-project").onchange=()=>{ last.config.projectKey=$("#d-project").value||undefined; discover({projectKey:$("#d-project").value||undefined}); };
       $("#iAdd").onclick=add;
     }catch(e){ if(my===seq) $("#iDisc").innerHTML=`<div class="note err">${esc(e.message)}</div>`; }
+  };
+  /** 新しいリポジトリを作る（プロジェクトの要件・設計・テストを入れ、連携先として登録する） */
+  const showNewRepo=async(r)=>{
+    $("#d-addRow").hidden=true;
+    const pj=S.project;
+    let suggest={name:"", description:""};
+    if(pj){ try{ suggest=await api(`/api/projects/${pj.id}/repo-name`) }catch(e){} }
+    const owners=r.owners?.length?r.owners:[{login:r.account,type:"user"}];
+    $("#d-new").innerHTML=`<div class="addbox" style="margin-top:8px"><h3 style="margin:0 0 6px">新しいリポジトリを作る</h3>
+      <p class="hint">GitHub にリポジトリを作り、${pj?`プロジェクト「${esc(pj.name)}」の要件・設計・テストシナリオ・AI コーディングツールの設定（AGENTS.md・.mcp.json など）を最初のコミットとして入れて、`:""}課題の登録先として登録します。トークンには「Administration」と「Contents」の書き込み権限が必要です。</p>
+      <div class="row"><label class="f">所有者<select id="nr-owner">${owners.map(o=>`<option value="${esc(o.login)}">${esc(o.login)}${o.type==="org"?"（組織）":"（自分）"}</option>`).join("")}</select></label>
+        <label class="f" style="min-width:240px">リポジトリ名<input id="nr-name" value="${esc(suggest.name)}" placeholder="例：booking-app（英数字と - . _）" spellcheck="false"></label>
+        <label class="f">公開範囲<select id="nr-private"><option value="1">非公開（Private）</option><option value="0">公開（Public）</option></select></label></div>
+      <div class="row" style="margin-top:6px"><label class="f" style="flex:1;min-width:260px">説明<input id="nr-desc" value="${esc(suggest.description)}" placeholder="任意"></label></div>
+      ${pj?`<label class="hint" style="display:block;margin-top:6px"><input type="checkbox" id="nr-seed" checked> プロジェクト「${esc(pj.name)}」の要件・設計・テストを入れる</label>`:`<p class="note warn">プロジェクトを開いていないため、空のリポジトリ（README だけ）を作ります。要件・設計を入れるには、先にプロジェクトを開いてください。</p>`}
+      <div class="row" style="margin-top:8px"><button class="btn" id="nr-go">作成して登録</button><button class="btn ghost" id="nr-cancel">やめる</button></div><div id="nr-msg" aria-live="polite"></div></div>`;
+    $("#nr-cancel").onclick=()=>{ $("#d-new").innerHTML=""; $("#d-addRow").hidden=false; $("#d-repo").value=""; };
+    $("#nr-go").onclick=async()=>{
+      const name=$("#nr-name").value.trim();
+      if(!/^[A-Za-z0-9._-]{1,100}$/.test(name)){ $("#nr-msg").innerHTML=`<div class="note err">リポジトリ名は英数字と - . _ だけで入れてください</div>`; return; }
+      const body={token:$("#n-token").value, owner:$("#nr-owner").value, name, private:$("#nr-private").value==="1", description:$("#nr-desc").value.trim()||undefined, apiBase:last?.config?.apiBase};
+      if(pj && $("#nr-seed")?.checked) body.projectId=pj.id;
+      $("#nr-go").disabled=true; $("#nr-go").textContent="作成中…";
+      try{
+        const x=await api(`/api/orgs/${S.orgId}/integrations/github/repos`,{method:"POST",body});
+        await loadIntegrations();
+        $("#iMsg").innerHTML=`<div class="note" style="background:var(--accent-soft)">✓ リポジトリ ${extLink(x.repo.url, x.repo.fullName)} を作りました${x.repo.seeded?`（要件・設計・テストなど ${x.repo.seeded} ファイルを ${extLink(x.repo.commitUrl, "最初のコミット")} に入れました）`:""}。課題の登録先として登録しました。</div>`
+          + (x.setup||[]).map(n=>`<div class="note ${/できません|失敗/.test(n)?"warn":""}" style="${/できません|失敗/.test(n)?"":"background:var(--accent-soft)"}">${esc(n)}</div>`).join("")
+          + (x.check?`<div class="note ${x.check.ok?"":"err"}" style="${x.check.ok?"background:var(--accent-soft)":""}">${x.check.ok?"✓ ":""}${esc(x.check.message)}</div>`:"")
+          + `<p class="hint">開発者は <span class="mono">git clone</span> してそのまま使えます。AI コーディングツールの接続には、「開発・テストのツールとの連携」で発行したトークンを環境変数 <span class="mono">ARN_TOKEN</span> に入れてください。</p>`;
+        toast(`リポジトリ ${x.repo.fullName} を作りました`);
+      }catch(e){ $("#nr-go").disabled=false; $("#nr-go").textContent="作成して登録"; $("#nr-msg").innerHTML=`<div class="note err">${esc(e.message)}</div>`; }
+    };
   };
   const add=async()=>{
     const k=kind(), c={...last.config};

@@ -185,6 +185,7 @@ ChatGPT の API キーを自動で発行するために使うキーです。管�
 
 - キーの形: github_pat_ で始まる
 - 組織のリポジトリでは、組織の管理者の承認が必要な場合があります
+- 要件ナビでリポジトリを自動で作る場合は、「Repository access」を「All repositories」にし、「Administration」と「Contents」も「Read and write」にしてください（組織に作る場合は「Resource owner」をその組織にします）
 
 ### Jira の API トークン
 

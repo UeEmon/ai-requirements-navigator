@@ -40,6 +40,7 @@ import { designAndChange } from "./design-change.js";
 import { discovery } from "./discovery.js";
 import { connect } from "./connect.js";
 import { keySetup, type GoogleOAuthConfig } from "./key-setup.js";
+import { repoSetup } from "./repo-setup.js";
 import { handoff } from "./handoff.js";
 import { scope } from "./scope.js";
 import { nfrSheet } from "./nfr-sheet.js";
@@ -1046,6 +1047,7 @@ export function createApp(deps: AppDeps) {
   sc.routes(app);
   cn.routes(app);
   ks.routes(app);
+  repoSetup(moduleCtx, { filesOf: (c, p) => cn.agentFiles(c, p), pollMs: deps.keySetupPollMs }).routes(app);
 
   /** EARS の構造から文を組み立て、検査結果を返す（画面の入力中の確認用） */
   app.post("/api/ears/preview", async (c) => {

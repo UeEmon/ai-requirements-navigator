@@ -22,7 +22,7 @@ interface Call {
 /** GitHub / Jira / Backlog の模擬API */
 function fakeTools() {
   const calls: Call[] = [];
-  const opts = { failTitlesOnce: new Set<string>(), rejectLabels: false, rejectJiraParent: false, rejectBacklogParent: false };
+  const opts = { failTitlesOnce: new Set<string>(), rejectLabels: false, rejectJiraParent: false, rejectBacklogParent: false, created: new Map<string, { private: boolean; tree?: any[]; refPolls: number; head?: string }>() };
   let n = 0;
   const res = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetchImpl = (async (input: string | URL, init: RequestInit = {}) => {
@@ -42,6 +42,29 @@ function fakeTools() {
       if (headers.authorization !== `Bearer ${GH_TOKEN}`) return res(401, { message: "Bad credentials" });
       if (method === "GET" && u.pathname === "/repos/acme/app") return res(200, { full_name: "acme/app", name: "app", owner: { login: "acme" }, has_issues: true, permissions: { push: true, triage: true } });
       if (method === "GET" && u.pathname === "/user") return res(200, { login: "dev-taro" });
+      if (method === "GET" && u.pathname === "/user/orgs") return res(200, [{ login: "acme" }]);
+      // リポジトリの作成（本人・組織）と、Git Data API での最初のコミット
+      const mk = u.pathname === "/user/repos" ? "dev-taro" : u.pathname.match(/^\/orgs\/([^/]+)\/repos$/)?.[1];
+      if (method === "POST" && mk) {
+        if (mk === "nope") return res(403, { message: "Resource not accessible by personal access token" });
+        const full = `${mk}/${body.name}`;
+        if (full === "acme/app" || opts.created.has(full)) return res(422, { message: "Repository creation failed.", errors: [{ message: "name already exists on this account" }] });
+        opts.created.set(full, { private: body.private, refPolls: 0 });
+        return res(201, { name: body.name, full_name: full, owner: { login: mk }, private: body.private, default_branch: "main", html_url: `https://github.com/${full}`, has_issues: body.has_issues });
+      }
+      const rm = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)(\/.*)?$/);
+      const cr = rm ? opts.created.get(rm[1]!) : undefined;
+      if (cr) {
+        const sub = rm![2] ?? "";
+        if (method === "GET" && sub === "") return res(200, { full_name: rm![1], name: rm![1]!.split("/")[1], owner: { login: rm![1]!.split("/")[0] }, has_issues: true });
+        if (method === "GET" && sub === "/git/ref/heads/main") return cr.refPolls++ < 1 ? res(409, { message: "Git Repository is empty." }) : res(200, { object: { sha: cr.head ?? "c0" } });
+        if (method === "GET" && sub === "/git/commits/c0") return res(200, { sha: "c0", tree: { sha: "t0" } });
+        if (method === "POST" && sub === "/git/trees") { cr.tree = body.tree; return res(201, { sha: "t1", base: body.base_tree }); }
+        if (method === "POST" && sub === "/git/commits") return res(201, { sha: "c1", html_url: `https://github.com/${rm![1]}/commit/c1`, parents: body.parents, tree: body.tree });
+        if (method === "PATCH" && sub === "/git/refs/heads/main") { cr.head = body.sha; return res(200, { object: { sha: body.sha } }); }
+        if (method === "GET" && sub.startsWith("/labels")) return res(200, []);
+        if (method === "POST" && sub === "/labels") return res(201, { name: body.name });
+      }
       if (method === "GET" && u.pathname === "/user/repos") return res(200, [{ name: "app", full_name: "acme/app", owner: { login: "acme" }, private: true, has_issues: true, permissions: { push: true } }, { name: "old", full_name: "acme/old", owner: { login: "acme" }, archived: true }, { name: "docs", full_name: "acme/docs", owner: { login: "acme" }, private: false, has_issues: false, permissions: { push: false } }]);
       if (method === "GET" && u.pathname === "/repos/acme/app/labels") return res(200, [{ name: "bug" }, { name: "epic" }]);
       if (method === "POST" && u.pathname === "/repos/acme/app/labels") return res(201, { name: body.name });
@@ -193,6 +216,48 @@ describe("実装工程への連携", () => {
     // 登録済みの連携先のトークンで、候補を取り直せる（変更のとき）
     const again = await disc({ kind: "github", integrationId: reg.id });
     expect(again.config).toMatchObject({ owner: "acme", repo: "app" });
+  });
+
+  /* ---------- リポジトリの自動作成 ---------- */
+  it("リポジトリの自動作成: GitHub にリポジトリを作り、要件・設計・テストを最初のコミットに入れて、連携先として登録する", async () => {
+    const p = await readyProject();
+    // 候補: 作れる所有者（本人と組織）
+    const d = await (await req(`/api/orgs/${orgId}/integrations/discover`, as("admin", json({ kind: "github", token: GH_TOKEN })))).json();
+    expect(d.owners).toEqual([{ login: "dev-taro", type: "user" }, { login: "acme", type: "org" }]);
+    // リポジトリ名の候補（日本語の名前は日付から）
+    const nm = await (await req(`/api/projects/${p.id}/repo-name`, as("viewer"))).json();
+    expect(nm.name).toMatch(/^requirements-\d{8}$/);
+
+    const r = await req(`/api/orgs/${orgId}/integrations/github/repos`, as("admin", json({ token: GH_TOKEN, owner: "acme", name: "booking-app", private: true, projectId: p.id })));
+    expect(r.status).toBe(201);
+    const b = await r.json();
+    expect(b.repo).toMatchObject({ fullName: "acme/booking-app", url: "https://github.com/acme/booking-app", defaultBranch: "main", private: true, commitUrl: "https://github.com/acme/booking-app/commit/c1" });
+    expect(b.repo.seeded).toBeGreaterThan(5);
+    const tree = t.tools.opts.created.get("acme/booking-app")!.tree!;
+    const paths = tree.map((x: { path: string }) => x.path);
+    expect(paths).toEqual(expect.arrayContaining(["AGENTS.md", "CLAUDE.md", ".mcp.json", "requirements/requirements.md", "requirements/design.md", "tests/testcases.csv", "scripts/report-test-results.sh", ".arn/project.json"]));
+    expect(tree.find((x: { path: string }) => x.path === "scripts/report-test-results.sh").mode).toBe("100755");
+    expect(tree.find((x: { path: string }) => x.path === ".arn/project.json").content).toContain(p.id);
+    expect(JSON.stringify(tree)).not.toContain(GH_TOKEN); // トークンはリポジトリに入れない
+    expect(t.tools.opts.created.get("acme/booking-app")!.head).toBe("c1");
+    // 連携先として登録し、ラベルを作って接続確認
+    expect(b.integration).toMatchObject({ kind: "github", target: "acme/booking-app", token: "••••1234" });
+    expect(b.setup).toEqual(["ラベル「requirements-navigator」を作りました", "ラベル「epic」を作りました"]);
+    expect(b.check).toEqual({ ok: true, message: "acme/booking-app に接続できました" });
+    // 監査ログ
+    const log = await (await req(`/api/orgs/${orgId}/audit?action=integration`, as("admin"))).json();
+    expect(log.entries.map((e: { action: string }) => e.action)).toEqual(expect.arrayContaining(["integration.repo.create", "integration.create"]));
+
+    // 本人の下・ファイルなし
+    const r2 = await (await req(`/api/orgs/${orgId}/integrations/github/repos`, as("admin", json({ integrationId: b.integration.id, owner: "dev-taro", name: "sandbox", private: false })))).json();
+    expect(r2.repo).toMatchObject({ fullName: "dev-taro/sandbox", seeded: 0, private: false });
+    // 同じ名前・権限なし・名前の形式・管理者以外
+    const dup = await req(`/api/orgs/${orgId}/integrations/github/repos`, as("admin", json({ token: GH_TOKEN, owner: "acme", name: "booking-app" })));
+    expect(dup.status).toBe(409);
+    expect((await dup.json()).error).toContain("同じ名前");
+    expect((await (await req(`/api/orgs/${orgId}/integrations/github/repos`, as("admin", json({ token: GH_TOKEN, owner: "nope", name: "x1" })))).json()).error).toContain("Administration");
+    expect((await req(`/api/orgs/${orgId}/integrations/github/repos`, as("admin", json({ token: GH_TOKEN, owner: "acme", name: "予約" })))).status).toBe(400);
+    expect((await req(`/api/orgs/${orgId}/integrations/github/repos`, as("editor", json({ token: GH_TOKEN, owner: "acme", name: "x2" })))).status).toBe(403);
   });
 
   /* ---------- 連携先の登録 ---------- */

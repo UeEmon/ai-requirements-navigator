@@ -416,6 +416,8 @@ export interface DiscoverResult {
   /** 決まった設定（候補が1つしかない・URL から読み取った・おすすめ） */
   config: Record<string, string>;
   repos?: Array<{ owner: string; repo: string; fullName: string; private: boolean; hasIssues: boolean; canPush: boolean | null }>;
+  /** GitHub: 新しいリポジトリを作れる所有者（本人と所属する組織） */
+  owners?: Array<{ login: string; type: "user" | "org" }>;
   projects?: Array<{ key: string; name: string }>;
   issueTypes?: Array<{ name: string; role: "epic" | "story" | "subtask" | "other" }>;
   labels?: string[];
@@ -464,7 +466,10 @@ export async function discoverIntegration(
     } else if (!repos.length) {
       warnings.push("このトークンで見られるリポジトリがありません。トークンの「Repository access」で対象のリポジトリを選んでください");
     }
-    return { account: String(me?.login ?? ""), config, repos, labels, warnings };
+    // 新しいリポジトリを作れる所有者（組織の一覧を読めないトークンなら本人だけ）
+    const orgs: any[] = await call("GET", `${apiBase}/user/orgs?per_page=100`).catch(() => []);
+    const owners: NonNullable<DiscoverResult["owners"]> = [{ login: String(me?.login ?? ""), type: "user" }, ...(orgs ?? []).map((o) => ({ login: String(o.login), type: "org" as const }))];
+    return { account: String(me?.login ?? ""), config, repos, owners, labels, warnings };
   }
 
   if (kind === "jira") {
@@ -551,4 +556,116 @@ export async function prepareIntegration(kind: IntegrationKind, config: Record<s
     notes.push(`ラベルを作れませんでした（${e.message}）。課題はラベルなしで登録されます`);
   }
   return notes;
+}
+
+/* ------------------------------------------------------------------ */
+/* GitHub: プロジェクトを登録するリポジトリを作る                          */
+/* ------------------------------------------------------------------ */
+
+/** リポジトリ名の候補（英数字と - . _ だけ。日本語の名前なら日付から作る） */
+export function suggestRepoName(projectName: string, now = new Date()): string {
+  const ascii = projectName
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .slice(0, 60);
+  return ascii.length >= 3 ? ascii : `requirements-${now.toISOString().slice(0, 10).replace(/-/g, "")}`;
+}
+
+export interface CreateRepoResult {
+  owner: string;
+  repo: string;
+  fullName: string;
+  url: string;
+  defaultBranch: string;
+  private: boolean;
+  /** 最初のコミットに入れたファイルの数（入れなかったら 0） */
+  seeded: number;
+  commitUrl?: string;
+  notes: string[];
+}
+
+/**
+ * GitHub にリポジトリを作り、（files があれば）最初のコミットとして入れる。
+ * - 所有者が本人なら POST /user/repos、組織なら POST /orgs/{org}/repos
+ * - README だけで初期化してから、Git Data API で1つのコミットにまとめてファイルを入れる
+ * - 作ったリポジトリは消さない（ファイルの追加に失敗しても、リポジトリは残して知らせる）
+ */
+export async function createGithubRepo(opts: {
+  apiBase: string;
+  secret: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  description?: string;
+  files?: Array<{ path: string; content: string }>;
+  commitMessage?: string;
+  fetchImpl: FetchLike;
+  timeoutMs?: number;
+  /** 初期化の完了を待つ間隔（テスト用） */
+  pollMs?: number;
+}): Promise<CreateRepoResult> {
+  const apiBase = opts.apiBase.replace(/\/+$/, "");
+  const call = http(opts.fetchImpl, { authorization: `Bearer ${opts.secret}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }, opts.timeoutMs ?? 30_000);
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(opts.name) || /^\.+$/.test(opts.name)) throw new IntegrationError("リポジトリ名は英数字と - . _ だけで、100文字以内にしてください");
+  const me = await call("GET", `${apiBase}/user`);
+  const isUser = String(me?.login ?? "").toLowerCase() === opts.owner.toLowerCase();
+  const body = { name: opts.name, private: opts.private, description: (opts.description ?? "").slice(0, 300), has_issues: true, auto_init: true };
+  let r: any;
+  try {
+    r = await call("POST", isUser ? `${apiBase}/user/repos` : `${apiBase}/orgs/${encodeURIComponent(opts.owner)}/repos`, body);
+  } catch (e) {
+    if (e instanceof IntegrationError && e.status === 422) throw new IntegrationError(`リポジトリを作れませんでした。同じ名前のリポジトリがすでにあるか、名前が使えません（${e.message}）`, 422);
+    if (e instanceof IntegrationError && (e.status === 403 || e.status === 404))
+      throw new IntegrationError(
+        `リポジトリを作る権限がありません。トークンに「Administration: Read and write」（組織なら所有者を組織にしたトークン）と「Contents: Read and write」を付けてください（${e.message}）`,
+        e.status,
+      );
+    throw e;
+  }
+  const owner = String(r?.owner?.login ?? opts.owner);
+  const repo = String(r?.name ?? opts.name);
+  const branch = String(r?.default_branch ?? "main");
+  const out: CreateRepoResult = {
+    owner,
+    repo,
+    fullName: String(r?.full_name ?? `${owner}/${repo}`),
+    url: safeUrl(r?.html_url, `https://github.com/${owner}/${repo}`),
+    defaultBranch: branch,
+    private: Boolean(r?.private ?? opts.private),
+    seeded: 0,
+    notes: [],
+  };
+  const files = (opts.files ?? []).filter((f) => f.path && !f.path.startsWith("/") && !f.path.split("/").includes(".."));
+  if (!files.length) return out;
+  const base = `${apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  try {
+    // README での初期化が終わるのを待つ（作成直後は 404 / 409 のことがある）
+    let ref: any = null;
+    for (let i = 0; i < 10 && !ref; i++) {
+      try {
+        ref = await call("GET", `${base}/git/ref/heads/${encodeURIComponent(branch)}`);
+      } catch (e) {
+        if (!(e instanceof IntegrationError) || (e.status !== 404 && e.status !== 409)) throw e;
+        await new Promise((res) => setTimeout(res, opts.pollMs ?? 1000));
+      }
+    }
+    if (!ref?.object?.sha) throw new IntegrationError("リポジトリの初期化が終わりませんでした");
+    const parent = String(ref.object.sha);
+    const head = await call("GET", `${base}/git/commits/${parent}`);
+    const tree = await call("POST", `${base}/git/trees`, {
+      base_tree: head?.tree?.sha,
+      tree: files.map((f) => ({ path: f.path, mode: f.path.endsWith(".sh") ? "100755" : "100644", type: "blob", content: f.content })),
+    });
+    const commit = await call("POST", `${base}/git/commits`, { message: opts.commitMessage ?? "要件ナビ: 要件・設計・テストを追加", tree: tree?.sha, parents: [parent] });
+    await call("PATCH", `${base}/git/refs/heads/${encodeURIComponent(branch)}`, { sha: commit?.sha });
+    out.seeded = files.length;
+    out.commitUrl = safeUrl(commit?.html_url, `${out.url}/commit/${commit?.sha}`);
+  } catch (e) {
+    if (!(e instanceof IntegrationError)) throw e;
+    out.notes.push(`リポジトリは作りましたが、要件・設計のファイルを入れられませんでした（${e.message}）。トークンに「Contents: Read and write」を付けるか、「テスト・引き継ぎ」の開発用パッケージ（zip）を手で入れてください`);
+  }
+  return out;
 }

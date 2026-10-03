@@ -390,7 +390,8 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
 
   const mdTable = (t: Table) => (t.rows.length ? [`| ${t.head.join(" | ")} |`, `| ${t.head.map(() => "---").join(" | ")} |`, ...t.rows.map((r) => `| ${r.map((x) => (x || " ").replace(/\|/g, "\\|")).join(" | ")} |`)].join("\n") : "（まだありません）");
 
-  async function agentPack(c: AnyContext, p: Project) {
+  /** 開発用パッケージ（リポジトリに置くファイル）。AGENTS.md を先頭にした一覧 */
+  async function agentFiles(c: AnyContext, p: Project): Promise<Array<{ path: string; content: string }>> {
     const url = serverUrl(c);
     const b = await ho.bundle(p);
     const t = await ho.tests(p);
@@ -521,8 +522,13 @@ echo
       nfr,
       files: ["AGENTS.md", ...files.map((f) => f.path).filter((f) => !f.startsWith("tests/acceptance/")), `tests/acceptance/*.feature（${features.length}ファイル）`],
     });
-    const zip = zipFiles([{ path: "AGENTS.md", content: agents }, ...files]);
-    await audit(store, { orgId: p.orgId, actor: ctx.actorOf(c), action: "handoff.pack", targetType: "project", targetId: p.id, detail: { files: files.length + 1, bytes: zip.length } });
+    return [{ path: "AGENTS.md", content: agents }, ...files];
+  }
+
+  async function agentPack(c: AnyContext, p: Project) {
+    const files = await agentFiles(c, p);
+    const zip = zipFiles(files);
+    await audit(store, { orgId: p.orgId, actor: ctx.actorOf(c), action: "handoff.pack", targetType: "project", targetId: p.id, detail: { files: files.length, bytes: zip.length } });
     return zip;
   }
 
@@ -1007,6 +1013,7 @@ echo
     routes,
     emit,
     status,
+    agentFiles,
     /** テスト用: 送信中の Webhook を待つ */
     flush: async () => {
       await Promise.all([...pending]);

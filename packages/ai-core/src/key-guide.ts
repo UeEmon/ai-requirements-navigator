@@ -151,7 +151,7 @@ export function keyGuides(opts: KeyGuideOptions): { manual: KeyGuide[]; auto: Ar
       ],
       format: "github_pat_ で始まる",
       where: "「プロジェクト設定」→「課題管理ツールとの連携」→ 種類「GitHub Issues」→ 貼り付ける（リポジトリの一覧を自動で読み込み）→ リポジトリを選んで「登録」（ラベルの作成と接続確認は自動）",
-      notes: ["組織のリポジトリでは、組織の管理者の承認が必要な場合があります"],
+      notes: ["組織のリポジトリでは、組織の管理者の承認が必要な場合があります", "要件ナビでリポジトリを自動で作る場合は、「Repository access」を「All repositories」にし、「Administration」と「Contents」も「Read and write」にしてください（組織に作る場合は「Resource owner」をその組織にします）"],
       helpUrl: "https://docs.github.com/ja/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens",
     },
     {
