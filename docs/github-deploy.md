@@ -46,8 +46,11 @@ Invoke-WebRequest https://raw.githubusercontent.com/UeEmon/ai-requirements-navig
 
 ```bash
 cp .env.example .env            # Windows: Copy-Item .env.example .env
-docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-# ↑ 表示された文字列を .env の MASTER_KEY= の後ろに貼り付けて保存
+```
+
+暗号化の鍵を作って `.env` に書き込みます（コマンドは [Docker Desktop への展開手順の「暗号化の鍵を作る」](docker-desktop.md#暗号化の鍵master_keyを作る) と同じです。Windows と Mac で書き方が違います）。その後に起動します。
+
+```bash
 docker compose up -d
 ```
 

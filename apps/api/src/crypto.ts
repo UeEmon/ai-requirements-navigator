@@ -10,11 +10,27 @@ export interface KeyEncryptor {
   decrypt(cipher: string, context: { orgId: string }): Promise<string>;
 }
 
+/**
+ * MASTER_KEY（32バイトを Base64 にした44文字）を読む。前後の空白・引用符は取り除く。
+ * 間違っているときは、何が違うかを示す（鍵そのものはログに出さない）。
+ */
+export function parseMasterKey(raw: string): Buffer {
+  const v = raw.trim().replace(/^(["'])(.*)\1$/, "$2").trim();
+  const how =
+    "作り方: docker run --rm node:22-alpine node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\" の出力（44文字）を、.env の MASTER_KEY= の後ろに入れる（docs/docker-desktop.md）";
+  if (!v) throw new Error(`MASTER_KEY が空です。${how}`);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(v)) {
+    throw new Error(`MASTER_KEY に Base64 で使わない文字が含まれています（${v.length}文字。空白・日本語・「Digest: sha256:…」など別の行を貼っていないか確認してください）。${how}`);
+  }
+  const key = Buffer.from(v, "base64");
+  if (key.length !== 32) throw new Error(`MASTER_KEY は32バイトをBase64にした44文字にしてください（いまは${v.length}文字、${key.length}バイト）。${how}`);
+  return key;
+}
+
 export class LocalKeyEncryptor implements KeyEncryptor {
   private readonly key: Buffer;
   constructor(masterKeyBase64: string) {
-    const key = Buffer.from(masterKeyBase64, "base64");
-    if (key.length !== 32) throw new Error("MASTER_KEY は32バイトをBase64にした値にしてください（npm run gen:key）");
+    const key = parseMasterKey(masterKeyBase64);
     this.key = key;
   }
 

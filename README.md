@@ -20,8 +20,9 @@
 
 ```bash
 cp .env.example .env
-# MASTER_KEY を設定（次のコマンドの出力を .env に貼る）
-docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+# MASTER_KEY を .env に書き込む（Mac・Linux の例。Windows のコマンドは docs/docker-desktop.md）
+k=$(docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+sed -i.bak "s|^MASTER_KEY=.*|MASTER_KEY=$k|" .env
 docker compose up -d --build
 ```
 

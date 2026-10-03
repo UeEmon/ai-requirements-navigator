@@ -41,17 +41,26 @@ Copy-Item .env.example .env
 
 ### 暗号化の鍵（MASTER_KEY）を作る
 
-組織の管理者が登録する AI の API キーは、この鍵で暗号化して保存します。次のコマンドは Docker だけで動きます（Windows・Mac 共通）。
+組織の管理者が登録する AI の API キーは、この鍵で暗号化して保存します。次のコマンドで鍵を作り、`.env` の `MASTER_KEY=` の行に**自動で書き込みます**（手で貼り付けると、別の行を写してしまう間違いが起きやすいため）。Docker だけで動きます。
+
+```powershell
+# Windows（PowerShell）
+$k = docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+$lines = (Get-Content -Encoding UTF8 .env) -replace '^MASTER_KEY=.*', "MASTER_KEY=$k"
+[IO.File]::WriteAllLines("$PWD\.env", $lines)
+Select-String -Path .env -Pattern '^MASTER_KEY='
+```
 
 ```bash
-docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+# Mac
+k=$(docker run --rm node:22-alpine node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+sed -i '' "s|^MASTER_KEY=.*|MASTER_KEY=$k|" .env
+grep '^MASTER_KEY=' .env
 ```
 
-表示された文字列（44文字）を、`.env` の `MASTER_KEY=` の後ろに貼り付けて保存します。
+最後の行で `MASTER_KEY=` の後ろに44文字（英数字と `+` `/`、最後が `=`）が表示されれば完了です。手で書く場合も、`MASTER_KEY=` の後ろにこの44文字だけを入れます（空白・引用符・日本語は入れない）。
 
-```text
-MASTER_KEY=表示された文字列
-```
+> 初めて実行するときは、イメージの取得中に `Digest: sha256:…` などの行も表示されます。これは鍵ではありません。上のコマンドは鍵だけを書き込みます。
 
 > **この鍵は別の安全な場所にも控えてください。** なくすと、登録済みの API キーを読めなくなります（その場合は、管理者が API キーを登録し直します）。`.env` は Git に入れないでください（`.gitignore` 済み）。
 
@@ -190,7 +199,7 @@ docker compose start app
 | 症状 | 原因と対処 |
 | --- | --- |
 | `Bind for 127.0.0.1:8787 failed: port is already allocated` | ほかのアプリが使っています。`.env` の `ARN_PORT`（DB は `DB_PORT`）を変えて `docker compose up -d` |
-| app がすぐ止まり、ログに「MASTER_KEY は32バイトをBase64にした値に…」 | `MASTER_KEY` が空か、貼り付けが途中で切れています。[3](#暗号化の鍵master_keyを作る) の手順で作り直す（作り直すと、登録済みの API キーは登録し直しが必要） |
+| app がすぐ止まり、ログに「MASTER_KEY …」 | `.env` の `MASTER_KEY` が空か、鍵ではない文字列（`Digest: sha256:…` の行、説明文、途中で切れた文字列など）になっています。メッセージに文字数とバイト数が出ます。[3](#暗号化の鍵master_keyを作る) のコマンドで書き込み直し、`docker compose up -d` で起動し直す。まだ API キーを登録していなければ、鍵を作り直しても影響はありません |
 | ビルドが `npm ci` や証明書の取得で失敗する | ネットワーク・プロキシの設定を確認（Settings → Resources → Proxies）。社内の証明書で通信を検査している場合は、ネットワークの管理者に相談してください |
 | 画面は出るが AI の呼び出しが失敗する | 「AI設定・プロジェクト」で API キー・モデル名を確認。会社のネットワークから AI の提供元に接続できるかも確認 |
 | 「組織の作成には初期セットアップ用トークンが必要です」 | `AUTH_MODE=oidc` のときは、`.env` の `BOOTSTRAP_TOKEN` を画面の入力欄に入れて組織を作ります |
