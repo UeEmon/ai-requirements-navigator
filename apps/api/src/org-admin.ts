@@ -246,7 +246,9 @@ export function orgAdmin(ctx: ImplementationContext, opts: OrgAdminOptions) {
     /** 名前・目的の変更（編集者以上）、アーカイブ・元に戻す（管理者） */
     app.patch("/api/projects/:id", async (c) => {
       const input = await ctx.body(c, ProjectPatchInput);
-      const p = await ctx.loadProject(c, c.req.param("id"), input.archived !== undefined ? "admin" : "editor");
+      const p0 = await ctx.loadProject(c, c.req.param("id"), input.archived !== undefined ? "admin" : "editor");
+      // 変更前の値（記録用）。保存先によっては同じオブジェクトが書き換わるため、先に写しを取る
+      const p = JSON.parse(JSON.stringify(p0)) as typeof p0;
       const aiConfig = input.aiConfig ? await checkAiConfig(store, p.orgId, input.aiConfig, p.confidential) : undefined;
       const updated = await store.updateProject(p.id, {
         name: input.name,
