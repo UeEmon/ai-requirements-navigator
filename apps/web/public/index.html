@@ -98,6 +98,9 @@ pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:va
 span.st{font-family:var(--f-mono);font-size:11.5px;white-space:nowrap}span.st.good{color:var(--good)}span.st.warn{color:var(--warn)}span.st.bad{color:var(--bad)}
 .steps .running{color:var(--accent)}.steps .done{color:var(--good)}.steps .failed{color:var(--bad)}
 .who{font-size:12.5px;color:var(--ink-2)}
+details.kguide{border:1px solid var(--rule);border-radius:var(--r);padding:8px 12px;margin-top:8px}
+details.kguide[open]{border-color:var(--accent)}
+details.kguide summary{cursor:pointer}
 .seg{display:flex;gap:4px;flex-wrap:wrap}
 pre.code{font-family:var(--f-mono);font-size:12px;background:var(--sheet);border:1px solid var(--rule);border-radius:var(--r);padding:8px 10px;overflow-x:auto;white-space:pre;margin:6px 0}
 tr.sub td{border-bottom:none;padding-top:0}
@@ -133,7 +136,8 @@ tr.sub td{border-bottom:none;padding-top:0}
     <button role="tab" data-tab="impl" aria-selected="false" id="t-impl">実装連携</button>
     <button role="tab" data-tab="handoff" aria-selected="false" id="t-handoff">テスト・引き継ぎ</button>
     <button role="tab" data-tab="change" aria-selected="false" id="t-change">変更管理</button>
-    <button role="tab" data-tab="admin" aria-selected="false" id="t-admin">AI設定・プロジェクト</button>
+    <button role="tab" data-tab="project" aria-selected="false" id="t-project">プロジェクト設定</button>
+    <button role="tab" data-tab="admin" aria-selected="false" id="t-admin">AI設定</button>
   </nav>
 
   <section class="view on" id="v-hear"><div id="hear"></div></section>
@@ -222,7 +226,7 @@ tr.sub td{border-bottom:none;padding-top:0}
       <label class="f" style="margin:0">工程<select id="hoLevel"><option value="">すべて</option><option value="system">システムテスト</option><option value="nfr">非機能テスト</option><option value="acceptance">受け入れテスト</option></select></label></div>
       <div id="hoTests"></div></div>
     <div class="panel"><div class="row" style="justify-content:space-between;align-items:flex-start">
-      <div><h2 style="margin:0">開発・テストのツールとの連携</h2><p class="hint" style="margin:4px 0 0">AIコーディングツール（Claude Code・Cursor・GitHub Copilot など）やCI・テストツールが、要件を読み、実装状況とテスト結果を報告し、質問できます。接続には組織の管理者が「AI設定・プロジェクト」で発行するトークンを使います。</p></div>
+      <div><h2 style="margin:0">開発・テストのツールとの連携</h2><p class="hint" style="margin:4px 0 0">AIコーディングツール（Claude Code・Cursor・GitHub Copilot など）やCI・テストツールが、要件を読み、実装状況とテスト結果を報告し、質問できます。接続には組織の管理者が「プロジェクト設定」で発行するトークンを使います。</p></div>
       <div class="row"><button class="btn sm" id="hoPack">開発用パッケージ（zip）</button></div></div>
       <div id="hoConnect"></div></div>
   </section>
@@ -234,10 +238,13 @@ tr.sub td{border-bottom:none;padding-top:0}
     <div class="panel"><h2 style="margin:0">変更要求</h2><div id="crList"></div></div>
     <div class="panel" id="crDetail" hidden></div>
   </section>
-  <section class="view" id="v-admin"><div class="grid2">
-    <div class="panel" id="provPanel"></div>
+  <section class="view" id="v-project">
     <div class="panel" id="projPanel"></div>
-  </div><div class="panel" id="integPanel"></div><div class="panel" id="devPanel"></div><div class="panel" id="usagePanel" hidden></div><div class="panel" id="auditPanel" hidden></div></section>
+    <div class="panel" id="integPanel"></div><div class="panel" id="devPanel"></div><div class="panel" id="auditPanel" hidden></div></section>
+  <section class="view" id="v-admin">
+    <div class="panel" id="provPanel"></div>
+    <div class="panel" id="guidePanel"></div>
+    <div class="panel" id="usagePanel" hidden></div></section>
 </div>
 <div class="toast" id="toast" hidden></div>
 
@@ -405,11 +412,11 @@ async function createOrg(){
 function switchTab(t){
   document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-selected", b.dataset.tab===t));
   document.querySelectorAll("section.view").forEach(v=>v.classList.toggle("on", v.id==="v-"+t));
-  ({discover:loadDiscover, nfr:loadNfr, reqs:loadReqs, uml:loadUml, screens:loadScreens, spec:loadSpec, impl:loadImpl, handoff:loadHandoff, change:loadChange, admin:renderAdmin}[t]||(()=>{}))();
+  ({discover:loadDiscover, nfr:loadNfr, reqs:loadReqs, uml:loadUml, screens:loadScreens, spec:loadSpec, impl:loadImpl, handoff:loadHandoff, change:loadChange, project:renderProject, admin:renderAdmin}[t]||(()=>{}))();
 }
 document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 
-/* ---------- AI設定・プロジェクト ---------- */
+/* ---------- AI設定・プロジェクト設定 ---------- */
 /* AI の種類ごとの名前と API キーの案内（/api/meta の vendors。古いサーバー向けに最低限の既定を持つ） */
 const VENDOR_FALLBACK = [
   {vendor:"anthropic",name:"Claude",maker:"Anthropic",standard:true,keyName:"Claude APIキー",keyPrefix:"sk-ant-",modelHint:"一覧の「Claude API ID」"},
@@ -442,7 +449,7 @@ function addBoxHtml(sel){
     body = `${au.mode==="none"?`<p class="hint">${esc(au.note)}</p>`:""}<ol class="ksteps">
         <li>${esc(sel.keyName)}を発行する：${extLink(sel.keyUrl, "発行の画面")}（${esc(sel.keyHow||"")}）${sel.keyPrefix?`（<span class="mono">${esc(sel.keyPrefix)}</span> で始まる文字列）`:""}。キーの全文が見られるのは発行したときだけです</li>
         <li>下に貼り付けて「キーを確かめる」（モデルの一覧も自動で取得します）</li>
-        <li>モデルを選んで「登録」</li></ol>${billing}
+        <li>モデルを選んで「登録」</li></ol><button class="btn sm ghost" type="button" data-kg="${{anthropic:"claude",openai:"openai",gemini:"gemini"}[sel.vendor]||""}">詳しい取得方法</button>${billing}
       <div class="row" style="margin-top:8px"><label class="f" style="flex:1;min-width:220px">${esc(sel.keyName)}<input id="pK" type="password" autocomplete="off" spellcheck="false" placeholder="${esc(sel.keyPrefix?sel.keyPrefix+" で始まるキーを貼り付け":"キーを貼り付け")}"></label>
         <button class="btn ghost" id="pCheck">キーを確かめる</button></div><div id="pCheckOut"></div>
       <div class="row" style="margin-top:8px">${modelField(sel)}${commonFields(sel)}<button class="btn" id="pAdd">登録</button><button class="btn ghost" data-aclose>閉じる</button></div>
@@ -451,7 +458,7 @@ function addBoxHtml(sel){
     body = `<p class="hint">${esc(au.note)}</p><ol class="ksteps">
         <li>${esc(au.adminKeyName)}を作る：${extLink(au.adminKeyUrl, "OpenAI Platform の Admin keys")}（${esc(au.adminKeyHow)}）</li>
         <li>下に貼り付けて「プロジェクトを読み込む」</li>
-        <li>キーを作るプロジェクトとモデルIDを選んで「発行して登録」</li></ol>${billing}
+        <li>キーを作るプロジェクトとモデルIDを選んで「発行して登録」</li></ol><button class="btn sm ghost" type="button" data-kg="openai-admin">管理用キーの詳しい作り方</button>${billing}
       <div class="row" style="margin-top:8px"><label class="f" style="flex:1;min-width:220px">${esc(au.adminKeyName)}<input id="oaK" type="password" autocomplete="off" spellcheck="false" placeholder="${esc(au.adminKeyPrefix)} で始まるキー（保存しません）"></label>
         <button class="btn ghost" id="oaLoad">プロジェクトを読み込む</button></div>
       <div class="row" style="margin-top:8px"><label class="f">キーを作るプロジェクト<select id="oaP"><option value="">新しいプロジェクト「要件ナビ」を作る</option></select></label>
@@ -542,6 +549,7 @@ function renderProviders(){
   const done = async (cred, vi, extra="") => { S.addVendor=null; S.gSession=null; await loadProviders(); renderAdmin(); toast(`${vi.name} を登録しました${extra}`); verifyProvider(cred.id); };
   document.querySelectorAll("[data-addv]").forEach(b=>b.onclick=()=>{ S.addVendor = S.addVendor===b.dataset.addv ? null : b.dataset.addv; renderProviders(); $("#addBox")?.scrollIntoView({block:"nearest"}); });
   document.querySelectorAll("[data-amode]").forEach(b=>b.onclick=()=>{ S.addMode=b.dataset.amode; renderProviders(); });
+  document.querySelectorAll("[data-kg]").forEach(b=>b.onclick=()=>openKeyGuide(b.dataset.kg));
   document.querySelectorAll("[data-aclose]").forEach(b=>b.onclick=()=>{ S.addVendor=null; renderProviders(); });
   document.querySelectorAll("[data-pcheck]").forEach(b=>b.onclick=async()=>{ busy(b,true,"確認中…"); await verifyProvider(b.dataset.pcheck); });
   document.querySelectorAll("[data-emsel]").forEach(s=>s.onchange=()=>{ if(s.value) $("#eM-"+s.dataset.emsel).value=s.value; });
@@ -625,9 +633,38 @@ function takeGoogleReturn(){
   sess.set("gReturn",null);
   return true;
 }
+/* ---------- AI設定タブ ---------- */
 function renderAdmin(){
-  const isAdmin = S.role === "admin";
   renderProviders();
+  renderKeyGuide();
+  if (S.role === "admin") loadUsage(); else $("#usagePanel").hidden=true;
+}
+/** 自動で取得できない API キー・トークンの取得方法 */
+function renderKeyGuide(){
+  const g=S.meta?.keyGuides; const panel=$("#guidePanel");
+  if(!g){ panel.hidden=true; return; }
+  panel.hidden=false;
+  const card = k => `<details class="kguide" id="kg-${esc(k.id)}">
+      <summary><b>${esc(k.name)}</b>${k.format?` <span class="mono hint">${esc(k.format)}</span>`:""}${k.autoAlternative?` <span class="tag">自動で取得する方法あり</span>`:""}</summary>
+      <p class="hint" style="margin:6px 0">${esc(k.why)}</p>
+      <p style="margin:6px 0"><a class="btn sm" href="${esc(safeHref(k.url))}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;margin-right:10px">${esc(k.urlLabel)}を開く</a>${k.helpUrl?extLink(k.helpUrl,"提供元のヘルプ"):""}</p>
+      <ol class="ksteps">${k.steps.map(x=>`<li>${esc(x)}</li>`).join("")}</ol>
+      <p style="margin:6px 0"><span class="lbl">要件ナビに入れる場所</span><br>${esc(k.where)}</p>
+      ${k.autoAlternative?`<p class="hint" style="margin:6px 0">自動で取得する方法：${esc(k.autoAlternative)}</p>`:""}
+      ${k.notes?.length?`<ul class="hint" style="margin:6px 0;padding-left:20px">${k.notes.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}
+    </details>`;
+  const sect = (title, list) => list.length ? `<h3 style="margin-top:12px">${esc(title)}</h3>${list.map(card).join("")}` : "";
+  panel.innerHTML = `<h2>APIキー・トークンの取得方法</h2>
+    <p class="hint">要件ナビが自動で取得できないキーとトークンの、取得するページと手順です。キーの全文が見られるのは、たいてい発行したときだけです。コピーしたら、すぐに要件ナビに入れてください（メールやチャットには貼らないでください）。</p>
+    ${g.auto?.length?`<div class="note" style="background:var(--accent-soft)"><b>自動で取得できるもの：</b>${g.auto.map(a=>`${esc(a.target)}（${esc(a.how)}）`).join("／")}</div>`:""}
+    ${sect("AI の API キー", g.manual.filter(k=>k.group==="ai"))}
+    ${sect("課題管理ツールのトークン（「プロジェクト設定」の「課題管理ツールとの連携」で使う）", g.manual.filter(k=>k.group==="integration"))}`;
+}
+/** 取得方法の項目を開いて表示する（ほかのタブから） */
+function openKeyGuide(id){ switchTab("admin"); const d=$("#kg-"+id); if(d){ d.open=true; d.scrollIntoView({block:"start"}); } }
+/* ---------- プロジェクト設定タブ ---------- */
+function renderProject(){
+  const isAdmin = S.role === "admin";
   const gens = S.providers.map(p=>`<label><input type="checkbox" name="g" value="${p.id}" id="g-${p.id}">${esc(p.label)}</label>`).join("");
   $("#projPanel").innerHTML = `<h2>プロジェクト</h2>
     ${S.project?`<p>現在: <b>${esc(S.project.name)}</b> <span class="mono">${esc(S.project.id)}</span></p>`:""}
@@ -640,11 +677,12 @@ function renderAdmin(){
       <label class="hint"><input type="checkbox" id="jC"> 機密プロジェクト（ローカルLLMのみ使用）</label>
       <div class="row"><label class="f">モード<select id="jMode"><option value="multi">複数AI＋評価AI</option><option value="single">単一AI</option></select></label>
       <label class="f" id="jEvW">評価AI<select id="jEv">${S.providers.map(p=>`<option value="${p.id}">${esc(p.label)}</option>`).join("")}</select></label></div>
-      <div><div class="hint">生成AI</div><div class="chk">${gens||'<span class="hint">先にAIを登録してください</span>'}</div></div>
+      <div><div class="hint">生成AI</div><div class="chk">${gens||`<span class="hint">先に「AI設定」タブで AI を登録してください</span> <button class="btn sm ghost" type="button" id="jToAi">AI設定を開く</button>`}</div></div>
       <div><button class="btn" id="jGo">作成してヒアリングを始める</button></div><div id="jMsg"></div>
     </div>`;
   $("#jMode").onchange=()=>{$("#jEvW").hidden=$("#jMode").value==="single"};
   $("#jOpenGo").onclick=()=>openProject($("#jOpen").value.trim());
+  if($("#jToAi")) $("#jToAi").onclick=()=>switchTab("admin");
   if($("#jSample")) $("#jSample").onclick=async()=>{
     try{ const r=await api(`/api/orgs/${S.orgId}/samples`,{method:"POST",body:{}}); await openProject(r.project.id); toast(`サンプル事例を読み込みました（要件 ${r.requirements}件）`); switchTab("reqs") }
     catch(e){ $("#jMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
@@ -658,8 +696,8 @@ function renderAdmin(){
   };
   loadIntegrations();
   loadDevConnect();
-  if (isAdmin) { loadUsage(); auditState.entries=[]; auditState.next=null; loadAudit(); }
-  else { $("#usagePanel").hidden=true; $("#auditPanel").hidden=true; }
+  if (isAdmin) { auditState.entries=[]; auditState.next=null; loadAudit(); }
+  else { $("#auditPanel").hidden=true; }
 }
 /* ---------- 監査ログ ---------- */
 const ACTION={"org.create":"組織の作成","org.limits.update":"組織の上限変更","provider.create":"AIの登録","provider.update":"AIの変更","provider.delete":"AIの削除",
@@ -750,7 +788,7 @@ function renderHear(){
   if(isOidc() && !S.token){ signedOut(); return; }
   if(!S.project){
     el.innerHTML=`<div class="panel"><h2>はじめに</h2><ol class="hint" style="margin:0;padding-left:1.2em">
-      <li>${isOidc()?"管理者から組織に追加してもらい、ログイン":"右上で組織を作成（またはIDを入力）"}</li><li>「AI設定・プロジェクト」でAIを登録（APIキーは組織ごと）</li><li>プロジェクトを作成すると、ここで質問が始まります</li></ol></div>`;
+      <li>${isOidc()?"管理者から組織に追加してもらい、ログイン":"右上で組織を作成（またはIDを入力）"}</li><li>「AI設定」でAIを登録（APIキーは組織ごと。取得方法も同じタブにあります）</li><li>「プロジェクト設定」でプロジェクトを作成すると、ここで質問が始まります</li></ol></div>`;
     return;
   }
   const phases=S.meta.phases, cur=S.project.phaseKey, ci=phases.findIndex(p=>p.key===cur);
@@ -1138,7 +1176,7 @@ function renderImpl(){
     ${ints.length?`<div class="row" style="align-items:flex-end"><label class="f">登録先<select id="regTo">${ints.map(i=>`<option value="${esc(i.id)}">${esc(i.label)}（${esc(ITOOL[i.kind]||i.kind)}：${esc(i.target)}）</option>`).join("")}</select></label>
       <button class="btn" id="regGo" ${canEdit()?"":"disabled"}>選んだストーリーを登録</button></div>
       <p class="hint">エピックは親の課題、ストーリーは子の課題として登録し、作業タスクと受け入れ条件は本文のチェックリストにします。登録済みのものは飛ばすため、失敗した分だけをやり直せます。</p>`
-      :`<p class="hint">連携先がまだありません。「AI設定・プロジェクト」タブで管理者が GitHub・Jira・Backlog の接続を登録してください。ファイル（CSV）で出力して取り込むこともできます。</p>`}
+      :`<p class="hint">連携先がまだありません。「プロジェクト設定」タブで管理者が GitHub・Jira・Backlog の接続を登録してください。ファイル（CSV）で出力して取り込むこともできます。</p>`}
     <div id="regOut"></div>`;
   if($("#regGo")) $("#regGo").onclick=registerIssues;
   if(implState.result) renderRegResult();
@@ -1534,10 +1572,11 @@ async function loadIntegrations(){
     </tbody></table></div><div id="iMsg"></div>
     ${isAdmin?`<h3 style="margin-top:14px">新しく登録</h3><div class="row"><label class="f">種類<select id="iKind">${Object.entries(ITOOL).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></label><label class="f">表示名<input id="n-label" placeholder="任意"></label></div>
       <div class="row" id="iFields"></div>
-      <div class="row"><label class="f" id="iTokW">トークン<input id="n-token" type="password" autocomplete="off"></label><button class="btn" id="iAdd">登録</button></div><div id="iAddMsg"></div>`:""}`;
+      <div class="row"><label class="f" id="iTokW">トークン<input id="n-token" type="password" autocomplete="off"></label><button class="btn" id="iAdd">登録</button><button class="btn ghost" type="button" id="iGuide">トークンの取得方法</button></div><div id="iAddMsg"></div>`:""}`;
   const collect=(kind, pre)=>Object.fromEntries(INTEG_FIELDS[kind].map(([k])=>[k, document.getElementById(`${pre}-${k}`).value.trim()]).filter(([,v])=>v!==""));
   if($("#iKind")){
     const sync=()=>{ const k=$("#iKind").value; $("#iFields").innerHTML=fields(k); $("#iTokW").firstChild.textContent=TOKEN_LABEL[k]; };
+    if($("#iGuide")) $("#iGuide").onclick=()=>openKeyGuide($("#iKind").value);
     $("#iKind").onchange=sync; sync();
     $("#iAdd").onclick=async()=>{
       const kind=$("#iKind").value, body={kind, config:collect(kind,"n"), token:$("#n-token").value};
@@ -2066,6 +2105,7 @@ async function reload(){
   await loadBaselineState();
   renderHear(); loadGuide();
   if($("#v-admin").classList.contains("on")) renderAdmin();
+  if($("#v-project").classList.contains("on")) renderProject();
 }
 (async()=>{
   try{ S.meta=await (await fetch("/api/meta")).json() }

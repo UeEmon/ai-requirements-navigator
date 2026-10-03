@@ -1,6 +1,6 @@
 # AI の登録と API キー
 
-要件ナビで使う AI は、組織の管理者が「AI設定・プロジェクト」→「AIの登録」で登録します。標準の AI は **Claude・ChatGPT・Gemini** の3つです。AI ごとに API キーが必要です（キーは組織ごとに登録します）。ChatGPT と Gemini はキーを[自動で発行](#api-キーの自動発行)でき、Claude は提供元の画面で発行したキーを貼り付けます。
+要件ナビで使う AI は、組織の管理者が「AI設定」タブの「AIの登録」で登録します。標準の AI は **Claude・ChatGPT・Gemini** の3つです。AI ごとに API キーが必要です（キーは組織ごとに登録します）。ChatGPT と Gemini はキーを[自動で発行](#api-キーの自動発行)でき、Claude は提供元の画面で発行したキーを貼り付けます。自動で取得できないキーとトークンは、[取得するページと手順](#自動で取得できないキーとトークンの取得方法)をまとめています。
 
 ## 標準の AI と API キー
 
@@ -81,9 +81,139 @@ gcloud services api-keys get-key-string arn-gemini
 
 Anthropic は、API キーを外部のシステムから発行する仕組みを用意していません（Admin API でできるのは、キーの一覧・名前の変更・無効化だけです）。[Claude Console](https://platform.claude.com/settings/keys) で発行したキーを「キーを貼り付け」に入れ、「キーを確かめる」を押すと、キーが使えるかを確かめてモデルの一覧を取得します。一覧からモデルを選んで「登録」します。
 
+## 自動で取得できないキーとトークンの取得方法
+
+要件ナビが自動で取得できないキーとトークンの、取得するページと手順です。画面では「AI設定」タブの「APIキー・トークンの取得方法」に同じ内容があります。画面の名前やURLは提供元が変えることがあります。見つからない場合は、提供元のヘルプを見てください。
+
+| キー・トークン | 取得するページ | 形 | 要件ナビに入れる場所 |
+| --- | --- | --- | --- |
+| Claude APIキー | [Claude Console の API Keys](https://platform.claude.com/settings/keys) | `sk-ant-…` | 「AI設定」 |
+| ChatGPT（OpenAI）の管理用キー（Admin key） | [OpenAI Platform の Admin keys](https://platform.openai.com/settings/organization/admin-keys) | `sk-admin-…` | 「AI設定」 |
+| ChatGPT（OpenAI）APIキー | [OpenAI Platform の API keys](https://platform.openai.com/api-keys) | `sk-…` | 「AI設定」 |
+| Gemini APIキー | [Google AI Studio の API キー](https://aistudio.google.com/apikey) | `AIza…`・`AQ.…` | 「AI設定」 |
+| GitHub の個人用アクセストークン（Fine-grained） | [GitHub の Fine-grained token の作成](https://github.com/settings/personal-access-tokens/new) | `github_pat_…` | 「プロジェクト設定」 |
+| Jira の API トークン | [Atlassian アカウントの API トークン](https://id.atlassian.com/manage-profile/security/api-tokens) | ― | 「プロジェクト設定」 |
+| Backlog の API キー | [Backlog ヘルプ「API の設定」](https://support-ja.backlog.com/hc/ja/articles/360035641754) | ― | 「プロジェクト設定」 |
+
+### Claude APIキー
+
+Anthropic には、外部のシステムから API キーを発行する仕組みがありません。Claude Console で発行して貼り付けます。
+
+取得するページ: [Claude Console の API Keys](https://platform.claude.com/settings/keys)（[提供元のヘルプ](https://platform.claude.com/docs/en/get-api-key)）
+
+1. Claude Console（platform.claude.com）にログインする（アカウントがなければ作る）
+2. 「Settings」→「API Keys」→「Create Key」を押す
+3. ワークスペースを選び、名前（例: 要件ナビ）を入れて作る
+4. 表示されたキーをコピーする（全文が見られるのはこのときだけ）
+5. 「Billing」で API の支払い（クレジット）を設定する
+
+要件ナビに入れる場所: 「AI設定」→「Claude を登録」→ 貼り付けて「キーを確かめる」→ モデルを選んで「登録」
+
+- キーの形: sk-ant- で始まる
+- Claude の Pro・Max などのプランとは別に、API の支払いが必要です
+
+### ChatGPT（OpenAI）の管理用キー（Admin key）
+
+ChatGPT の API キーを自動で発行するために使うキーです。管理用キーそのものは、OpenAI Platform でしか作れません。
+
+取得するページ: [OpenAI Platform の Admin keys](https://platform.openai.com/settings/organization/admin-keys)
+
+1. OpenAI Platform に、組織のオーナーのアカウントでログインする
+2. 「Settings」→「Organization」→「Admin keys」→「Create admin key」を押す
+3. 名前（例: 要件ナビ）を入れ、プロジェクトとサービスアカウントを管理する権限を付けて作る
+4. 表示されたキーをコピーする（全文が見られるのはこのときだけ）
+
+要件ナビに入れる場所: 「AI設定」→「ChatGPT を登録」→「自動で発行」→ 貼り付けて「プロジェクトを読み込む」→「発行して登録」
+
+- キーの形: sk-admin- で始まる
+- 要件ナビは管理用キーを保存しません（発行の処理の間だけ使います）
+- 組織全体を操作できる強いキーです。使い終わったら OpenAI Platform で無効にしてもかまいません（発行した API キーは使い続けられます）
+
+### ChatGPT（OpenAI）APIキー
+
+管理用キーを使わない（使えない）場合は、OpenAI Platform で API キーを発行して貼り付けます。
+
+取得するページ: [OpenAI Platform の API keys](https://platform.openai.com/api-keys)
+
+1. OpenAI Platform（platform.openai.com）にログインする
+2. 「API keys」→「Create new secret key」を押す
+3. 名前（例: 要件ナビ）とプロジェクトを選び、権限は「All」のまま作る
+4. 表示されたキーをコピーする（全文が見られるのはこのときだけ）
+5. 「Settings」→「Billing」で API の支払いを設定する
+
+要件ナビに入れる場所: 「AI設定」→「ChatGPT を登録」→「キーを貼り付け」→「キーを確かめる」→ モデルを選んで「登録」
+
+- キーの形: sk- で始まる（sk-proj- など）
+- 自動で取得する方法: 組織のオーナーなら、管理用キーで自動発行できます
+- ChatGPT Plus などの契約とは別に、API の支払いが必要です
+
+### Gemini APIキー
+
+このサーバーでは Google のログインが設定されていないため、自動では発行できません。Google AI Studio で発行して貼り付けます。
+
+取得するページ: [Google AI Studio の API キー](https://aistudio.google.com/apikey)（[提供元のヘルプ](https://ai.google.dev/gemini-api/docs/api-key)）
+
+1. Google AI Studio（aistudio.google.com）に Google アカウントでログインする
+2. 「Get API key」→「Create API key」を押す
+3. キーを作る Google Cloud のプロジェクトを選ぶ（なければ新しく作る）
+4. 表示されたキーをコピーする
+
+要件ナビに入れる場所: 「AI設定」→「Gemini を登録」→「キーを貼り付け」→「キーを確かめる」→ モデルを選んで「登録」
+
+- キーの形: AIza または AQ. で始まる
+- Google One・Gemini アプリの有料プランとは別です
+- 無料枠では、送った内容が Google のサービス改善に使われることがあります。業務では有料での利用条件を確認してください
+- Google Cloud Shell で作る方法もあります（docs/ai-keys.md）
+
+### GitHub の個人用アクセストークン（Fine-grained）
+
+実装タスクを GitHub Issues に登録するためのトークンです。GitHub の画面でしか作れません。
+
+取得するページ: [GitHub の Fine-grained token の作成](https://github.com/settings/personal-access-tokens/new)（[提供元のヘルプ](https://docs.github.com/ja/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)）
+
+1. GitHub にログインし、「Settings」→「Developer settings」→「Personal access tokens」→「Fine-grained tokens」→「Generate new token」を押す
+2. 名前・有効期限を入れ、「Resource owner」でリポジトリの所有者を選ぶ
+3. 「Repository access」で「Only select repositories」を選び、課題を登録するリポジトリを選ぶ
+4. 「Permissions」の「Issues」を「Read and write」にする（「Metadata: Read」は自動で付きます）
+5. 「Generate token」を押し、表示されたトークンをコピーする
+
+要件ナビに入れる場所: 「プロジェクト設定」→「課題管理ツールとの連携」→ 種類「GitHub Issues」→ 貼り付けて「登録」→「接続確認」
+
+- キーの形: github_pat_ で始まる
+- 組織のリポジトリでは、組織の管理者の承認が必要な場合があります
+
+### Jira の API トークン
+
+実装タスクを Jira に登録するためのトークンです。Atlassian アカウントの画面でしか作れません。
+
+取得するページ: [Atlassian アカウントの API トークン](https://id.atlassian.com/manage-profile/security/api-tokens)（[提供元のヘルプ](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/)）
+
+1. Atlassian アカウントにログインし、「セキュリティ」→「API トークン」を開く
+2. 「API トークンを作成する」を押し、名前（例: 要件ナビ）と有効期限を入れて作る
+3. 表示されたトークンをコピーする（全文が見られるのはこのときだけ）
+
+要件ナビに入れる場所: 「プロジェクト設定」→「課題管理ツールとの連携」→ 種類「Jira」→ メールアドレスと一緒に入れて「登録」→「接続確認」
+
+- Jira Data Center の場合は、プロフィールの「個人用アクセストークン」で作り、メールアドレスは空にします
+
+### Backlog の API キー
+
+実装タスクを Backlog に登録するためのキーです。Backlog の個人設定でしか作れません。
+
+取得するページ: [Backlog ヘルプ「API の設定」](https://support-ja.backlog.com/hc/ja/articles/360035641754)
+
+1. Backlog のスペースにログインし、右上のアイコン →「個人設定」を開く
+2. 左のメニューの「API」を選ぶ
+3. メモ（例: 要件ナビ）を入れて「登録」を押す
+4. 表示された API キーをコピーする
+
+要件ナビに入れる場所: 「プロジェクト設定」→「課題管理ツールとの連携」→ 種類「Backlog」→ 貼り付けて「登録」→「接続確認」
+
+- API キーは、作った人の権限で課題を登録します。課題を登録するプロジェクトに参加しているアカウントで作ってください
+
 ## キーを貼り付けて登録する
 
-1. 「AI設定・プロジェクト」→「AIの登録」で、使う AI のカード（例:「Claude を登録」）を押す（ChatGPT と Gemini は「キーを貼り付け」を選ぶ）
+1. 「AI設定」タブの「AIの登録」で、使う AI のカード（例:「Claude を登録」）を押す（ChatGPT と Gemini は「キーを貼り付け」を選ぶ）
 2. 表示される手順のとおりに、提供元で API キーを発行して貼り付け、「キーを確かめる」
 3. 取得したモデルの一覧からモデルを選び（または手で入れ）、表示名（任意）を入れて「登録」
 

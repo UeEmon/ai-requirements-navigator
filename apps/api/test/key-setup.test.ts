@@ -116,6 +116,9 @@ describe("API キーの自動発行と確認", () => {
   it("メタ情報: AI ごとの自動発行の方法と、使えるか", async () => {
     const m = await (await app.request("/api/meta")).json();
     expect(m.keyAutoIssue).toEqual({ openai: true, gemini: true });
+    // 自動で取得できないキー・トークンの取得方法（Google のログインがあれば Gemini は自動で取得できる）
+    expect(m.keyGuides.manual.map((k: { id: string }) => k.id)).toContain("claude");
+    expect(m.keyGuides.auto.map((a: { target: string }) => a.target)).toEqual(["ChatGPT", "Gemini"]);
     const modes = Object.fromEntries(m.vendors.map((v: { vendor: string; autoIssue: { mode: string } }) => [v.vendor, v.autoIssue.mode]));
     expect(modes).toMatchObject({ anthropic: "none", openai: "admin-key", gemini: "google-oauth" });
   });

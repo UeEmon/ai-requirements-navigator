@@ -2,6 +2,7 @@ import {
   buildDiagrams,
   checkApiKey,
   compareUmlModels,
+  keyGuides,
   VENDOR_INFO,
   vendorName,
   BusinessRule,
@@ -255,6 +256,8 @@ export function createApp(deps: AppDeps) {
       vendors: Object.values(VENDOR_INFO).filter((v) => v.vendor !== "mock" || deps.allowMock),
       // API キーの自動発行が使えるか（ChatGPT は管理用キー、Gemini は Google のログイン設定が必要）
       keyAutoIssue: { openai: true, gemini: Boolean(deps.googleOAuth) },
+      // 自動で取得できない API キー・トークンの取得方法
+      keyGuides: keyGuides({ googleOAuth: Boolean(deps.googleOAuth) }),
       auth: deps.devAuth ? "dev" : "oidc",
       oidc: deps.oidc ? { orgClaim: deps.oidc.orgClaim, roleClaim: deps.oidc.roleClaim } : null,
     }),

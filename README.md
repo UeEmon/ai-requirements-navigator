@@ -33,7 +33,7 @@ Windows・Mac の Docker Desktop での詳しい手順（ポートの変更、�
 http://localhost:8787 を開き、次の順に操作します。
 
 1. 右上「組織を作成」
-2. 「AI設定・プロジェクト」で AI を登録（Claude・ChatGPT・Gemini のカードから。キーの発行場所は [AI の登録と API キー](docs/ai-keys.md)。APIキーなしで試すなら「そのほか」の「模擬AI（開発用）」を3つ）
+2. 「AI設定」タブで AI を登録（Claude・ChatGPT・Gemini のカードから。キーの発行場所は [AI の登録と API キー](docs/ai-keys.md)。APIキーなしで試すなら「そのほか」の「模擬AI（開発用）」を3つ。自動で取得できないキーの取得方法は同じタブの「APIキー・トークンの取得方法」）
 3. プロジェクトを作成（複数AI＋評価AI）→ 資料があれば「資料分析」で取り込んで分析し、見直し案と要件案を採用（[資料分析と EARS](docs/discovery-and-ears.md)）→「ヒアリング」で質問に答える
 4. 案を比較して採用 →「要件一覧」で確認 →「非機能要件」でシステムの性格に答え、26項目を検討（AIの提案を参考にできます）。業務ルール（計算・判定・期限など）は具体例と一緒に決め、「要件一覧」で用語集を整える（[工程の線引き](docs/phase-boundaries.md)）
 5. 「UML」で「AIで設計図を作る」（複数AIモードでは、各AIの設計を匿名で比較して選びます）→ 図ごとに SVG / PNG で保存、Mermaid / PlantUML のソースをコピー
@@ -44,7 +44,7 @@ http://localhost:8787 を開き、次の順に操作します。
 10. 「テスト・引き継ぎ」で着手前チェックを確認し、足りないものを直してから、テストケース（CSV）と引き継ぎパッケージ（JSON）を開発・テストの担当者に渡す（[コーディング・テスト工程への引き継ぎ](docs/handoff.md)）
 11. 管理者がトークンを発行し、AIコーディングツール（Claude Code・Cursor・GitHub Copilot など）を MCP で接続する。開発用パッケージ（zip）をリポジトリに置くと、AIツールは要件を読み、実装状況とテスト結果を報告し、不明点を質問する（[開発・テストのツールとの連携](docs/connect.md)）
 
-本システム自身の要求事項を題材にした **サンプル事例**（資料の分析・要件69件（業務ルール4件を含む）・非機能要件シート・用語集・受け入れ基準入り）を「AI設定・プロジェクト」から読み込めます。内容は [docs/sample/requirements-navigator.md](docs/sample/requirements-navigator.md) で読めます。
+本システム自身の要求事項を題材にした **サンプル事例**（資料の分析・要件69件（業務ルール4件を含む）・非機能要件シート・用語集・受け入れ基準入り）を「プロジェクト設定」タブから読み込めます。内容は [docs/sample/requirements-navigator.md](docs/sample/requirements-navigator.md) で読めます。
 
 APIキーなしで画面の流れだけを見たい場合は http://localhost:8787/demo.html を開いてください（応答はすべて模擬）。
 
