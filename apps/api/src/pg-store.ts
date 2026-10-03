@@ -41,6 +41,8 @@ import type {
   ProjectSheet,
   ProjectSheetKind,
   Review,
+  OrgMember,
+  OrgMemberPatch,
 } from "./store.js";
 
 const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
@@ -70,6 +72,21 @@ const toProject = (r: any): Project => ({
   aiConfig: r.ai_config,
   createdAt: iso(r.created_at),
   settings: r.settings ?? {},
+  archivedAt: r.archived_at ? iso(r.archived_at) : null,
+});
+const toMember = (r: any): OrgMember => ({
+  id: r.id,
+  orgId: r.org_id,
+  email: r.email,
+  userSub: r.user_sub ?? null,
+  name: r.name,
+  role: r.role,
+  status: r.status,
+  source: r.source,
+  invitedBy: r.invited_by ?? null,
+  lastSeenAt: r.last_seen_at ? iso(r.last_seen_at) : null,
+  createdAt: iso(r.created_at),
+  updatedAt: iso(r.updated_at),
 });
 const toRound = (r: any): Round => ({
   id: r.id,
@@ -384,6 +401,42 @@ export class PgStore implements Store {
     const { rows } = await this.pool.query("SELECT * FROM orgs ORDER BY created_at");
     return rows.map(toOrg);
   }
+  async renameOrg(id: string, name: string) {
+    const { rows } = await this.pool.query("UPDATE orgs SET name = $2 WHERE id = $1 RETURNING *", [id, name]);
+    return rows[0] ? toOrg(rows[0]) : null;
+  }
+  async listMembers(orgId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM org_members WHERE org_id = $1 ORDER BY created_at", [orgId]);
+    return rows.map(toMember);
+  }
+  async findMemberships(q: { sub: string; email?: string }) {
+    const { rows } = await this.pool.query("SELECT * FROM org_members WHERE user_sub = $1 OR ($2::text <> '' AND email = $2) ORDER BY created_at", [q.sub, (q.email ?? "").toLowerCase()]);
+    return rows.map(toMember);
+  }
+  async addMember(m: Omit<OrgMember, "id" | "createdAt" | "updatedAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO org_members(org_id, email, user_sub, name, role, status, source, invited_by, last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [m.orgId, m.email.toLowerCase(), m.userSub, m.name, m.role, m.status, m.source, m.invitedBy, m.lastSeenAt],
+    );
+    return toMember(rows[0]);
+  }
+  async updateMember(orgId: string, id: string, patch: OrgMemberPatch) {
+    const cols: Record<string, string> = { userSub: "user_sub", name: "name", role: "role", status: "status", lastSeenAt: "last_seen_at", email: "email" };
+    const sets: string[] = [];
+    const vals: unknown[] = [orgId, id];
+    for (const [k, col] of Object.entries(cols)) {
+      const v = (patch as Record<string, unknown>)[k];
+      if (v === undefined) continue;
+      vals.push(k === "email" && typeof v === "string" ? v.toLowerCase() : v);
+      sets.push(`${col} = $${vals.length}`);
+    }
+    const { rows } = await this.pool.query(`UPDATE org_members SET ${[...sets, "updated_at = now()"].join(", ")} WHERE org_id = $1 AND id = $2 RETURNING *`, vals);
+    return rows[0] ? toMember(rows[0]) : null;
+  }
+  async deleteMember(orgId: string, id: string) {
+    const r = await this.pool.query("DELETE FROM org_members WHERE org_id = $1 AND id = $2", [orgId, id]);
+    return (r.rowCount ?? 0) > 0;
+  }
 
   async setOrgLimit(id: string, monthlyTokenLimit: number | null) {
     const { rows } = await this.pool.query("UPDATE orgs SET monthly_token_limit = $2 WHERE id = $1 RETURNING *", [id, monthlyTokenLimit]);
@@ -436,6 +489,30 @@ export class PgStore implements Store {
       [p.orgId, p.name, p.purpose, p.confidential, JSON.stringify(p.aiConfig)],
     );
     return toProject(rows[0]);
+  }
+  async updateProject(id: string, patch: { name?: string; purpose?: string; archivedAt?: string | null }) {
+    const { rows } = await this.pool.query(
+      `UPDATE projects SET name = COALESCE($2, name), purpose = COALESCE($3, purpose),
+         archived_at = CASE WHEN $4::boolean THEN $5::timestamptz ELSE archived_at END WHERE id = $1 RETURNING *`,
+      [id, patch.name ?? null, patch.purpose ?? null, patch.archivedAt !== undefined, patch.archivedAt ?? null],
+    );
+    return rows[0] ? toProject(rows[0]) : null;
+  }
+  async deleteProject(id: string) {
+    // 要件・設計・履歴などは ON DELETE CASCADE で消える。ジョブは参照が残らないように先に消す
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM jobs WHERE project_id = $1", [id]);
+      const r = await client.query("DELETE FROM projects WHERE id = $1", [id]);
+      await client.query("COMMIT");
+      return (r.rowCount ?? 0) > 0;
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
   }
   async listProjects(orgId: string) {
     const { rows } = await this.pool.query("SELECT * FROM projects WHERE org_id = $1 ORDER BY created_at DESC", [orgId]);

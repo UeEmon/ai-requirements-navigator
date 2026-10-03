@@ -41,6 +41,7 @@ import { discovery } from "./discovery.js";
 import { connect } from "./connect.js";
 import { keySetup, type GoogleOAuthConfig } from "./key-setup.js";
 import { repoSetup } from "./repo-setup.js";
+import { orgAdmin, resolveMember, seedAdmin } from "./org-admin.js";
 import { handoff } from "./handoff.js";
 import { scope } from "./scope.js";
 import { nfrSheet } from "./nfr-sheet.js";
@@ -282,9 +283,19 @@ export function createApp(deps: AppDeps) {
     } catch (e) {
       throw new HTTPException(401, { message: (e as Error).message });
     }
-    const p = await deps.authenticate(new Request("http://local/", { headers: { authorization: `Bearer ${tokens.idToken}` } }));
-    if (!p) throw new HTTPException(403, { message: "ログインできましたが、組織または権限が設定されていません。管理者に連絡してください" });
-    await audit(store, { orgId: p.orgId, actor: p.userId, action: "auth.login", detail: { role: p.role } });
+    const raw = await deps.authenticate(new Request("http://local/", { headers: { authorization: `Bearer ${tokens.idToken}` } }));
+    if (!raw) throw new HTTPException(403, { message: "ログインできましたが、利用者の情報を確認できませんでした。管理者に連絡してください" });
+    const p = await resolveMember(store, raw, undefined, nowFn());
+    const usable = p.memberships.filter((m) => m.status === "active" && m.userSub === p.userId);
+    if (!usable.length) {
+      const invitedUnverified = p.memberships.some((m) => m.status === "invited") || (!raw.emailVerified && raw.email);
+      throw new HTTPException(403, {
+        message: invitedUnverified
+          ? "ログインできましたが、メールアドレスがまだ確認されていません。ログイン画面でメールアドレスを確認してから、もう一度ログインしてください"
+          : `ログインできましたが、まだどの組織にも招待されていません。組織の管理者に、${raw.email ?? "あなたのメールアドレス"} を招待するよう依頼してください`,
+      });
+    }
+    for (const m of usable) await audit(store, { orgId: m.orgId, actor: p.userId, action: "auth.login", detail: { role: m.role, email: raw.email ?? null } });
     return c.json(tokens);
   });
   app.post("/api/auth/refresh", async (c) => {
@@ -302,10 +313,15 @@ export function createApp(deps: AppDeps) {
     const token = c.req.header("x-bootstrap-token");
     const allowed = deps.bootstrapToken ? token === deps.bootstrapToken : deps.devAuth;
     if (!allowed) throw new HTTPException(403, { message: "組織の作成には初期セットアップ用トークンが必要です" });
-    const { name } = await body(c, z.object({ name: z.string().min(1).max(200) }));
+    const { name, adminEmail } = await body(
+      c,
+      z.object({ name: z.string().min(1).max(200), adminEmail: z.string().trim().toLowerCase().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "メールアドレスの形式が正しくありません").optional() }),
+    );
     const org = await store.createOrg(name);
-    await audit(store, { orgId: org.id, actor: "bootstrap", action: "org.create", targetType: "org", targetId: org.id, detail: { name } });
-    return c.json(org, 201);
+    // 最初の管理者を招待しておく（ログイン画面で、このメールアドレスでログインすると管理者になる）
+    const admin = await seedAdmin(store, org.id, adminEmail);
+    await audit(store, { orgId: org.id, actor: "bootstrap", action: "org.create", targetType: "org", targetId: org.id, detail: { name, adminEmail: adminEmail ?? null } });
+    return c.json({ ...org, adminInvited: admin ? admin.email : null }, 201);
   });
 
   /**
@@ -323,8 +339,10 @@ export function createApp(deps: AppDeps) {
     if (c.req.path.startsWith("/api/v1/")) return next();
     // Google からの戻り先（ブラウザの移動）。暗号化した state で組織と利用者を確かめる（key-setup.ts）
     if (c.req.path === "/api/oauth/google/callback") return next();
-    const p = await deps.authenticate(c.req.raw);
-    if (!p) throw new HTTPException(401, { message: "ログインが必要です" });
+    const raw = await deps.authenticate(c.req.raw);
+    if (!raw) throw new HTTPException(401, { message: "ログインが必要です" });
+    // ログイン画面のときは、組織と役割を「組織のメンバー」から決める（画面で選んだ組織は x-org-id）
+    const p = deps.devAuth ? raw : await resolveMember(store, raw, c.req.header("x-org-id") || undefined, nowFn());
     c.set("principal", p);
     await next();
   });
@@ -561,9 +579,10 @@ export function createApp(deps: AppDeps) {
   app.get("/api/orgs/:orgId/projects", async (c) => {
     const orgId = c.req.param("orgId");
     need(c, orgId, "viewer");
-    const list = await store.listProjects(orgId);
+    const archived = c.req.query("archived"); // 省略: 使用中だけ / 1: アーカイブだけ / all: すべて
+    const list = (await store.listProjects(orgId)).filter((p) => (archived === "all" ? true : archived === "1" ? Boolean(p.archivedAt) : !p.archivedAt));
     return c.json(
-      list.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, phaseKey: p.phaseKey, phaseName: PHASES.find((x) => x.key === p.phaseKey)?.name ?? (p.phaseKey === "done" ? "完了" : p.phaseKey), confidential: p.confidential, createdAt: p.createdAt })),
+      list.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, phaseKey: p.phaseKey, phaseName: PHASES.find((x) => x.key === p.phaseKey)?.name ?? (p.phaseKey === "done" ? "完了" : p.phaseKey), confidential: p.confidential, createdAt: p.createdAt, archivedAt: p.archivedAt ?? null })),
     );
   });
 
@@ -1067,6 +1086,15 @@ export function createApp(deps: AppDeps) {
   cn.routes(app);
   ks.routes(app);
   repoSetup(moduleCtx, { filesOf: (c, p) => cn.agentFiles(c, p), pollMs: deps.keySetupPollMs }).routes(app);
+  orgAdmin(moduleCtx, {
+    devAuth: deps.devAuth,
+    publicUrl: deps.publicUrl,
+    usageOf: async (orgId) => {
+      const org = await store.getOrg(orgId);
+      const r = await usageReport(store, orgId, org?.monthlyTokenLimit ?? null, await store.listCredentials(orgId), tz, nowFn());
+      return { month: r.month, used: r.org.used, limit: r.org.limit };
+    },
+  }).routes(app);
 
   /** EARS の構造から文を組み立て、検査結果を返す（画面の入力中の確認用） */
   app.post("/api/ears/preview", async (c) => {

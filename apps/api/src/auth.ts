@@ -1,12 +1,20 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
 
 export type Role = "admin" | "editor" | "reviewer" | "viewer";
-const ROLES: Role[] = ["admin", "editor", "reviewer", "viewer"];
+export const ROLES: Role[] = ["admin", "editor", "reviewer", "viewer"];
 
 export interface Principal {
   userId: string;
+  /** 使う組織。組織が決まらない（所属がない）ときは空 */
   orgId: string;
   role: Role;
+  /** ログインの仕組みが確認したメールアドレス（招待との照合に使う） */
+  email?: string;
+  emailVerified?: boolean;
+  /** 表示名（ログインの仕組みが返す名前） */
+  name?: string;
+  /** 組織と役割がトークンのクレーム（Cognito の属性・グループ、Keycloak のロール）から来たか */
+  fromClaims?: boolean;
 }
 
 export type Authenticator = (req: Request) => Promise<Principal | null>;
@@ -34,6 +42,8 @@ export interface OidcOptions {
   /** 組織IDが入るクレーム名（Cognitoのカスタム属性なら custom:org_id） */
   orgClaim: string;
   roleClaim: string;
+  /** email_verified がなくても、メールアドレスを確認済みとして扱う（メールを送れないローカルの Keycloak 用） */
+  trustUnverifiedEmail?: boolean;
   fetchImpl?: typeof fetch;
   /** 署名鍵の取得方法を差し替える（テスト用） */
   keys?: JWTVerifyGetKey;
@@ -158,14 +168,23 @@ export class OidcClient {
   }
 }
 
-function toPrincipal(p: JWTPayload, opts: OidcOptions): Principal | null {
+/**
+ * IDトークンから利用者を作る。
+ * 組織と役割は、要件ナビの「組織のメンバー」で決めるのが基本（app.ts）。トークンに組織のクレームがあれば、
+ * その組織のメンバーとして最初に一度だけ登録する（以前の、ログインの仕組み側で役割を決める運用との互換）
+ */
+export function toPrincipal(p: JWTPayload, opts: Pick<OidcOptions, "orgClaim" | "roleClaim" | "trustUnverifiedEmail">): Principal | null {
+  if (!p.sub) return null;
   const orgId = p[opts.orgClaim];
   const rawRole = p[opts.roleClaim];
   // Cognito グループなどで配列になる場合は、最も強い権限を採用
   const roles = (Array.isArray(rawRole) ? rawRole : [rawRole]).filter((r): r is Role => ROLES.includes(r as Role));
   const role = ROLES.find((r) => roles.includes(r)) ?? "viewer";
-  if (typeof orgId !== "string" || !p.sub) return null;
-  return { userId: p.sub, orgId, role };
+  const email = typeof p.email === "string" ? p.email.trim().toLowerCase() : undefined;
+  const verified = p.email_verified === true || p.email_verified === "true" || Boolean(opts.trustUnverifiedEmail);
+  const name = [p.name, p.preferred_username, p["cognito:username"]].find((x) => typeof x === "string") as string | undefined;
+  const hasOrg = typeof orgId === "string" && orgId.length > 0;
+  return { userId: p.sub, orgId: hasOrg ? (orgId as string) : "", role, email, emailVerified: verified, name, fromClaims: hasOrg };
 }
 
 const RANK: Record<Role, number> = { viewer: 0, reviewer: 1, editor: 2, admin: 3 };

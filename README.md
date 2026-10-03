@@ -4,6 +4,7 @@
 
 - AIは **1つ、または複数** を選べます（標準は Claude / ChatGPT / Gemini。ほかにローカルLLM）
 - 複数のときは、各AIの案を **匿名化して別のAIが評価** し、比較と推奨を添えて選択肢として示します
+- 組織のメンバーと役割（管理者・編集者・レビュー担当・閲覧者）は、管理者が **「組織」タブでメールアドレスで招待** して決めます。プロジェクトの名前の変更・アーカイブ・削除もできます
 - AIのAPIキーは **組織ごとに管理者が登録** し、暗号化して保存します。ChatGPT は管理用キー、Gemini は Google のログインで **APIキーを自動発行** でき、Claude は貼り付けたキーを自動で確かめてモデル一覧を取得します（[AI の登録と API キー](docs/ai-keys.md)）。登録後の変更や、**月間トークン上限**（組織全体・AIごと）も設定できます
 - **AWS とローカルDocker のどちらでも** 同じコンテナイメージで動きます
 - AIが **観点の抜け漏れを確認しながら質問** し、回答の候補と用語の説明を添えます
@@ -63,9 +64,9 @@ npx cdk deploy           # HTTPSにする場合: -c certificateArn=arn:aws:acm:.
 作られるもの: VPC、ECS Fargate＋ALB、RDS for PostgreSQL、KMS、S3、Cognito、Secrets Manager。
 デプロイ後の初期設定:
 
-1. 出力 `BootstrapTokenSecret` の値を Secrets Manager で確認し、`POST /api/orgs`（ヘッダー `x-bootstrap-token`）で組織を作成
-2. Cognito にユーザーを作成し、カスタム属性 `custom:org_id` に組織ID、グループ（admin / editor / reviewer / viewer）を設定
-3. 画面右上にIDトークンを入力してログイン（ログイン画面の組み込みは今後の課題）
+1. 出力 `BootstrapTokenSecret` の値を Secrets Manager で確認し、画面右上の「組織を作成」で、組織名・**最初の管理者のメールアドレス**・そのトークンを入れて組織を作成
+2. 最初の管理者が、ログイン画面の「サインアップ」でそのメールアドレスのアカウントを作り、ログインする → 組織の管理者になる
+3. 管理者が「組織」タブでメンバーをメールアドレスで招待し、役割を決める（[ログインの設定](docs/auth.md#組織と役割要件ナビで管理)）
 
 ## 構成
 

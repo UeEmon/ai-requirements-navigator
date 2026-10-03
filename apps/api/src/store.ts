@@ -1,3 +1,4 @@
+import type { Role } from "./auth.js";
 import { randomUUID } from "node:crypto";
 import type { AcceptanceCriteria, BusinessRule, GlossaryTerm, ImplReport, MatchedResults, AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, NfrDecision, NfrProfile, NfrSuggestion, SizingSuggestion, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
@@ -53,7 +54,29 @@ export interface Project {
   createdAt: string;
   /** プロジェクトの決まり（確定に承認が必要か など） */
   settings?: ProjectSettings;
+  /** アーカイブした日時（一覧に出さない）。null は使用中 */
+  archivedAt?: string | null;
 }
+
+export type MemberStatus = "invited" | "active" | "removed";
+/** 組織のメンバー（要件ナビで管理する。ログインの仕組みは本人確認だけ） */
+export interface OrgMember {
+  id: string;
+  orgId: string;
+  /** 招待したメールアドレス（小文字） */
+  email: string;
+  /** ログインの仕組みの利用者ID（初めてログインしたときに結び付ける） */
+  userSub: string | null;
+  name: string;
+  role: Role;
+  status: MemberStatus;
+  source: "invite" | "idp" | "bootstrap";
+  invitedBy: string | null;
+  lastSeenAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export type OrgMemberPatch = Partial<Pick<OrgMember, "userSub" | "name" | "role" | "status" | "lastSeenAt" | "email">>;
 
 export interface ProjectSettings {
   /** 要件定義の確定に、レビューでの承認が必要か */
@@ -477,6 +500,14 @@ export interface Store {
   createOrg(name: string): Promise<Org>;
   /** すべての組織（開発用ログインで組織を選ぶため。本番では使わない） */
   listOrgs(): Promise<Org[]>;
+  renameOrg(id: string, name: string): Promise<Org | null>;
+  /* 組織のメンバー */
+  listMembers(orgId: string): Promise<OrgMember[]>;
+  /** 利用者ID またはメールアドレスで、全組織の所属を探す（外したものも含む） */
+  findMemberships(q: { sub: string; email?: string }): Promise<OrgMember[]>;
+  addMember(m: Omit<OrgMember, "id" | "createdAt" | "updatedAt">): Promise<OrgMember>;
+  updateMember(orgId: string, id: string, patch: OrgMemberPatch): Promise<OrgMember | null>;
+  deleteMember(orgId: string, id: string): Promise<boolean>;
   getOrg(id: string): Promise<Org | null>;
   setOrgLimit(id: string, monthlyTokenLimit: number | null): Promise<Org | null>;
 
@@ -489,6 +520,9 @@ export interface Store {
   getProject(id: string): Promise<Project | null>;
   /** 組織のプロジェクト（新しい順） */
   listProjects(orgId: string): Promise<Project[]>;
+  updateProject(id: string, patch: { name?: string; purpose?: string; archivedAt?: string | null }): Promise<Project | null>;
+  /** プロジェクトと、その要件・設計・履歴などをすべて消す（監査ログは残す） */
+  deleteProject(id: string): Promise<boolean>;
   setProjectPhase(id: string, phaseKey: string): Promise<void>;
 
   saveRound(r: Omit<Round, "id" | "createdAt">): Promise<Round>;
@@ -673,6 +707,39 @@ export class MemoryStore implements Store {
   async listOrgs() {
     return [...this.orgs.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
+  async renameOrg(id: string, name: string) {
+    const o = this.orgs.get(id);
+    if (!o) return null;
+    o.name = name;
+    return { ...o };
+  }
+  private members: OrgMember[] = [];
+  async listMembers(orgId: string) {
+    return this.members.filter((m) => m.orgId === orgId).map((m) => ({ ...m }));
+  }
+  async findMemberships(q: { sub: string; email?: string }) {
+    const email = q.email?.toLowerCase();
+    return this.members.filter((m) => m.userSub === q.sub || (email && m.email === email)).map((m) => ({ ...m }));
+  }
+  async addMember(m: Omit<OrgMember, "id" | "createdAt" | "updatedAt">) {
+    const email = m.email.toLowerCase();
+    if (this.members.some((x) => x.orgId === m.orgId && ((email && x.email === email) || (m.userSub && x.userSub === m.userSub)))) throw new Error("duplicate member");
+    const r: OrgMember = { ...m, email, id: randomUUID(), createdAt: now(), updatedAt: now() };
+    this.members.push(r);
+    return { ...r };
+  }
+  async updateMember(orgId: string, id: string, patch: OrgMemberPatch) {
+    const m = this.members.find((x) => x.orgId === orgId && x.id === id);
+    if (!m) return null;
+    Object.assign(m, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)), { updatedAt: now() });
+    if (patch.email) m.email = patch.email.toLowerCase();
+    return { ...m };
+  }
+  async deleteMember(orgId: string, id: string) {
+    const n = this.members.length;
+    this.members = this.members.filter((x) => !(x.orgId === orgId && x.id === id));
+    return this.members.length < n;
+  }
   async setOrgLimit(id: string, monthlyTokenLimit: number | null) {
     const o = this.orgs.get(id);
     if (!o) return null;
@@ -699,8 +766,28 @@ export class MemoryStore implements Store {
     if (!c || c.orgId !== orgId) return false;
     return this.creds.delete(id);
   }
+  async updateProject(id: string, patch: { name?: string; purpose?: string; archivedAt?: string | null }) {
+    const p = this.projects.get(id);
+    if (!p) return null;
+    if (patch.name !== undefined) p.name = patch.name;
+    if (patch.purpose !== undefined) p.purpose = patch.purpose;
+    if (patch.archivedAt !== undefined) p.archivedAt = patch.archivedAt;
+    return { ...p };
+  }
+  async deleteProject(id: string) {
+    if (!this.projects.delete(id)) return false;
+    // プロジェクトに属するものをすべて消す（監査ログは残す）。要件の履歴などは要件のIDから消す
+    const reqIds = new Set(this.reqs.filter((r) => r.projectId === id).map((r) => r.id));
+    const owned = (x: any) => x && typeof x === "object" && (x.projectId === id || (x.requirementId && reqIds.has(x.requirementId)));
+    for (const [k, v] of Object.entries(this) as Array<[string, unknown]>) {
+      if (k === "audits" || k === "auditLog" || k === "audit" || k === "orgs" || k === "members") continue;
+      if (Array.isArray(v)) (this as any)[k] = v.filter((x) => !owned(x));
+      else if (v instanceof Map) for (const [mk, mv] of v) if (mk === id || String(mk).startsWith(`${id}:`) || owned(mv) || (Array.isArray(mv) && mv.some(owned))) v.delete(mk);
+    }
+    return true;
+  }
   async createProject(p: Omit<Project, "id" | "createdAt" | "phaseKey">) {
-    const r: Project = { settings: {}, ...p, id: randomUUID(), phaseKey: "purpose", createdAt: now() };
+    const r: Project = { settings: {}, archivedAt: null, ...p, id: randomUUID(), phaseKey: "purpose", createdAt: now() };
     this.projects.set(r.id, r);
     return r;
   }

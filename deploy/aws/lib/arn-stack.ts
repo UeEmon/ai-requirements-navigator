@@ -83,7 +83,9 @@ export class ArnStack extends Stack {
 
     // 認証: Cognito。組織IDはカスタム属性、権限はグループで表す
     const userPool = new cognito.UserPool(this, "Users", {
-      selfSignUpEnabled: false,
+      // 利用者は自分でアカウントを作れる（メールアドレスを確認）。組織に入れるかと役割は、要件ナビの「組織」で管理者が招待して決める
+      selfSignUpEnabled: true,
+      autoVerify: { email: true },
       signInAliases: { email: true },
       mfa: cognito.Mfa.OPTIONAL,
       mfaSecondFactor: { sms: false, otp: true },

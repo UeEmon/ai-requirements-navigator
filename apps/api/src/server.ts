@@ -66,6 +66,8 @@ async function main() {
       audience: env.OIDC_AUDIENCE || env.OIDC_CLIENT_ID || undefined,
       orgClaim: env.OIDC_ORG_CLAIM ?? "custom:org_id",
       roleClaim: env.OIDC_ROLE_CLAIM ?? "cognito:groups",
+      // メールアドレスの確認（email_verified）がなくても招待と照合する。メールを送れないローカルの Keycloak だけで使う
+      trustUnverifiedEmail: bool(env.OIDC_TRUST_UNVERIFIED_EMAIL, false),
     };
     const discovery = new OidcDiscoveryCache(discoveryUrlOf(opts));
     authenticate = oidcAuthenticator(opts, discovery);

@@ -2,7 +2,7 @@
   "realm": "arn",
   "enabled": true,
   "displayName": "要件ナビ",
-  "registrationAllowed": false,
+  "registrationAllowed": true,
   "loginWithEmailAllowed": true,
   "roles": {
     "realm": [
