@@ -148,6 +148,8 @@ npx cdk bootstrap aws://<アカウントID>/ap-northeast-1
 | --- | --- |
 | `AWS_ROLE_ARN` | `arn:aws:iam::123456789012:role/arn-github-deploy` |
 | `AWS_REGION` | `ap-northeast-1` |
+| `GOOGLE_OAUTH_CLIENT_ID`（任意） | Gemini の API キーを Google のログインで自動発行する場合の OAuth クライアント ID（[設定方法](ai-keys.md#サーバーの設定初回だけ要件ナビの運用担当者)） |
+| `GOOGLE_OAUTH_SECRET_ARN`（任意） | その OAuth クライアントのシークレットを入れた Secrets Manager のシークレットの完全な ARN |
 
 「Required reviewers」に承認者を設定すると、展開の前に承認を求められます（本番ではおすすめ）。
 

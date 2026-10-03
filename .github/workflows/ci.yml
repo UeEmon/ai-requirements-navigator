@@ -71,6 +71,11 @@ jobs:
           P1=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/providers "${H[@]}" -d '{"vendor":"mock","model":"mock","label":"m1"}' | jq -r .id)
           P2=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/providers "${H[@]}" -d '{"vendor":"mock","model":"mock","label":"m2"}' | jq -r .id)
           P3=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/providers "${H[@]}" -d '{"vendor":"mock","model":"mock","label":"judge"}' | jq -r .id)
+          # AI ごとの名前・キーの自動発行の方法、登録済み AI の接続確認、Google のログイン未設定時の案内
+          curl -fs localhost:8787/api/meta | jq -e '.keyAutoIssue == {"openai":true,"gemini":false} and ([.vendors[] | select(.standard) | .name] == ["Claude","ChatGPT","Gemini"])'
+          curl -fs -X POST localhost:8787/api/orgs/$ORG/providers/$P1/check "${H[@]}" -d '{}' | jq -e '.ok and .modelFound'
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8787/api/orgs/$ORG/providers/auto/google/start "${H[@]}")" = 501
+          curl -fs -X POST localhost:8787/api/orgs/$ORG/providers/check "${H[@]}" -d '{"vendor":"anthropic","apiKey":"AIzaSyWRONG"}' | jq -e '.ok == false and .reason == "format"'
           PJ=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/projects "${H[@]}" -d "{\"name\":\"ci\",\"aiConfig\":{\"mode\":\"multi\",\"generatorIds\":[\"$P1\",\"$P2\"],\"evaluatorId\":\"$P3\"}}" | jq -r .id)
           R=$(curl -fs -X POST localhost:8787/api/projects/$PJ/rounds "${H[@]}" -d '{"answer":"電話予約を減らしたい"}' | jq -r .id)
           curl -fs -X POST localhost:8787/api/rounds/$R/decision "${H[@]}" -d '{"pick":"merged"}' | jq .nextPhase
@@ -222,8 +227,13 @@ jobs:
           set +e
           npx cdk synth --quiet > /tmp/synth.log 2>&1
           ec=$?
-          if [ $ec -ne 0 ]; then tail -40 /tmp/synth.log | while IFS= read -r l; do echo "::error::$l"; done; fi
-          exit $ec
+          if [ $ec -ne 0 ]; then tail -40 /tmp/synth.log | while IFS= read -r l; do echo "::error::$l"; done; exit $ec; fi
+          # Gemini のキーの自動発行（Google の OAuth）を付けた場合も組み立てられること
+          npx cdk synth --quiet -o /tmp/cdk-google -c googleOAuthClientId=test.apps.googleusercontent.com \
+            -c googleOAuthSecretArn=arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:google-oauth-AbCdEf > /tmp/synth2.log 2>&1
+          ec=$?
+          if [ $ec -ne 0 ]; then tail -40 /tmp/synth2.log | while IFS= read -r l; do echo "::error::$l"; done; exit $ec; fi
+          grep -q GOOGLE_OAUTH_CLIENT_SECRET /tmp/cdk-google/*.template.json
 
   # main への push と v から始まるタグで、テストがすべて通ったイメージを GitHub Container Registry に公開する。
   # タグのときは Docker キット（compose.yml・.env.example）を付けてリリースを作る。手順: docs/github-deploy.md

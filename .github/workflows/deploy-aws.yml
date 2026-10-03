@@ -4,6 +4,7 @@
 #   - AWS: GitHub の OIDC プロバイダと、このリポジトリから引き受けられる IAM ロール（CDK のブートストラップ用ロールを引き受けられること）
 #   - AWS: cdk bootstrap 済みであること
 #   - GitHub: Settings → Environments に aws-production を作り、変数 AWS_ROLE_ARN と AWS_REGION を設定
+#     （任意: Gemini のキーを Google のログインで自動発行するなら GOOGLE_OAUTH_CLIENT_ID と GOOGLE_OAUTH_SECRET_ARN）
 #     （承認者を設定すると、展開の前に承認を求められる）
 # AWS のアクセスキーは GitHub に保存しない（OIDC で一時的な認証情報を受け取る）
 name: Deploy to AWS
@@ -72,8 +73,11 @@ jobs:
           DOMAIN: ${{ inputs.domain_name }}
           COUNT: ${{ inputs.desired_count }}
           NAME: ${{ inputs.stack_name }}
+          GCLIENT: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}
+          GSECRET: ${{ vars.GOOGLE_OAUTH_SECRET_ARN }}
         run: |
           ARGS=(-c "name=$NAME" -c "desiredCount=$COUNT")
+          if [ -n "$GCLIENT" ] && [ -n "$GSECRET" ]; then ARGS+=(-c "googleOAuthClientId=$GCLIENT" -c "googleOAuthSecretArn=$GSECRET"); fi
           [ -n "$CERT" ] && ARGS+=(-c "certificateArn=$CERT")
           [ -n "$DOMAIN" ] && ARGS+=(-c "domainName=$DOMAIN")
           echo "CDK_ARGS=${ARGS[*]@Q}" >> "$GITHUB_ENV"

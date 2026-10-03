@@ -28,6 +28,11 @@ export interface ArnStackProps extends StackProps {
   cognitoDomainPrefix?: string;
   dbInstanceClass: string;
   desiredCount: number;
+  /**
+   * Gemini の API キーを「Google でログインして自動発行」する場合の OAuth クライアント（任意。docs/ai-keys.md）。
+   * clientSecretArn は、クライアントシークレットを入れた Secrets Manager のシークレット（文字列）の ARN
+   */
+  googleOAuth?: { clientId: string; clientSecretArn: string };
 }
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -175,6 +180,14 @@ export class ArnStack extends Stack {
     container.addEnvironment("OIDC_CLIENT_ID", client.userPoolClientId);
     container.addEnvironment("OIDC_SCOPES", "openid email profile");
     container.addEnvironment("OIDC_LOGOUT_URL", `${loginDomain.baseUrl()}/logout`);
+    // 外から見たURL（MCP の接続先・Google のログインの戻り先に使う）
+    container.addEnvironment("PUBLIC_URL", baseUrl);
+    if (props.googleOAuth) {
+      container.addEnvironment("GOOGLE_OAUTH_CLIENT_ID", props.googleOAuth.clientId);
+      const gsecret = sm.Secret.fromSecretCompleteArn(this, "GoogleOAuthClientSecret", props.googleOAuth.clientSecretArn);
+      container.addSecret("GOOGLE_OAUTH_CLIENT_SECRET", ecs.Secret.fromSecretsManager(gsecret));
+      new CfnOutput(this, "GoogleOAuthRedirectUri", { value: `${baseUrl}/api/oauth/google/callback` });
+    }
     if (!certificate) {
       new CfnOutput(this, "LoginNotice", {
         value: "ログイン画面を使うには HTTPS が必要です。-c certificateArn=... （必要なら -c domainName=...）を指定して再デプロイしてください",

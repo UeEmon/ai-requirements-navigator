@@ -35,3 +35,4 @@ export function createProvider(cfg: ProviderConfig, opts: FactoryOptions = {}): 
     }
   }
 }
+export { listModels, redactSecrets, keyCheckMessage, KeyCheckError, type ModelEntry, type KeyCheckReason } from "./models.js";

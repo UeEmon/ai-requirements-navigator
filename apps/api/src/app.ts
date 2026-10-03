@@ -38,6 +38,7 @@ import { maskKey, type KeyEncryptor } from "./crypto.js";
 import { designAndChange } from "./design-change.js";
 import { discovery } from "./discovery.js";
 import { connect } from "./connect.js";
+import { keySetup, type GoogleOAuthConfig } from "./key-setup.js";
 import { handoff } from "./handoff.js";
 import { scope } from "./scope.js";
 import { nfrSheet } from "./nfr-sheet.js";
@@ -76,6 +77,10 @@ export interface AppDeps {
   usageTimezone?: string;
   /** 現在時刻（テスト用） */
   now?: () => Date;
+  /** Gemini の API キーを Google でログインして自動発行する（GOOGLE_OAUTH_CLIENT_ID / SECRET） */
+  googleOAuth?: GoogleOAuthConfig;
+  /** API キーの自動発行で、Google の処理の完了を確かめる間隔（テスト用） */
+  keySetupPollMs?: number;
   /** ログイン画面用（AUTH_MODE=oidc のとき） */
   oidc?: { client: OidcClient; orgClaim: string; roleClaim: string };
   /** このサーバーの外から見たURL（開発用パッケージや AGENTS.md に書く） */
@@ -248,6 +253,8 @@ export function createApp(deps: AppDeps) {
       allowMock: deps.allowMock,
       // AI の種類ごとの名前と API キーの案内（Claude・ChatGPT・Gemini が標準）
       vendors: Object.values(VENDOR_INFO).filter((v) => v.vendor !== "mock" || deps.allowMock),
+      // API キーの自動発行が使えるか（ChatGPT は管理用キー、Gemini は Google のログイン設定が必要）
+      keyAutoIssue: { openai: true, gemini: Boolean(deps.googleOAuth) },
       auth: deps.devAuth ? "dev" : "oidc",
       oidc: deps.oidc ? { orgClaim: deps.oidc.orgClaim, roleClaim: deps.oidc.roleClaim } : null,
     }),
@@ -301,6 +308,8 @@ export function createApp(deps: AppDeps) {
   app.use("/api/*", async (c, next) => {
     // 外部連携 API（/api/v1）はトークンでも使えるため、connect.ts の認証に任せる
     if (c.req.path.startsWith("/api/v1/")) return next();
+    // Google からの戻り先（ブラウザの移動）。暗号化した state で組織と利用者を確かめる（key-setup.ts）
+    if (c.req.path === "/api/oauth/google/callback") return next();
     const p = await deps.authenticate(c.req.raw);
     if (!p) throw new HTTPException(401, { message: "ログインが必要です" });
     c.set("principal", p);
@@ -414,10 +423,16 @@ export function createApp(deps: AppDeps) {
     return c.json((await store.listCredentials(orgId)).map(publicCredential));
   });
 
-  app.post("/api/orgs/:orgId/providers", async (c) => {
-    const orgId = c.req.param("orgId");
-    need(c, orgId, "admin");
-    const input = await body(c, CredentialInput);
+  /**
+   * AI の登録（画面からの登録と、API キーの自動発行の両方で使う）。
+   * via: 自動発行したときの記録（どのプロジェクトに作ったかなど。キーは含めない）
+   */
+  const registerCredential = async (
+    c: Context,
+    orgId: string,
+    input: z.infer<typeof CredentialInput>,
+    via?: Record<string, unknown>,
+  ) => {
     if (input.vendor === "mock" && !deps.allowMock) throw new HTTPException(400, { message: "模擬AIは無効化されています" });
     const info = VENDOR_INFO[input.vendor];
     if (info.keyName && !input.apiKey) {
@@ -441,9 +456,15 @@ export function createApp(deps: AppDeps) {
       action: "provider.create",
       targetType: "provider",
       targetId: cred.id,
-      detail: { vendor: cred.vendor, model: cred.model, label: cred.label, endpoint: cred.endpoint, monthlyTokenLimit: cred.monthlyTokenLimit },
+      detail: { vendor: cred.vendor, model: cred.model, label: cred.label, endpoint: cred.endpoint, monthlyTokenLimit: cred.monthlyTokenLimit, ...(via ? { autoIssued: via } : {}) },
     });
-    return c.json(publicCredential(cred), 201);
+    return publicCredential(cred);
+  };
+
+  app.post("/api/orgs/:orgId/providers", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "admin");
+    return c.json(await registerCredential(c, orgId, await body(c, CredentialInput)), 201);
   });
 
   /** 登録済みAIの変更（モデル名・表示名・接続先・APIキー・月間上限） */
@@ -939,6 +960,12 @@ export function createApp(deps: AppDeps) {
   const disc = discovery(moduleCtx);
   const ho = handoff(moduleCtx, { scope: () => sc });
   const sc = scope(moduleCtx, { testsOf: (p) => ho.tests(p), statusOf: (p) => cn.status(p) });
+  const ks = keySetup(moduleCtx, {
+    register: (c, orgId, input, via) => registerCredential(c as Context<Env>, orgId, input, via),
+    google: deps.googleOAuth,
+    publicUrl: deps.publicUrl,
+    pollMs: deps.keySetupPollMs,
+  });
   const cn = connect(moduleCtx, ho, {
     scope: () => sc,
     authenticate: deps.authenticate,
@@ -1015,6 +1042,7 @@ export function createApp(deps: AppDeps) {
   ho.routes(app);
   sc.routes(app);
   cn.routes(app);
+  ks.routes(app);
 
   /** EARS の構造から文を組み立て、検査結果を返す（画面の入力中の確認用） */
   app.post("/api/ears/preview", async (c) => {

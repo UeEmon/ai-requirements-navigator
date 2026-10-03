@@ -15,6 +15,7 @@
 | --- | --- |
 | 対象工程 | 企画整理 → 要求分析 → 要件定義（機能・非機能）→ 概要設計の入口（UML） |
 | 対応AI | 標準: Claude（Anthropic）、ChatGPT（OpenAI）、Gemini（Google）。ほかにローカルLLM（Ollama）。API キーは AI ごとの名前（Claude APIキーなど）で案内する |
+| API キーの自動発行 | ChatGPT: 管理用キーでサービスアカウントのキーを発行（管理用キーは保存しない）。Gemini: Google でログインし、Gemini API に限定したキーを作成。Claude: 提供元に発行の仕組みがないため、貼り付けたキーの確認とモデル一覧の取得のみ。登録後に接続とモデルIDを自動で確認 |
 | 出力形式 | UML（Mermaid / PlantUML テキスト、SVG / PNG 画像）、仕様書（Markdown / Word / PDF） |
 | 動作環境 | AWS またはローカルDocker（同じコンテナイメージ） |
 

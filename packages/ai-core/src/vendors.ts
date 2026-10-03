@@ -29,7 +29,20 @@ export interface VendorInfo {
   modelHint: string;
   /** 接続先の既定（ローカルLLM） */
   endpointDefault: string | null;
+  /** API キーの自動発行 */
+  autoIssue: AutoIssue;
 }
+
+/**
+ * API キーを自動で発行できるか（提供元が公式に用意している方法だけを使う）。
+ * - none: 提供元の画面でしか発行できない（Claude）
+ * - admin-key: 管理用キーで、要件ナビ専用のキーを発行する（ChatGPT / OpenAI のサービスアカウント）
+ * - google-oauth: Google でログインし、Google Cloud のプロジェクトに Gemini 専用のキーを作る
+ */
+export type AutoIssue =
+  | { mode: "none"; note: string }
+  | { mode: "admin-key"; adminKeyName: string; adminKeyPrefix: string; adminKeyUrl: string; adminKeyHow: string; note: string }
+  | { mode: "google-oauth"; note: string };
 
 export const VENDOR_INFO: Record<Vendor, VendorInfo> = {
   anthropic: {
@@ -45,6 +58,7 @@ export const VENDOR_INFO: Record<Vendor, VendorInfo> = {
     modelsUrl: "https://platform.claude.com/docs/en/about-claude/models/overview",
     modelHint: "一覧の「Claude API ID」",
     endpointDefault: null,
+    autoIssue: { mode: "none", note: "Claude の API キーは、Anthropic の決まりで Claude Console でしか発行できません（外部からの自動発行の仕組みがありません）。発行して貼り付けると、キーの確認とモデル一覧の取得は自動で行います。" },
   },
   openai: {
     vendor: "openai",
@@ -59,6 +73,14 @@ export const VENDOR_INFO: Record<Vendor, VendorInfo> = {
     modelsUrl: "https://platform.openai.com/docs/models",
     modelHint: "一覧に出るモデル名",
     endpointDefault: null,
+    autoIssue: {
+      mode: "admin-key",
+      adminKeyName: "ChatGPT（OpenAI）の管理用キー（Admin key）",
+      adminKeyPrefix: "sk-admin-",
+      adminKeyUrl: "https://platform.openai.com/settings/organization/admin-keys",
+      adminKeyHow: "OpenAI Platform →「Settings」→「Organization」→「Admin keys」→「Create admin key」（組織のオーナーだけが作れます。プロジェクトとサービスアカウントを管理する権限を付けてください）",
+      note: "管理用キーを使って、OpenAI のプロジェクトに要件ナビ専用のサービスアカウントとキーを作り、そのまま登録します。管理用キーは保存しません（発行にだけ使います）。",
+    },
   },
   gemini: {
     vendor: "gemini",
@@ -73,6 +95,7 @@ export const VENDOR_INFO: Record<Vendor, VendorInfo> = {
     modelsUrl: "https://ai.google.dev/gemini-api/docs/models",
     modelHint: "一覧の「Model code」",
     endpointDefault: null,
+    autoIssue: { mode: "google-oauth", note: "Google でログインし、選んだ Google Cloud のプロジェクトに Gemini API 専用のキーを作って登録します（Gemini API の有効化も自動）。ログインの情報は保存しません。" },
   },
   ollama: {
     vendor: "ollama",
@@ -87,6 +110,7 @@ export const VENDOR_INFO: Record<Vendor, VendorInfo> = {
     modelsUrl: null,
     modelHint: "ollama pull で取り込んだモデル名",
     endpointDefault: "http://ollama:11434",
+    autoIssue: { mode: "none", note: "キーは不要です" },
   },
   mock: {
     vendor: "mock",
@@ -101,6 +125,7 @@ export const VENDOR_INFO: Record<Vendor, VendorInfo> = {
     modelsUrl: null,
     modelHint: "mock",
     endpointDefault: null,
+    autoIssue: { mode: "none", note: "キーは不要です" },
   },
 };
 

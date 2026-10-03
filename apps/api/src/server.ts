@@ -97,6 +97,11 @@ async function main() {
     usageTimezone: env.USAGE_TIMEZONE || "Asia/Tokyo",
     oidc,
     publicUrl: env.PUBLIC_URL || undefined,
+    // Gemini の API キーを Google でログインして自動発行する（docs/ai-keys.md）
+    googleOAuth:
+      env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET
+        ? { clientId: env.GOOGLE_OAUTH_CLIENT_ID, clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET }
+        : undefined,
     webhookAllowPrivate: bool(env.WEBHOOK_ALLOW_PRIVATE, false),
     jobs: { concurrency: Number(env.JOB_CONCURRENCY ?? 4), staleMs: Number(env.AI_TIMEOUT_MS ?? 90_000) * 5 },
   });
