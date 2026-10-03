@@ -1,0 +1,88 @@
+# GitHub から AWS へ展開する（手動で実行）。手順: docs/github-deploy.md
+#
+# 事前に必要なもの（初回だけ）
+#   - AWS: GitHub の OIDC プロバイダと、このリポジトリから引き受けられる IAM ロール（CDK のブートストラップ用ロールを引き受けられること）
+#   - AWS: cdk bootstrap 済みであること
+#   - GitHub: Settings → Environments に aws-production を作り、変数 AWS_ROLE_ARN と AWS_REGION を設定
+#     （承認者を設定すると、展開の前に承認を求められる）
+# AWS のアクセスキーは GitHub に保存しない（OIDC で一時的な認証情報を受け取る）
+name: Deploy to AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      certificate_arn:
+        description: "HTTPS にする場合の ACM 証明書の ARN（空なら HTTP）"
+        required: false
+        default: ""
+      domain_name:
+        description: "独自ドメイン（証明書を指定した場合）"
+        required: false
+        default: ""
+      desired_count:
+        description: "アプリのコンテナの数"
+        required: false
+        default: "1"
+      stack_name:
+        description: "CloudFormation のスタック名"
+        required: false
+        default: "ArnStack"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-aws-${{ inputs.stack_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: aws-production
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: deploy/aws
+    steps:
+      - name: Check settings
+        working-directory: .
+        env:
+          ROLE: ${{ vars.AWS_ROLE_ARN }}
+          REGION: ${{ vars.AWS_REGION }}
+        run: |
+          if [ -z "$ROLE" ] || [ -z "$REGION" ]; then
+            echo "::error::Environment aws-production の変数 AWS_ROLE_ARN と AWS_REGION を設定してください（docs/github-deploy.md）"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Diff
+        env:
+          CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+          CERT: ${{ inputs.certificate_arn }}
+          DOMAIN: ${{ inputs.domain_name }}
+          COUNT: ${{ inputs.desired_count }}
+          NAME: ${{ inputs.stack_name }}
+        run: |
+          ARGS=(-c "name=$NAME" -c "desiredCount=$COUNT")
+          [ -n "$CERT" ] && ARGS+=(-c "certificateArn=$CERT")
+          [ -n "$DOMAIN" ] && ARGS+=(-c "domainName=$DOMAIN")
+          echo "CDK_ARGS=${ARGS[*]@Q}" >> "$GITHUB_ENV"
+          npx cdk diff "${ARGS[@]}" || true
+      - name: Deploy
+        env:
+          CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          eval "ARGS=($CDK_ARGS)"
+          npx cdk deploy "${ARGS[@]}" --require-approval never --outputs-file outputs.json
+          echo "## 展開しました" >> "$GITHUB_STEP_SUMMARY"
+          jq -r 'to_entries[0].value | to_entries[] | "- \(.key): \(.value)"' outputs.json >> "$GITHUB_STEP_SUMMARY"

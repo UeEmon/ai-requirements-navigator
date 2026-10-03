@@ -1,0 +1,77 @@
+# 要件ナビ：GitHub で公開しているコンテナイメージで動かす（ソースの取得・ビルドは不要）
+# 手順: docs/github-deploy.md
+#
+#   1. このファイルと .env.example を同じフォルダに置き、.env.example を .env にコピー
+#   2. .env の MASTER_KEY を設定
+#   3. docker compose up -d   → http://localhost:8787
+#
+# 版は .env の ARN_VERSION で選ぶ（例: 0.1.0。main は最新の開発版）。更新は docker compose pull → docker compose up -d
+# 既定では、このPCからだけ接続できる（127.0.0.1）。ほかのPCに公開するのは AUTH_MODE=oidc のときだけにする
+
+services:
+  app:
+    image: ${ARN_IMAGE:-ghcr.io/ueemon/ai-requirements-navigator}:${ARN_VERSION:-main}
+    ports:
+      - "${ARN_BIND:-127.0.0.1}:${ARN_PORT:-8787}:8787"
+    env_file: .env
+    # .env の値より優先する（コンテナの中での場所・接続先）
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "8787"
+      STORE: postgres
+      DATABASE_URL: postgres://arn:arn@db:5432/arn
+      DATABASE_SSL: "false"
+      KEY_ENCRYPTION: local
+      STORAGE: local
+      STORAGE_DIR: /data/artifacts
+      AUTH_MODE: ${AUTH_MODE:-dev}
+    volumes:
+      - artifacts:/data/artifacts
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: arn
+      POSTGRES_PASSWORD: arn
+      POSTGRES_DB: arn
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arn"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+  # ログイン画面を試す場合（設定手順: docs/auth.md）。keycloak/realm-arn.json が必要
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    profiles: ["oidc"]
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+
+volumes:
+  pgdata:
+  artifacts:
+  ollama:

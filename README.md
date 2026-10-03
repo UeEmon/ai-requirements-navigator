@@ -27,6 +27,8 @@ docker compose up -d --build
 
 Windows・Mac の Docker Desktop での詳しい手順（ポートの変更、ローカルLLM、ログイン画面、更新、バックアップ、うまくいかないとき）は [Docker Desktop への展開手順](docs/docker-desktop.md) にあります。
 
+ソースを取得・ビルドせずに、GitHub で公開しているイメージ（`ghcr.io/ueemon/ai-requirements-navigator`）で動かすこともできます。GitHub Actions から AWS に展開する方法とあわせて [GitHub からの展開](docs/github-deploy.md) にあります。
+
 http://localhost:8787 を開き、次の順に操作します。
 
 1. 右上「組織を作成」
@@ -118,6 +120,7 @@ npm run init:project -- --name "顧客管理システム" --slug crm-system
 ## ドキュメント
 
 - [Docker Desktop への展開手順](docs/docker-desktop.md)
+- [GitHub からの展開（公開イメージ・GitHub Actions で AWS）](docs/github-deploy.md)
 - [ログインの設定（Cognito / Keycloak）](docs/auth.md)
 - [実装工程への連携（GitHub / Jira / Backlog）](docs/integrations.md)
 - [画面イメージと、確定後の変更管理](docs/screens-and-changes.md)
