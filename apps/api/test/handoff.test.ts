@@ -74,8 +74,10 @@ describe("コーディング・テスト工程への引き継ぎ", () => {
 
     const csv = await req(`/api/projects/${p.id}/tests.csv`, as("viewer"));
     expect(csv.headers.get("content-type")).toContain("text/csv");
-    const text = await csv.text();
-    expect(text.startsWith("﻿テストID,要件ID")).toBe(true);
+    const bytes = new Uint8Array(await csv.arrayBuffer());
+    expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]); // Excel 用の BOM
+    const text = new TextDecoder().decode(bytes);
+    expect(text.startsWith("テストID,要件ID")).toBe(true);
     expect(text.split("\r\n").length).toBeGreaterThan(t2.cases.length);
   });
 
