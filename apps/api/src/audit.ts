@@ -39,7 +39,16 @@ export type AuditAction =
   | "nfr.item"
   | "ai.nfr"
   | "nfr.requirements"
-  | "auth.login";
+  | "auth.login"
+  | "token.create"
+  | "token.revoke"
+  | "webhook.create"
+  | "webhook.delete"
+  | "impl.report"
+  | "test_run.record"
+  | "question.create"
+  | "question.answer"
+  | "handoff.pack";
 
 export interface AuditInput {
   orgId: string;

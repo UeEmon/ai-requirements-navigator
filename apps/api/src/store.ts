@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, NfrDecision, NfrProfile, NfrSuggestion, SizingSuggestion, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
+import type { ImplReport, MatchedResults, AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, NfrDecision, NfrProfile, NfrSuggestion, SizingSuggestion, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
 export interface Org {
   id: string;
@@ -358,6 +358,79 @@ export interface NfrSheet {
   updatedAt: string | null;
 }
 
+/* ---------- 外部連携（AIコーディングツール・テストツール） ---------- */
+
+/** read: 要件・設計・テストを読む / report: 実装状況・テスト結果の報告と質問 */
+export type TokenScope = "read" | "report";
+export interface ApiToken {
+  id: string;
+  orgId: string;
+  name: string;
+  /** トークンそのものは保存せず、SHA-256 だけを持つ */
+  tokenHash: string;
+  last4: string;
+  scopes: TokenScope[];
+  /** 使えるプロジェクト。null ならその組織のすべて */
+  projectIds: string[] | null;
+  expiresAt: string | null;
+  createdBy: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface ImplReportRecord extends ImplReport {
+  id: string;
+  projectId: string;
+}
+
+export interface TestRunRecord extends MatchedResults {
+  id: string;
+  projectId: string;
+  /** テストツールの名前（vitest / pytest / playwright など） */
+  tool: string;
+  /** コミットやビルドの番号 */
+  revision: string;
+  /** CIの実行結果などのURL */
+  url: string;
+  format: "junit" | "json";
+  summary: { passed: number; failed: number; skipped: number; unmatched: number };
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface AgentQuestion {
+  id: string;
+  projectId: string;
+  /** Q-001（プロジェクトごとの連番） */
+  code: string;
+  requirementCode: string | null;
+  text: string;
+  /** 質問した側が添えた状況（ファイル名・試したこと など） */
+  context: string;
+  askedBy: string;
+  status: "open" | "answered" | "closed";
+  answer: string;
+  answeredBy: string | null;
+  answeredAt: string | null;
+  createdAt: string;
+}
+
+export const WEBHOOK_EVENTS = ["baseline.created", "change.decided", "question.created", "question.answered", "implementation.reported", "test_run.recorded"] as const;
+export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
+export interface Webhook {
+  id: string;
+  orgId: string;
+  url: string;
+  events: WebhookEvent[];
+  /** 署名に使う秘密（暗号化済み） */
+  encryptedSecret: string;
+  lastStatus: string | null;
+  lastAt: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
 export interface Store {
   createOrg(name: string): Promise<Org>;
   getOrg(id: string): Promise<Org | null>;
@@ -370,6 +443,8 @@ export interface Store {
 
   createProject(p: Omit<Project, "id" | "createdAt" | "phaseKey">): Promise<Project>;
   getProject(id: string): Promise<Project | null>;
+  /** 組織のプロジェクト（新しい順） */
+  listProjects(orgId: string): Promise<Project[]>;
   setProjectPhase(id: string, phaseKey: string): Promise<void>;
 
   saveRound(r: Omit<Round, "id" | "createdAt">): Promise<Round>;
@@ -469,6 +544,29 @@ export interface Store {
   addUsage(u: Omit<UsageRecord, "at">): Promise<void>;
   /** since 以降（省略時は全期間）の利用量をAIごとに集計する */
   usageSummary(orgId: string, since?: Date): Promise<UsageRow[]>;
+
+  createApiToken(t: Omit<ApiToken, "id" | "createdAt" | "lastUsedAt" | "revokedAt">): Promise<ApiToken>;
+  findApiToken(tokenHash: string): Promise<ApiToken | null>;
+  listApiTokens(orgId: string): Promise<ApiToken[]>;
+  revokeApiToken(orgId: string, id: string): Promise<boolean>;
+  touchApiToken(id: string): Promise<void>;
+
+  addImplReports(projectId: string, items: ImplReport[]): Promise<ImplReportRecord[]>;
+  /** 古い順 */
+  listImplReports(projectId: string): Promise<ImplReportRecord[]>;
+  addTestRun(r: Omit<TestRunRecord, "id" | "createdAt">): Promise<TestRunRecord>;
+  /** 新しい順 */
+  listTestRuns(projectId: string, limit?: number): Promise<TestRunRecord[]>;
+  addQuestion(q: Omit<AgentQuestion, "id" | "code" | "createdAt" | "status" | "answer" | "answeredBy" | "answeredAt">): Promise<AgentQuestion>;
+  getQuestion(id: string): Promise<AgentQuestion | null>;
+  /** 新しい順 */
+  listQuestions(projectId: string): Promise<AgentQuestion[]>;
+  answerQuestion(id: string, a: { status: AgentQuestion["status"]; answer: string; answeredBy: string }): Promise<AgentQuestion | null>;
+
+  addWebhook(w: Omit<Webhook, "id" | "createdAt" | "lastStatus" | "lastAt">): Promise<Webhook>;
+  listWebhooks(orgId: string): Promise<Webhook[]>;
+  deleteWebhook(orgId: string, id: string): Promise<boolean>;
+  recordWebhookDelivery(id: string, status: string): Promise<void>;
 }
 
 export function usageOf(u: Usage): { inputTokens: number; outputTokens: number } {
@@ -502,6 +600,11 @@ export class MemoryStore implements Store {
   private documents: ProjectDocument[] = [];
   private analyses: AnalysisRecord[] = [];
   private nfr = new Map<string, NfrSheet>();
+  private tokens: ApiToken[] = [];
+  private implReports: ImplReportRecord[] = [];
+  private testRuns: TestRunRecord[] = [];
+  private questions: AgentQuestion[] = [];
+  private webhooks: Webhook[] = [];
   private seq = 0;
 
   async createOrg(name: string) {
@@ -542,6 +645,9 @@ export class MemoryStore implements Store {
     const r: Project = { ...p, id: randomUUID(), phaseKey: "purpose", createdAt: now() };
     this.projects.set(r.id, r);
     return r;
+  }
+  async listProjects(orgId: string) {
+    return [...this.projects.values()].filter((p) => p.orgId === orgId).reverse().map((p) => ({ ...p, aiConfig: { ...p.aiConfig } }));
   }
   async getProject(id: string) {
     return this.projects.get(id) ?? null;
@@ -868,5 +974,87 @@ export class MemoryStore implements Store {
       m.set(u.providerId, s);
     }
     return [...m.values()];
+  }
+
+  async createApiToken(t: Omit<ApiToken, "id" | "createdAt" | "lastUsedAt" | "revokedAt">) {
+    const x: ApiToken = { ...t, id: randomUUID(), createdAt: now(), lastUsedAt: null, revokedAt: null };
+    this.tokens.push(x);
+    return { ...x };
+  }
+  async findApiToken(tokenHash: string) {
+    const t = this.tokens.find((x) => x.tokenHash === tokenHash);
+    return t ? { ...t } : null;
+  }
+  async listApiTokens(orgId: string) {
+    return this.tokens.filter((x) => x.orgId === orgId).map((x) => ({ ...x }));
+  }
+  async revokeApiToken(orgId: string, id: string) {
+    const t = this.tokens.find((x) => x.orgId === orgId && x.id === id && !x.revokedAt);
+    if (!t) return false;
+    t.revokedAt = now();
+    return true;
+  }
+  async touchApiToken(id: string) {
+    const t = this.tokens.find((x) => x.id === id);
+    if (t) t.lastUsedAt = now();
+  }
+  async addImplReports(projectId: string, items: ImplReport[]) {
+    const out = items.map((i) => ({ ...JSON.parse(JSON.stringify(i)), id: randomUUID(), projectId }) as ImplReportRecord);
+    this.implReports.push(...out);
+    return out;
+  }
+  async listImplReports(projectId: string) {
+    return this.implReports.filter((x) => x.projectId === projectId).map((x) => JSON.parse(JSON.stringify(x)) as ImplReportRecord);
+  }
+  async addTestRun(r: Omit<TestRunRecord, "id" | "createdAt">) {
+    const x: TestRunRecord = JSON.parse(JSON.stringify({ ...r, id: randomUUID(), createdAt: now() }));
+    this.testRuns.push(x);
+    return x;
+  }
+  async listTestRuns(projectId: string, limit = 50) {
+    return this.testRuns
+      .filter((x) => x.projectId === projectId)
+      .reverse()
+      .slice(0, limit)
+      .map((x) => JSON.parse(JSON.stringify(x)) as TestRunRecord);
+  }
+  async addQuestion(q: Omit<AgentQuestion, "id" | "code" | "createdAt" | "status" | "answer" | "answeredBy" | "answeredAt">) {
+    const n = this.questions.filter((x) => x.projectId === q.projectId).length + 1;
+    const x: AgentQuestion = { ...q, id: randomUUID(), code: `Q-${String(n).padStart(3, "0")}`, status: "open", answer: "", answeredBy: null, answeredAt: null, createdAt: now() };
+    this.questions.push(x);
+    return { ...x };
+  }
+  async getQuestion(id: string) {
+    const q = this.questions.find((x) => x.id === id);
+    return q ? { ...q } : null;
+  }
+  async listQuestions(projectId: string) {
+    return this.questions
+      .filter((x) => x.projectId === projectId)
+      .reverse()
+      .map((x) => ({ ...x }));
+  }
+  async answerQuestion(id: string, a: { status: AgentQuestion["status"]; answer: string; answeredBy: string }) {
+    const q = this.questions.find((x) => x.id === id);
+    if (!q) return null;
+    Object.assign(q, a, { answeredAt: now() });
+    return { ...q };
+  }
+  async addWebhook(w: Omit<Webhook, "id" | "createdAt" | "lastStatus" | "lastAt">) {
+    const x: Webhook = { ...w, id: randomUUID(), lastStatus: null, lastAt: null, createdAt: now() };
+    this.webhooks.push(x);
+    return { ...x };
+  }
+  async listWebhooks(orgId: string) {
+    return this.webhooks.filter((x) => x.orgId === orgId).map((x) => ({ ...x }));
+  }
+  async deleteWebhook(orgId: string, id: string) {
+    const n = this.webhooks.length;
+    this.webhooks = this.webhooks.filter((x) => !(x.orgId === orgId && x.id === id));
+    return this.webhooks.length < n;
+  }
+  async recordWebhookDelivery(id: string, status: string) {
+    const w = this.webhooks.find((x) => x.id === id);
+    if (w) Object.assign(w, { lastStatus: status, lastAt: now() });
   }
 }

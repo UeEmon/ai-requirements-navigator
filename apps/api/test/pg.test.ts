@@ -203,6 +203,35 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       });
       expect(ns.updatedAt).not.toBeNull();
       expect(await store.getNfrSheet(project.id)).toMatchObject({ profile: { impact: 2 }, decisions: { "av.rate": { level: "L3" } }, suggestions: { items: [] } });
+
+      // 外部連携: プロジェクトの一覧・トークン・実装状況・テスト結果・質問・Webhook
+      expect((await store.listProjects(org.id)).map((x) => x.id)).toContain(project.id);
+      const tk = await store.createApiToken({ orgId: org.id, name: "ci", tokenHash: `h-${project.id}`, last4: "abcd", scopes: ["read", "report"], projectIds: [project.id], expiresAt: "2099-01-01T00:00:00.000Z", createdBy: "u1" });
+      expect(await store.findApiToken(`h-${project.id}`)).toMatchObject({ id: tk.id, scopes: ["read", "report"], projectIds: [project.id], revokedAt: null });
+      await store.touchApiToken(tk.id);
+      expect((await store.findApiToken(`h-${project.id}`))!.lastUsedAt).not.toBeNull();
+      expect(await store.revokeApiToken(org.id, tk.id)).toBe(true);
+      expect(await store.revokeApiToken(org.id, tk.id)).toBe(false);
+      expect((await store.listApiTokens(org.id))[0]!.revokedAt).not.toBeNull();
+
+      await store.addImplReports(project.id, [{ requirementCode: "FR-01", status: "implemented", requirementVersion: 2, refs: [{ label: "PR", url: "https://x/1" }], note: "", reportedBy: "token:ci", at: "2026-10-03T00:00:00.000Z" }]);
+      expect(await store.listImplReports(project.id)).toMatchObject([{ requirementCode: "FR-01", status: "implemented", requirementVersion: 2, refs: [{ label: "PR" }] }]);
+      await store.addTestRun({ projectId: project.id, tool: "vitest", revision: "r1", url: "", format: "junit", tests: [{ testId: "TC-FR-01-1", status: "passed" }], requirements: [], unmatched: ["x"], summary: { passed: 1, failed: 0, skipped: 0, unmatched: 1 }, createdBy: "token:ci" });
+      await store.addTestRun({ projectId: project.id, tool: "jest", revision: "r2", url: "", format: "json", tests: [], requirements: [{ requirementCode: "FR-01", status: "failed", name: "n" }], unmatched: [], summary: { passed: 0, failed: 1, skipped: 0, unmatched: 0 }, createdBy: "token:ci" });
+      const runs = await store.listTestRuns(project.id);
+      expect(runs.map((r) => r.tool)).toEqual(["jest", "vitest"]);
+      expect(runs[1]!.tests).toEqual([{ testId: "TC-FR-01-1", status: "passed" }]);
+
+      const q1 = await store.addQuestion({ projectId: project.id, requirementCode: "FR-01", text: "q1", context: "", askedBy: "token:ci" });
+      const q2 = await store.addQuestion({ projectId: project.id, requirementCode: null, text: "q2", context: "c", askedBy: "token:ci" });
+      expect([q1.code, q2.code]).toEqual(["Q-001", "Q-002"]);
+      expect((await store.answerQuestion(q1.id, { status: "answered", answer: "a", answeredBy: "u1" }))!).toMatchObject({ status: "answered", answer: "a" });
+      expect((await store.listQuestions(project.id)).map((q) => q.code)).toEqual(["Q-002", "Q-001"]);
+
+      const wh = await store.addWebhook({ orgId: org.id, url: "https://hooks.example.com/x", events: ["baseline.created"], encryptedSecret: "enc", createdBy: "u1" });
+      await store.recordWebhookDelivery(wh.id, "HTTP 200");
+      expect((await store.listWebhooks(org.id))[0]).toMatchObject({ events: ["baseline.created"], lastStatus: "HTTP 200" });
+      expect(await store.deleteWebhook(org.id, wh.id)).toBe(true);
     } finally {
       await store.pool.end();
     }

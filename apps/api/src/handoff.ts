@@ -76,6 +76,9 @@ export function handoff(ctx: ImplementationContext) {
     for (const f of await store.listScreenFeedback(p.id)) {
       if (f.status === "open" && f.level !== "detail") out.push(`［画面の意見］「${f.text.slice(0, 60)}」がまだ反映されていません`);
     }
+    for (const q of (await store.listQuestions(p.id)).reverse()) {
+      if (q.status === "open") out.push(`［開発からの質問］${q.code}${q.requirementCode ? `（${q.requirementCode}）` : ""}「${q.text.slice(0, 80)}」に回答していません`);
+    }
     return out;
   }
 
@@ -238,5 +241,5 @@ export function handoff(ctx: ImplementationContext) {
     });
   }
 
-  return { routes, specMore, readiness, bundle };
+  return { routes, specMore, readiness, bundle, tests, designTables, openQuestions };
 }

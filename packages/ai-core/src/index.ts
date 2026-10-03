@@ -19,3 +19,4 @@ export * from "./nfr-cases.js";
 export * from "./testspec.js";
 export * from "./design-tables.js";
 export * from "./readiness.js";
+export * from "./connect.js";

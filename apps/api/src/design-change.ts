@@ -420,6 +420,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
           nfr: g ? { coverage: g.coverage, undecided: g.undecided.length, errors: g.errors.length, override: !g.ok } : null,
         },
       });
+      ctx.emit?.(p.orgId, "baseline.created", { projectId: p.id, version: b.version, reason: b.reason, requirements: reqs.length });
       return c.json(b, 201);
     });
 
@@ -566,6 +567,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
         targetId: cr.id,
         detail: { projectId: p.id, code: cr.code, option: input.option, reason: input.reason, requirement: decision.requirementCode, baselineVersion: decision.baselineVersion },
       });
+      ctx.emit?.(p.orgId, "change.decided", { projectId: p.id, code: cr.code, option: input.option, status, requirementCode: decision.requirementCode ?? null, baselineVersion: decision.baselineVersion ?? null });
       const i = cr.impact;
       return c.json({
         change: updated,

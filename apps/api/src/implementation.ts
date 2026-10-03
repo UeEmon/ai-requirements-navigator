@@ -43,6 +43,8 @@ export interface ImplementationContext {
   budget: (orgId: string, ids: string[]) => Promise<{ excluded: Set<string>; warnings: string[] }>;
   providersOf: (orgId: string, ids: string[]) => Promise<AIProvider[]>;
   labelsOf: (orgId: string) => Promise<Map<string, string>>;
+  /** 外部（Webhook）への通知。処理は待たない */
+  emit?: (orgId: string, event: string, data: Record<string, unknown>) => void;
 }
 
 const KindSchema = z.enum(["github", "jira", "backlog"]);

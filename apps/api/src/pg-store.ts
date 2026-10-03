@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import type { RequirementItem } from "@arn/ai-core";
-import type { Guide, UmlModel } from "@arn/ai-core";
+import type { Guide, ImplReport, UmlModel } from "@arn/ai-core";
 import type {
   AuditEntry,
   AnalysisRecord,
@@ -32,6 +32,11 @@ import type {
   UmlModelRecord,
   UmlRound,
   UsageRecord,
+  AgentQuestion,
+  ApiToken,
+  ImplReportRecord,
+  TestRunRecord,
+  Webhook,
 } from "./store.js";
 
 const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
@@ -264,6 +269,70 @@ const toAnalysis = (r: any): AnalysisRecord => ({
   createdAt: iso(r.created_at),
 });
 
+const toToken = (r: any): ApiToken => ({
+  id: r.id,
+  orgId: r.org_id,
+  name: r.name,
+  tokenHash: r.token_hash,
+  last4: r.last4,
+  scopes: r.scopes,
+  projectIds: r.project_ids ?? null,
+  expiresAt: r.expires_at ? iso(r.expires_at) : null,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+  lastUsedAt: r.last_used_at ? iso(r.last_used_at) : null,
+  revokedAt: r.revoked_at ? iso(r.revoked_at) : null,
+});
+const toImpl = (r: any): ImplReportRecord => ({
+  id: r.id,
+  projectId: r.project_id,
+  requirementCode: r.requirement_code,
+  status: r.status,
+  requirementVersion: r.requirement_version,
+  refs: r.refs,
+  note: r.note,
+  reportedBy: r.reported_by,
+  at: iso(r.at),
+});
+const toTestRun = (r: any): TestRunRecord => ({
+  id: r.id,
+  projectId: r.project_id,
+  tool: r.tool,
+  revision: r.revision,
+  url: r.url,
+  format: r.format,
+  tests: r.tests,
+  requirements: r.requirements,
+  unmatched: r.unmatched,
+  summary: r.summary,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+});
+const toQuestion = (r: any): AgentQuestion => ({
+  id: r.id,
+  projectId: r.project_id,
+  code: r.code,
+  requirementCode: r.requirement_code ?? null,
+  text: r.text,
+  context: r.context,
+  askedBy: r.asked_by,
+  status: r.status,
+  answer: r.answer,
+  answeredBy: r.answered_by ?? null,
+  answeredAt: r.answered_at ? iso(r.answered_at) : null,
+  createdAt: iso(r.created_at),
+});
+const toWebhook = (r: any): Webhook => ({
+  id: r.id,
+  orgId: r.org_id,
+  url: r.url,
+  events: r.events,
+  encryptedSecret: r.encrypted_secret,
+  lastStatus: r.last_status ?? null,
+  lastAt: r.last_at ? iso(r.last_at) : null,
+  createdBy: r.created_by,
+  createdAt: iso(r.created_at),
+});
 const toNfr = (r: any): NfrSheet => ({
   projectId: r.project_id,
   profile: r.profile,
@@ -343,6 +412,10 @@ export class PgStore implements Store {
       [p.orgId, p.name, p.purpose, p.confidential, JSON.stringify(p.aiConfig)],
     );
     return toProject(rows[0]);
+  }
+  async listProjects(orgId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM projects WHERE org_id = $1 ORDER BY created_at DESC", [orgId]);
+    return rows.map(toProject);
   }
   async getProject(id: string) {
     const { rows } = await this.pool.query("SELECT * FROM projects WHERE id = $1", [id]);
@@ -812,5 +885,95 @@ export class PgStore implements Store {
       [orgId, since ?? new Date(0)],
     );
     return rows.map((r: any) => ({ providerId: r.provider_id, inputTokens: r.i, outputTokens: r.o, calls: r.n }));
+  }
+
+  async createApiToken(t: Omit<ApiToken, "id" | "createdAt" | "lastUsedAt" | "revokedAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO api_tokens(org_id, name, token_hash, last4, scopes, project_ids, expires_at, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [t.orgId, t.name, t.tokenHash, t.last4, JSON.stringify(t.scopes), t.projectIds ? JSON.stringify(t.projectIds) : null, t.expiresAt, t.createdBy],
+    );
+    return toToken(rows[0]);
+  }
+  async findApiToken(tokenHash: string) {
+    const { rows } = await this.pool.query("SELECT * FROM api_tokens WHERE token_hash = $1", [tokenHash]);
+    return rows[0] ? toToken(rows[0]) : null;
+  }
+  async listApiTokens(orgId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM api_tokens WHERE org_id = $1 ORDER BY created_at", [orgId]);
+    return rows.map(toToken);
+  }
+  async revokeApiToken(orgId: string, id: string) {
+    const r = await this.pool.query("UPDATE api_tokens SET revoked_at = now() WHERE org_id = $1 AND id = $2 AND revoked_at IS NULL", [orgId, id]);
+    return (r.rowCount ?? 0) > 0;
+  }
+  async touchApiToken(id: string) {
+    await this.pool.query("UPDATE api_tokens SET last_used_at = now() WHERE id = $1", [id]);
+  }
+  async addImplReports(projectId: string, items: ImplReport[]) {
+    const out: ImplReportRecord[] = [];
+    for (const i of items) {
+      const { rows } = await this.pool.query(
+        `INSERT INTO impl_reports(project_id, requirement_code, status, requirement_version, refs, note, reported_by, at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [projectId, i.requirementCode, i.status, i.requirementVersion, JSON.stringify(i.refs), i.note, i.reportedBy, i.at],
+      );
+      out.push(toImpl(rows[0]));
+    }
+    return out;
+  }
+  async listImplReports(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM impl_reports WHERE project_id = $1 ORDER BY at, id", [projectId]);
+    return rows.map(toImpl);
+  }
+  async addTestRun(r: Omit<TestRunRecord, "id" | "createdAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO test_runs(project_id, tool, revision, url, format, tests, requirements, unmatched, summary, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [r.projectId, r.tool, r.revision, r.url, r.format, JSON.stringify(r.tests), JSON.stringify(r.requirements), JSON.stringify(r.unmatched), JSON.stringify(r.summary), r.createdBy],
+    );
+    return toTestRun(rows[0]);
+  }
+  async listTestRuns(projectId: string, limit = 50) {
+    const { rows } = await this.pool.query("SELECT * FROM test_runs WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2", [projectId, limit]);
+    return rows.map(toTestRun);
+  }
+  async addQuestion(q: Omit<AgentQuestion, "id" | "code" | "createdAt" | "status" | "answer" | "answeredBy" | "answeredAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO agent_questions(project_id, code, requirement_code, text, context, asked_by)
+       VALUES ($1, (SELECT 'Q-' || lpad((count(*) + 1)::text, 3, '0') FROM agent_questions WHERE project_id = $1), $2, $3, $4, $5) RETURNING *`,
+      [q.projectId, q.requirementCode, q.text, q.context, q.askedBy],
+    );
+    return toQuestion(rows[0]);
+  }
+  async getQuestion(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM agent_questions WHERE id = $1", [id]);
+    return rows[0] ? toQuestion(rows[0]) : null;
+  }
+  async listQuestions(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM agent_questions WHERE project_id = $1 ORDER BY created_at DESC, code DESC", [projectId]);
+    return rows.map(toQuestion);
+  }
+  async answerQuestion(id: string, a: { status: AgentQuestion["status"]; answer: string; answeredBy: string }) {
+    const { rows } = await this.pool.query(
+      "UPDATE agent_questions SET status = $2, answer = $3, answered_by = $4, answered_at = now() WHERE id = $1 RETURNING *",
+      [id, a.status, a.answer, a.answeredBy],
+    );
+    return rows[0] ? toQuestion(rows[0]) : null;
+  }
+  async addWebhook(w: Omit<Webhook, "id" | "createdAt" | "lastStatus" | "lastAt">) {
+    const { rows } = await this.pool.query(
+      "INSERT INTO webhooks(org_id, url, events, encrypted_secret, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+      [w.orgId, w.url, JSON.stringify(w.events), w.encryptedSecret, w.createdBy],
+    );
+    return toWebhook(rows[0]);
+  }
+  async listWebhooks(orgId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM webhooks WHERE org_id = $1 ORDER BY created_at", [orgId]);
+    return rows.map(toWebhook);
+  }
+  async deleteWebhook(orgId: string, id: string) {
+    const r = await this.pool.query("DELETE FROM webhooks WHERE org_id = $1 AND id = $2", [orgId, id]);
+    return (r.rowCount ?? 0) > 0;
+  }
+  async recordWebhookDelivery(id: string, status: string) {
+    await this.pool.query("UPDATE webhooks SET last_status = $2, last_at = now() WHERE id = $1", [id, status]);
   }
 }

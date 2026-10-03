@@ -32,6 +32,7 @@ import { hasRole, type Authenticator, type OidcClient, type Principal, type Role
 import { maskKey, type KeyEncryptor } from "./crypto.js";
 import { designAndChange } from "./design-change.js";
 import { discovery } from "./discovery.js";
+import { connect } from "./connect.js";
 import { handoff } from "./handoff.js";
 import { nfrSheet } from "./nfr-sheet.js";
 import { loadSample, SAMPLES } from "./samples.js";
@@ -41,6 +42,7 @@ import { buildSpec, CONTENT_TYPE, PdfFontMissingError, renderDocx, renderMarkdow
 import type { ArtifactStorage } from "./storage.js";
 import {
   usageOf,
+  type ApiToken,
   type CredentialPatch,
   type Job,
   type JobProgress,
@@ -70,12 +72,18 @@ export interface AppDeps {
   now?: () => Date;
   /** ログイン画面用（AUTH_MODE=oidc のとき） */
   oidc?: { client: OidcClient; orgClaim: string; roleClaim: string };
+  /** このサーバーの外から見たURL（開発用パッケージや AGENTS.md に書く） */
+  publicUrl?: string;
+  /** Webhook の送り先に社内（プライベート）アドレス・http を許す（ローカルの Docker 向け） */
+  webhookAllowPrivate?: boolean;
+  /** Webhook の送り先の名前解決（テスト用） */
+  webhookLookup?: (host: string) => Promise<Array<{ address: string }>>;
   /** 非同期ジョブを実行するか（既定: true） */
   runJobs?: boolean;
   jobs?: JobRunnerOptions;
 }
 
-type Env = { Variables: { principal: Principal } };
+type Env = { Variables: { principal: Principal; token?: ApiToken } };
 
 /* ------------------------------------------------------------------ */
 /* 入力の形                                                             */
@@ -263,6 +271,8 @@ export function createApp(deps: AppDeps) {
 
   /* ---------- 以降は認証必須 ---------- */
   app.use("/api/*", async (c, next) => {
+    // 外部連携 API（/api/v1）はトークンでも使えるため、connect.ts の認証に任せる
+    if (c.req.path.startsWith("/api/v1/")) return next();
     const p = await deps.authenticate(c.req.raw);
     if (!p) throw new HTTPException(401, { message: "ログインが必要です" });
     c.set("principal", p);
@@ -888,12 +898,20 @@ export function createApp(deps: AppDeps) {
     budget,
     providersOf,
     labelsOf,
+    emit: (orgId, event, data) => cn.emit(orgId, event, data),
   };
   const impl = implementation(moduleCtx);
   const nfr = nfrSheet(moduleCtx);
   const dc = designAndChange(moduleCtx, { gate: nfr.gate });
   const disc = discovery(moduleCtx);
   const ho = handoff(moduleCtx);
+  const cn = connect(moduleCtx, ho, {
+    authenticate: deps.authenticate,
+    encryptor: deps.encryptor,
+    publicUrl: deps.publicUrl,
+    allowPrivateWebhooks: deps.webhookAllowPrivate,
+    lookup: deps.webhookLookup,
+  });
 
   const asJobError = (e: unknown): never => {
     if (e instanceof HTTPException) throw new JobError(e.message, e.status);
@@ -960,6 +978,7 @@ export function createApp(deps: AppDeps) {
   disc.routes(app, { wantsAsync, enqueue });
   nfr.routes(app, { wantsAsync, enqueue });
   ho.routes(app);
+  cn.routes(app);
 
   /** EARS の構造から文を組み立て、検査結果を返す（画面の入力中の確認用） */
   app.post("/api/ears/preview", async (c) => {
@@ -1284,5 +1303,5 @@ export function createApp(deps: AppDeps) {
     return fileResponse(c, p, input.format, buf, key);
   });
 
-  return Object.assign(app, { jobs: runner });
+  return Object.assign(app, { jobs: runner, connect: cn });
 }

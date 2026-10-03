@@ -96,6 +96,8 @@ async function main() {
     timeoutMs: Number(env.AI_TIMEOUT_MS ?? 90_000),
     usageTimezone: env.USAGE_TIMEZONE || "Asia/Tokyo",
     oidc,
+    publicUrl: env.PUBLIC_URL || undefined,
+    webhookAllowPrivate: bool(env.WEBHOOK_ALLOW_PRIVATE, false),
     jobs: { concurrency: Number(env.JOB_CONCURRENCY ?? 4), staleMs: Number(env.AI_TIMEOUT_MS ?? 90_000) * 5 },
   });
   scheduleAuditPurge(store, Number(env.AUDIT_RETENTION_DAYS ?? 365));
