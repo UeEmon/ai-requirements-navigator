@@ -244,13 +244,13 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       expect((await store.getProject(project.id))!.settings).toEqual({ approvalRequired: true, requiredApprovals: 2 });
       expect(await store.getProjectSheet(project.id, "glossary")).toBeNull();
       await store.saveProjectSheet(project.id, "glossary", { terms: [{ term: "予約", definition: "d", synonyms: [], codeName: "", source: "manual" }] }, "u1");
-      const gs = await store.saveProjectSheet(project.id, "glossary", { terms: [] }, "u2");
-      expect(gs).toMatchObject({ kind: "glossary", data: { terms: [] }, updatedBy: "u2" });
+      const gsh = await store.saveProjectSheet(project.id, "glossary", { terms: [] }, "u2");
+      expect(gsh).toMatchObject({ kind: "glossary", data: { terms: [] }, updatedBy: "u2" });
       const rv1 = await store.addReview({ projectId: project.id, snapshot: [], fingerprint: "a", note: "", requiredApprovals: 1, requestedBy: "u1" });
       const rv2 = await store.addReview({ projectId: project.id, snapshot: [], fingerprint: "b", note: "n", requiredApprovals: 2, requestedBy: "u1" });
       expect([rv1.code, rv2.code]).toEqual(["RV-001", "RV-002"]);
-      const upd = await store.updateReview(rv2.id, { status: "approved", decisions: [{ by: "u2", decision: "approve", comment: "", at: "2026-10-03T00:00:00.000Z" }], closedAt: "2026-10-03T00:00:00.000Z" });
-      expect(upd).toMatchObject({ status: "approved", decisions: [{ by: "u2" }] });
+      const updRv = await store.updateReview(rv2.id, { status: "approved", decisions: [{ by: "u2", decision: "approve", comment: "", at: "2026-10-03T00:00:00.000Z" }], closedAt: "2026-10-03T00:00:00.000Z" });
+      expect(updRv).toMatchObject({ status: "approved", decisions: [{ by: "u2" }] });
       expect((await store.listReviews(project.id)).map((r) => r.code)).toEqual(["RV-002", "RV-001"]);
     } finally {
       await store.pool.end();

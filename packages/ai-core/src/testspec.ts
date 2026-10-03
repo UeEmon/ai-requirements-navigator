@@ -253,7 +253,8 @@ export function deriveTestCases(reqs: TestRequirement[], stories: TestStory[] = 
     } else {
       for (const d of r.ears ? fromEars(r.ears) : fromText(r.title)) drafts.push({ ...d, level: "system", source: "rule" });
     }
-    for (const b of boundariesOf(r.title)) {
+    // 業務ルールは具体例に境界の値を含めてもらうため、文からは境界値のケースを作らない
+    for (const b of r.type === "RL" ? [] : boundariesOf(r.title)) {
       drafts.push({
         kind: "boundary",
         level: r.type === "NFR" ? "nfr" : "system",

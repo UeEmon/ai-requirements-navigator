@@ -51,8 +51,8 @@ describe("要件定義で決めること（業務ルール・用語集・受け�
     const fr = reqs.find((r: { type: string }) => r.type === "FR");
     expect((await (await req(`/api/requirements/${fr.id}`, as("editor", json({ priority: "should", rule: { kind: "calc", examples: [] } }, "PATCH")))).json()).rule ?? null).toBeNull();
 
-    const tests = await get(`/api/projects/${p.id}/tests?requirement=RL-02`);
-    expect(tests.cases.map((c: { id: string; kind: string }) => [c.id, c.kind])).toEqual([
+    const tests = await get(`/api/projects/${p.id}/tests`);
+    expect(tests.cases.filter((c: { requirementCode: string }) => c.requirementCode === "RL-02").map((c: { id: string; kind: string }) => [c.id, c.kind])).toEqual([
       ["TC-RL-02-1", "example"],
       ["TC-RL-02-2", "example"],
       ["TC-RL-02-3", "example"],
