@@ -127,10 +127,41 @@ export function defaultMockHandler(id: string): MockHandler {
 /** 模擬AIが返すUMLモデル（予約システムの例） */
 const MOCK_UML = {
   classes: [
-    { name: "Customer", label: "顧客", attributes: [{ name: "氏名", type: "string" }, { name: "電話番号", type: "string" }], operations: [] },
-    { name: "Reservation", label: "予約", attributes: [{ name: "日時", type: "datetime" }, { name: "状態", type: "enum" }], operations: ["確定する", "キャンセルする"] },
-    { name: "Staff", label: "スタッフ", attributes: [{ name: "氏名", type: "string" }], operations: [] },
-    { name: "Menu", label: "メニュー", attributes: [{ name: "所要時間", type: "int" }, { name: "料金", type: "int" }], operations: [] },
+    {
+      name: "Customer",
+      label: "顧客",
+      requirementCodes: ["FR-01"],
+      attributes: [
+        { name: "id", label: "顧客ID", type: "string", key: "pk", required: true },
+        { name: "name", label: "氏名", type: "string", required: true, rule: "1〜50文字" },
+        { name: "phone", label: "電話番号", type: "string", required: true, rule: "数字とハイフン、10〜13桁" },
+        { name: "email", label: "メールアドレス", type: "string", key: "unique", rule: "メールアドレスの形式" },
+      ],
+      operations: [],
+    },
+    {
+      name: "Reservation",
+      label: "予約",
+      requirementCodes: ["FR-01", "FR-02"],
+      attributes: [
+        { name: "id", label: "予約ID", type: "string", key: "pk", required: true },
+        { name: "customerId", label: "顧客", type: "ref", key: "fk", required: true },
+        { name: "startAt", label: "日時", type: "datetime", required: true, rule: "現在より後、営業時間内" },
+        { name: "status", label: "状態", type: "enum", required: true, values: ["仮予約", "確定", "キャンセル", "来店済み"] },
+      ],
+      operations: ["確定する", "キャンセルする"],
+    },
+    { name: "Staff", label: "スタッフ", attributes: [{ name: "id", label: "スタッフID", type: "string", key: "pk", required: true }, { name: "name", label: "氏名", type: "string", required: true }], operations: [] },
+    {
+      name: "Menu",
+      label: "メニュー",
+      attributes: [
+        { name: "id", label: "メニューID", type: "string", key: "pk", required: true },
+        { name: "minutes", label: "所要時間", type: "int", required: true, rule: "10〜300分" },
+        { name: "price", label: "料金", type: "int", required: true, rule: "0円以上" },
+      ],
+      operations: [],
+    },
   ],
   relations: [
     { from: "Customer", to: "Reservation", kind: "association", fromMultiplicity: "1", toMultiplicity: "*", label: "予約する" },
@@ -185,6 +216,18 @@ const MOCK_UML = {
         { from: "s3", to: "s5" },
       ],
     },
+  ],
+  permissions: [
+    { actor: "顧客", entity: "Reservation", ops: "CRU" },
+    { actor: "顧客", entity: "Customer", ops: "CRU" },
+    { actor: "顧客", entity: "Menu", ops: "R" },
+    { actor: "店長", entity: "Reservation", ops: "CRUD" },
+    { actor: "店長", entity: "Customer", ops: "R" },
+    { actor: "店長", entity: "Menu", ops: "CRUD" },
+    { actor: "店長", entity: "Staff", ops: "CRUD" },
+  ],
+  interfaces: [
+    { name: "予約確認メール", counterpart: "メール配信サービス", direction: "out", method: "API", timing: "予約確定のつど", data: "顧客のメールアドレス、予約日時、メニュー", requirementCodes: ["FR-02"] },
   ],
 };
 

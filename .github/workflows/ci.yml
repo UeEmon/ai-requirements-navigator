@@ -123,6 +123,12 @@ jobs:
           IJ=$(curl -fs -X POST "localhost:8787/api/changes/$CR/analyze?async=1" "${H[@]}" | jq -r .jobId)
           for i in $(seq 1 30); do S=$(curl -fs localhost:8787/api/jobs/$IJ "${H[@]}" | jq -r .status); [ "$S" = done ] && break; [ "$S" = failed ] && exit 1; sleep 1; done
           curl -fs -X POST localhost:8787/api/changes/$CR/decide "${H[@]}" -d '{"option":"apply","reason":"CI"}' | jq -ce 'select(.change.decision.baselineVersion == 2) | {status: .change.status, stories: (.followUps.stories | length)}' && echo "::notice::変更管理OK（確定版 v2）"
+          # コーディング・テスト工程への引き継ぎ: テストケース・着手前チェック・引き継ぎパッケージ
+          TC=$(curl -fs localhost:8787/api/projects/$PJ/tests "${H[@]}" | jq -e 'select(.trace.coverage == 1) | .counts.total')
+          curl -fs localhost:8787/api/projects/$PJ/tests.csv "${H[@]}" | head -c 40 | grep -q 'テストID'
+          curl -fs localhost:8787/api/projects/$PJ/readiness "${H[@]}" | jq -c '{verdict, score, counts}'
+          curl -fs localhost:8787/api/projects/$PJ/handoff.json "${H[@]}" | jq -e 'select(.format == "arn-handoff/1") | {requirements: (.requirements | length), tests: (.tests.cases | length)}'
+          curl -fs localhost:8787/api/projects/$PJ/spec.md "${H[@]}" | grep -q '## 17. テスト仕様' && echo "::notice::引き継ぎOK（テストケース $TC 件）"
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"docx"}' -o spec.docx && file spec.docx
           curl -fs -X POST localhost:8787/api/projects/$PJ/exports "${H[@]}" -d '{"format":"pdf"}' -o spec.pdf && head -c 5 spec.pdf | grep -q '%PDF-'
           grep -a -q 'NotoSansCJK' spec.pdf && echo "::notice::PDFに日本語フォント(Noto Sans CJK)が埋め込まれています ($(stat -c%s spec.pdf) bytes)"

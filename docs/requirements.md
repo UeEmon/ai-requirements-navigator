@@ -79,6 +79,10 @@
 | F6-6 | プロトタイプ（クリックで移動できるワイヤーフレーム）と、見た目の指摘を申し送りにする仕組み | 推奨 | 済 | `GET .../screens/prototype.html`、`POST .../screens/feedback` |
 | F7-1 | タスク分解（エピック・ストーリー・作業タスク、受け入れ条件、見積り、未対応要件の検出） | 推奨 | 済 | `ai-core/src/tasks.ts`、`POST /api/projects/:id/tasks/generate` |
 | F7-2 | GitHub / Jira / Backlog 連携（直接登録・CSV出力・再実行で続きから） | 任意 | 済 | `apps/api/src/integrations.ts`、[integrations.md](./integrations.md) |
+| F9-1 | テスト仕様の導出（EARS の文型から正常系・異常系・状態の内外・境界値、非機能要件の確認方法、受け入れ条件からの受け入れテスト、要件 → テストの追跡、CSV） | 推奨 | 済 | `ai-core/src/testspec.ts`、`GET /api/projects/:id/tests`、[handoff.md](./handoff.md) |
+| F9-2 | 設計の材料（データ項目定義：キー・必須・桁や形式・区分値、権限表（CRUD）、外部とのやり取りの一覧、業務の言葉とコード上の名前の対応） | 推奨 | 済 | `ai-core/src/design-tables.ts`、`GET /api/projects/:id/design/tables` |
+| F9-3 | 着手前チェック（引き渡せる状態かの点検、未決事項の一覧、直す画面への案内） | 推奨 | 済 | `ai-core/src/readiness.ts`、`GET /api/projects/:id/readiness` |
+| F9-4 | 引き継ぎパッケージ（要件・非機能要件・設計・画面・タスク・テストをまとめた JSON。開発者のツールや AI コーディングツール向け） | 推奨 | 済 | `GET /api/projects/:id/handoff.json` |
 
 ## 4. 非機能要件
 

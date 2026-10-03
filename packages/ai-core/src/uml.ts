@@ -31,14 +31,40 @@ export interface Diagram {
 /* ------------------------------------------------------------------ */
 
 const name = z.string().min(1).max(80);
+
+/** 属性（データ項目）。実装・テストで使えるよう、キー・必須・桁や形式・区分値まで持つ */
+const Attribute = z.object({
+  /** コード上の名前（英数字。例: reservedAt）。古いモデルでは日本語のこともある */
+  name,
+  /** 業務の言葉（例: 予約日時） */
+  label: z.string().max(80).optional(),
+  type: z.string().max(40).default("string"),
+  /** pk: 主キー / fk: 他のエンティティへの参照 / unique: 重複不可 */
+  key: z.preprocess((v) => (v === "pk" || v === "fk" || v === "unique" ? v : ""), z.enum(["", "pk", "fk", "unique"])).default(""),
+  required: z.boolean().default(false),
+  /** 桁・形式・範囲（例: 1〜50文字、メールアドレスの形式、0以上） */
+  rule: z.string().max(120).default(""),
+  /** 区分値（例: 仮予約 / 確定 / 取消） */
+  values: z.array(z.string().max(40)).max(30).default([]),
+});
+export type UmlAttribute = z.infer<typeof Attribute>;
+
+/** C: 登録 / R: 参照 / U: 更新 / D: 削除 */
+const crud = z.preprocess(
+  (v) => (typeof v === "string" ? [..."CRUD"].filter((ch) => v.toUpperCase().includes(ch)).join("") : ""),
+  z.string(),
+);
+
 export const UmlModel = z.object({
   classes: z
     .array(
       z.object({
         name,
         label: z.string().max(80).optional(),
-        attributes: z.array(z.object({ name, type: z.string().max(40).default("string") })).default([]),
+        attributes: z.array(Attribute).default([]),
         operations: z.array(z.string().max(80)).default([]),
+        /** このエンティティの根拠になった要件（設計 → 要件の追跡） */
+        requirementCodes: z.array(z.string().max(20)).max(30).default([]),
       }),
     )
     .default([]),
@@ -83,6 +109,26 @@ export const UmlModel = z.object({
       }),
     )
     .default([]),
+  /** 権限表: 利用者（役割）ごとに、エンティティに対してできる操作 */
+  permissions: z.array(z.object({ actor: z.string().min(1).max(40), entity: name, ops: crud })).max(200).default([]),
+  /** 外部とのやり取り（他システム・外部サービス・ファイル・メールなど） */
+  interfaces: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(80),
+        counterpart: z.string().max(80).default(""),
+        direction: z.preprocess((v) => (v === "in" || v === "out" || v === "both" ? v : "out"), z.enum(["in", "out", "both"])),
+        /** API / ファイル / メール / 画面連携 など */
+        method: z.string().max(40).default(""),
+        /** いつ（例: 予約確定のつど、毎日2時） */
+        timing: z.string().max(80).default(""),
+        /** 受け渡すデータ */
+        data: z.string().max(200).default(""),
+        requirementCodes: z.array(z.string().max(20)).max(20).default([]),
+      }),
+    )
+    .max(30)
+    .default([]),
 });
 export type UmlModel = z.infer<typeof UmlModel>;
 
@@ -117,7 +163,8 @@ export function normalizeUmlModel(m: UmlModel): { model: UmlModel; dropped: numb
     const ids = new Set(a.steps.map((s) => s.id));
     return { ...a, edges: keep(a.edges, (e) => ids.has(e.from) && ids.has(e.to)) };
   });
-  return { model: { classes, relations, sequences, stateMachines, activities }, dropped };
+  const permissions = keep(m.permissions ?? [], (x) => cn.has(x.entity) && x.ops.length > 0);
+  return { model: { classes, relations, sequences, stateMachines, activities, permissions, interfaces: m.interfaces ?? [] }, dropped };
 }
 
 /* ------------------------------------------------------------------ */
@@ -180,6 +227,8 @@ export function toPlantUmlUseCase(systemName: string, reqs: UmlRequirement[]): s
 /* クラス図                                                             */
 /* ------------------------------------------------------------------ */
 
+const keyMark = (a: { key?: string }) => (a.key === "pk" ? " PK" : a.key === "fk" ? " FK" : a.key === "unique" ? " UK" : "");
+
 const MM_REL: Record<string, string> = { association: "-->", composition: "*--", aggregation: "o--", dependency: "..>" };
 
 export function toMermaidClass(m: UmlModel): string {
@@ -188,7 +237,7 @@ export function toMermaidClass(m: UmlModel): string {
   for (const c of m.classes) {
     const id = ids.get(c.name)!;
     lines.push(`  class ${id}["${txt(c.label ?? c.name)}"]`);
-    for (const a of c.attributes) lines.push(`  ${id} : +${txt(a.name)} ${txt(a.type)}`);
+    for (const a of c.attributes) lines.push(`  ${id} : +${txt(a.label ?? a.name)} ${txt(a.type)}${keyMark(a)}`);
     for (const o of c.operations) lines.push(`  ${id} : +${txt(o).replace(/\(.*$/, "")}()`);
   }
   for (const r of m.relations) {
@@ -213,7 +262,7 @@ export function toPlantUmlClass(m: UmlModel): string {
   const lines = ["@startuml", "left to right direction"];
   for (const c of m.classes) {
     lines.push(`class "${txt(c.label ?? c.name)}" as ${ids.get(c.name)} {`);
-    for (const a of c.attributes) lines.push(`  +${txt(a.name)} : ${txt(a.type)}`);
+    for (const a of c.attributes) lines.push(`  +${txt(a.label ?? a.name)} : ${txt(a.type)}${keyMark(a)}`);
     for (const o of c.operations) lines.push(`  +${txt(o).replace(/\(.*$/, "")}()`);
     lines.push("}");
   }
@@ -378,13 +427,21 @@ export const UML_SYSTEM = `あなたはソフトウェア設計者です。確�
 - classes.name と participants.id と steps.id は英数字の識別子（例: Reservation）。画面に出す名前は label に日本語で書く
 - relations / messages / transitions / edges は、同じJSON内に定義した名前だけを参照する
 - sequences は主要な業務の流れを1〜2本、stateMachines は状態を持つ主要な概念を1〜2個、activities は業務フローを1本
+- attributes は実装とテストに使うデータ項目の定義にする。name は英数字（例: reservedAt）、label は業務の言葉。
+  key は pk（主キー）/ fk（参照）/ unique（重複不可）/ 空。required は必須か。rule は桁・形式・範囲（要件から読み取れるものだけ。分からなければ空）。
+  values は区分値（状態や種別の選択肢）。type は string / text / int / decimal / bool / date / datetime / enum / ref のいずれか
+- classes.requirementCodes は、そのエンティティの根拠になった要件のIDを書く
+- permissions は利用者の役割ごとに、各エンティティにできる操作を "CRUD" の文字で書く（C登録 R参照 U更新 D削除。できない操作は書かない）
+- interfaces は、要件に他システム・外部サービス・メール送信・ファイルの取り込みや出力がある場合だけ書く。direction は in（受け取る）/ out（送る）/ both
 - 出力は次の形のJSONのみ。説明文やコードフェンスは付けない
 {
-  "classes": [{ "name": "Reservation", "label": "予約", "attributes": [{ "name": "日時", "type": "datetime" }], "operations": ["キャンセルする"] }],
+  "classes": [{ "name": "Reservation", "label": "予約", "requirementCodes": ["FR-01"], "attributes": [{ "name": "id", "label": "予約ID", "type": "string", "key": "pk", "required": true, "rule": "", "values": [] }, { "name": "status", "label": "状態", "type": "enum", "key": "", "required": true, "rule": "", "values": ["仮予約", "確定", "取消"] }], "operations": ["キャンセルする"] }],
   "relations": [{ "from": "Customer", "to": "Reservation", "kind": "association|composition|aggregation|inheritance|dependency", "fromMultiplicity": "1", "toMultiplicity": "*", "label": "予約する" }],
   "sequences": [{ "title": "予約登録", "participants": [{ "id": "customer", "label": "顧客", "actor": true }], "messages": [{ "from": "customer", "to": "system", "text": "予約を申し込む", "reply": false }] }],
   "stateMachines": [{ "entity": "予約", "states": ["仮予約", "確定"], "initial": "仮予約", "finals": ["確定"], "transitions": [{ "from": "仮予約", "to": "確定", "event": "承認" }] }],
-  "activities": [{ "title": "来店までの流れ", "steps": [{ "id": "s1", "label": "予約を受け付ける", "kind": "action|decision" }], "edges": [{ "from": "s1", "to": "s2", "label": "任意" }] }]
+  "activities": [{ "title": "来店までの流れ", "steps": [{ "id": "s1", "label": "予約を受け付ける", "kind": "action|decision" }], "edges": [{ "from": "s1", "to": "s2", "label": "任意" }] }],
+  "permissions": [{ "actor": "顧客", "entity": "Reservation", "ops": "CRU" }, { "actor": "店長", "entity": "Reservation", "ops": "CRUD" }],
+  "interfaces": [{ "name": "予約確認メール", "counterpart": "メール配信サービス", "direction": "out", "method": "API", "timing": "予約確定のつど", "data": "顧客のメールアドレス、予約日時", "requirementCodes": ["FR-03"] }]
 }`;
 
 export function buildUmlPrompt(projectName: string, purpose: string, reqs: UmlRequirement[]): string {
@@ -486,7 +543,7 @@ export function summarizeUmlModel(m: UmlModel): string {
   const cl = (c: UmlModel["classes"][number]) => c.label ?? c.name;
   if (m.classes.length) {
     out.push("クラス:");
-    for (const c of m.classes) out.push(`- ${cl(c)}（${c.attributes.map((a) => a.name).join("、") || "属性なし"}）${c.operations.length ? ` 操作: ${c.operations.join("、")}` : ""}`);
+    for (const c of m.classes) out.push(`- ${cl(c)}（${c.attributes.map((a) => a.label ?? a.name).join("、") || "属性なし"}）${c.operations.length ? ` 操作: ${c.operations.join("、")}` : ""}`);
     for (const r of m.relations) {
       const f = m.classes.find((c) => c.name === r.from);
       const t = m.classes.find((c) => c.name === r.to);
@@ -504,6 +561,9 @@ export function summarizeUmlModel(m: UmlModel): string {
     const lab = new Map(a.steps.map((x) => [x.id, x.label]));
     out.push(`アクティビティ「${a.title}」: ${a.edges.map((e) => `${lab.get(e.from)}→${lab.get(e.to)}`).join(" / ")}`);
   }
+  const perms = m.permissions ?? [];
+  if (perms.length) out.push(`権限: ${perms.map((x) => `${x.actor}→${m.classes.find((c) => c.name === x.entity)?.label ?? x.entity}:${x.ops}`).join(" / ")}`);
+  for (const i of m.interfaces ?? []) out.push(`外部とのやり取り「${i.name}」: ${i.counterpart}（${i.direction}、${i.method}、${i.timing}）${i.data}`);
   return out.join("\n");
 }
 

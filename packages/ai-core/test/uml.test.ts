@@ -158,7 +158,7 @@ describe("UMLの複数AI比較", () => {
     await compareUmlModels([new MockProvider("claude-x"), new MockProvider("gpt-y")], judge, "予約", "", reqs);
     expect(seen).toContain("### 案A");
     expect(seen).not.toMatch(/claude-x|gpt-y/);
-    expect(seen).toContain("予約（日時、状態）");
+    expect(seen).toContain("予約（予約ID、顧客、日時、状態）");
   });
 
   it("1案しかないときは評価しない。全滅ならエラー", async () => {

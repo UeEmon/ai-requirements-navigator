@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Diagram } from "@arn/ai-core";
+import type { Diagram, Table } from "@arn/ai-core";
 import type { Decision, Project, Requirement } from "./store.js";
 
 /**
@@ -21,7 +21,14 @@ export interface Spec {
   /** 確定版の表示（例: 確定版 v2） */
   baseline?: string;
   /** 決定記録の後に続く節（画面一覧・申し送り・変更履歴など） */
-  extras?: Array<{ title: string; lines: string[] }>;
+  extras?: SpecExtra[];
+}
+
+/** 決定記録の後に続く節。箇条書き（lines）と表（tables） */
+export interface SpecExtra {
+  title: string;
+  lines: string[];
+  tables?: Table[];
 }
 
 /** 画面で描画した図の画像（PNG）。title で図と対応づける */
@@ -100,7 +107,15 @@ export function renderMarkdown(spec: Spec): string {
   out.push("");
   for (const ex of spec.extras ?? []) {
     out.push(`## ${ex.title}`, "");
-    out.push(...(ex.lines.length ? ex.lines.map((l) => `- ${l}`) : ["（まだありません）"]), "");
+    const tables = ex.tables ?? [];
+    if (!ex.lines.length && !tables.length) out.push("（まだありません）", "");
+    if (ex.lines.length) out.push(...ex.lines.map((l) => `- ${l}`), "");
+    for (const t of tables) {
+      if (t.caption) out.push(`**${t.caption}**`, "");
+      out.push(`| ${t.head.map(cell).join(" | ")} |`, `| ${t.head.map(() => "---").join(" | ")} |`);
+      for (const r of t.rows) out.push(`| ${r.map((x) => cell(x || " ")).join(" | ")} |`);
+      out.push("");
+    }
   }
   return out.join("\n");
 }
@@ -198,8 +213,21 @@ export async function renderDocx(spec: Spec, images: SpecImage[] = []): Promise<
   }
   for (const ex of spec.extras ?? []) {
     children.push(h(ex.title, d.HeadingLevel.HEADING_1));
-    if (!ex.lines.length) children.push(p("（まだありません）"));
+    const tables = ex.tables ?? [];
+    if (!ex.lines.length && !tables.length) children.push(p("（まだありません）"));
     for (const line of ex.lines) children.push(new d.Paragraph({ bullet: { level: 0 }, children: [new d.TextRun(line)] }));
+    for (const t of tables) {
+      if (t.caption) children.push(p(t.caption, { bold: true, size: 19 }));
+      children.push(
+        new d.Table({
+          width: { size: 100, type: d.WidthType.PERCENTAGE },
+          rows: [
+            new d.TableRow({ tableHeader: true, children: t.head.map((x) => tcell(x, true)) }),
+            ...t.rows.map((r) => new d.TableRow({ children: r.map((x) => tcell(x)) })),
+          ],
+        }),
+      );
+    }
   }
 
   const doc = new d.Document({
@@ -329,7 +357,22 @@ export async function renderPdf(spec: Spec, images: SpecImage[] = [], font: PdfF
   );
   for (const ex of spec.extras ?? []) {
     content.push({ text: ex.title, style: "h1" });
-    content.push(ex.lines.length ? { ul: ex.lines, fontSize: 9 } : { text: "（まだありません）", style: "meta" });
+    const tables = ex.tables ?? [];
+    if (ex.lines.length) content.push({ ul: ex.lines, fontSize: 9 });
+    else if (!tables.length) content.push({ text: "（まだありません）", style: "meta" });
+    for (const t of tables) {
+      if (t.caption) content.push({ text: t.caption, bold: true, fontSize: 9, margin: [0, 6, 0, 2] });
+      content.push({
+        table: {
+          headerRows: 1,
+          widths: t.head.map(() => "*"),
+          body: [t.head.map((x) => ({ text: x, bold: true, fillColor: "#E8EEF4" })), ...t.rows.map((r) => r.map((x) => x || " "))],
+        },
+        layout: "lightHorizontalLines",
+        fontSize: t.head.length > 6 ? 7 : 8,
+        margin: [0, 0, 0, 8],
+      });
+    }
   }
 
   const docDefinition = {

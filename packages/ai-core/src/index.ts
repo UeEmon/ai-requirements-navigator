@@ -16,3 +16,6 @@ export * from "./ears.js";
 export * from "./analysis.js";
 export * from "./nfr.js";
 export * from "./nfr-cases.js";
+export * from "./testspec.js";
+export * from "./design-tables.js";
+export * from "./readiness.js";

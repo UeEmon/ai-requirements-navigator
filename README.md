@@ -35,6 +35,7 @@ http://localhost:8787 を開き、次の順に操作します。
 7. 「画面」で「AIで画面を作る」→ 画面イメージを確認し、足りない情報や操作を意見として送って作り直す
 8. 「変更管理」で要件定義を確定。以後の変更は変更要求として登録し、影響分析の結果を見て判断（[画面と変更管理](docs/screens-and-changes.md)）
 9. 「実装連携」で「AIでタスクに分解する」→ CSV で出力するか、管理者が登録した GitHub・Jira・Backlog に課題として登録（[連携の設定](docs/integrations.md)）
+10. 「テスト・引き継ぎ」で着手前チェックを確認し、足りないものを直してから、テストケース（CSV）と引き継ぎパッケージ（JSON）を開発・テストの担当者に渡す（[コーディング・テスト工程への引き継ぎ](docs/handoff.md)）
 
 本システム自身の要求事項を題材にした **サンプル事例**（資料の分析・EARSの要件65件・非機能要件シート入り）を「AI設定・プロジェクト」から読み込めます。内容は [docs/sample/requirements-navigator.md](docs/sample/requirements-navigator.md) で読めます。
 
@@ -117,6 +118,7 @@ npm run init:project -- --name "顧客管理システム" --slug crm-system
 - [画面イメージと、確定後の変更管理](docs/screens-and-changes.md)
 - [資料の取り込み・分析と、EARS 記法](docs/discovery-and-ears.md)
 - [非機能要件シート](docs/nfr.md)
+- [コーディング・テスト工程への引き継ぎ](docs/handoff.md)
 - [要件定義書（ベースライン・実装状況）](docs/requirements.md)
 - [UML](docs/uml/)
 - [設計判断（ADR）](docs/adr/)
