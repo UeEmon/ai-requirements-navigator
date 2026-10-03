@@ -225,6 +225,41 @@ describe("プロジェクトの整理", () => {
     expect(log.entries.map((e: { action: string }) => e.action)).toEqual(expect.arrayContaining(["project.update", "project.archive", "project.unarchive", "project.delete"]));
   });
 
+  it("作成済みのプロジェクトの AI（生成AI・評価AI・モード）を変更でき、決まりは作成時と同じ", async () => {
+    const t = setup();
+    const orgId = (await (await t.app.request("/api/orgs", json({ name: "組織" }))).json()).id;
+    const as = (role: string, init: RequestInit = {}) => ({ ...init, headers: { ...(init.headers as Record<string, string>), "x-org-id": orgId, "x-role": role, "x-user-id": `u-${role}` } });
+    const add = async (label: string, vendor = "mock", extra: Record<string, unknown> = {}) => (await (await t.app.request(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor, model: vendor === "ollama" ? "llama" : "mock", label, ...extra })))).json()).id as string;
+    const [a, b, e, e2] = [await add("A"), await add("B"), await add("評価"), await add("評価2")];
+    const local = await add("ローカル", "ollama", { endpoint: "http://ollama:11434" });
+    const p = (await (await t.app.request(`/api/orgs/${orgId}/projects`, as("editor", json({ name: "予約", aiConfig: { mode: "multi", generatorIds: [a, b], evaluatorId: e } })))).json()).id as string;
+    const patch = (body: unknown, role = "editor") => t.app.request(`/api/projects/${p}`, as(role, json(body, "PATCH")));
+
+    // 評価AIを替える
+    const r1 = await (await patch({ aiConfig: { mode: "multi", generatorIds: [a, b], evaluatorId: e2 } })).json();
+    expect(r1.aiConfig).toEqual({ mode: "multi", generatorIds: [a, b], evaluatorId: e2 });
+    expect((await (await t.app.request(`/api/projects/${p}`, as("viewer"))).json()).aiConfig.evaluatorId).toBe(e2);
+    // 評価AIなし（複数AIの案を比べるだけ）
+    expect((await (await patch({ aiConfig: { mode: "multi", generatorIds: [a, b], evaluatorId: null } })).json()).aiConfig.evaluatorId).toBeNull();
+    // 単一AIにすると評価AIは使わない（null にする）
+    expect((await (await patch({ aiConfig: { mode: "single", generatorIds: [a], evaluatorId: e } })).json()).aiConfig).toEqual({ mode: "single", generatorIds: [a], evaluatorId: null });
+    // 決まり: 登録されていないAI・単一AIで2つ・複数AIで1つ・閲覧者は変えられない
+    expect((await (await patch({ aiConfig: { mode: "multi", generatorIds: [a, b], evaluatorId: "nope" } })).json()).error).toContain("登録されていないAI");
+    expect((await patch({ aiConfig: { mode: "single", generatorIds: [a, b] } })).status).toBe(400);
+    expect((await patch({ aiConfig: { mode: "multi", generatorIds: [a, a] } })).status).toBe(400); // 重複は1つと数える
+    expect((await patch({ aiConfig: { mode: "multi", generatorIds: [a, b], evaluatorId: e } }, "viewer")).status).toBe(403);
+    // 機密プロジェクトはローカルLLMだけ
+    const cp = (await (await t.app.request(`/api/orgs/${orgId}/projects`, as("editor", json({ name: "機密", confidential: true, aiConfig: { mode: "single", generatorIds: [local] } })))).json()).id;
+    const ng = await t.app.request(`/api/projects/${cp}`, as("editor", json({ aiConfig: { mode: "multi", generatorIds: [local, a], evaluatorId: null } }, "PATCH")));
+    expect((await ng.json()).error).toContain("ローカルLLM");
+    // 一覧にも AI の構成が出る
+    const list = await (await t.app.request(`/api/orgs/${orgId}/projects`, as("viewer"))).json();
+    expect(list.find((x: { id: string }) => x.id === p).aiConfig).toEqual({ mode: "single", generatorIds: [a], evaluatorId: null });
+    // 監査ログ（AIの名前で、変更前後）
+    const log = await (await t.app.request(`/api/orgs/${orgId}/audit?action=project.ai`, as("admin"))).json();
+    expect(log.entries[log.entries.length - 1].detail).toMatchObject({ before: { mode: "multi", generators: ["A", "B"], evaluator: "評価" }, after: { evaluator: "評価2" } });
+  });
+
   it("開発用ログインでは、メンバーの設定は使わない（一覧と招待は試せる）", async () => {
     const t = setup();
     const orgId = (await (await t.app.request("/api/orgs", json({ name: "組織" }))).json()).id;

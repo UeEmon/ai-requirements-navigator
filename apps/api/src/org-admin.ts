@@ -27,9 +27,38 @@ const email = z
 const InviteInput = z.object({ email, role: RoleSchema, name: z.string().trim().max(100).optional() });
 const MemberPatchInput = z.object({ role: RoleSchema.optional(), name: z.string().trim().max(100).optional() }).strict();
 const OrgPatchInput = z.object({ name: z.string().trim().min(1).max(200) }).strict();
+const AiConfigInput = z.object({
+  mode: z.enum(["single", "multi"]),
+  generatorIds: z.array(z.string()).min(1).max(4),
+  evaluatorId: z.string().nullable().default(null),
+});
 const ProjectPatchInput = z
-  .object({ name: z.string().trim().min(1).max(200).optional(), purpose: z.string().max(2000).optional(), archived: z.boolean().optional() })
+  .object({
+    name: z.string().trim().min(1).max(200).optional(),
+    purpose: z.string().max(2000).optional(),
+    archived: z.boolean().optional(),
+    /** 使う AI（生成AI・評価AI・モード）の変更 */
+    aiConfig: AiConfigInput.optional(),
+  })
   .strict();
+
+/**
+ * プロジェクトの AI の構成を確かめる（作成と変更で同じ決まり）。
+ * - 組織に登録された AI だけ／単一AIは生成AIが1つ／複数AIは2つ以上／評価AIは複数AIのときだけ（単一AIでは使わない）
+ * - 機密プロジェクトはローカルLLMだけ
+ */
+export async function checkAiConfig(store: Store, orgId: string, cfg: { mode: "single" | "multi"; generatorIds: string[]; evaluatorId: string | null }, confidential: boolean) {
+  const creds = new Map((await store.listCredentials(orgId)).map((x) => [x.id, x]));
+  const generatorIds = [...new Set(cfg.generatorIds)];
+  const evaluatorId = cfg.mode === "multi" ? cfg.evaluatorId : null;
+  const ids = [...generatorIds, ...(evaluatorId ? [evaluatorId] : [])];
+  const unknown = ids.filter((id) => !creds.has(id));
+  if (unknown.length) throw new HTTPException(400, { message: `組織に登録されていないAIです: ${unknown.join(", ")}` });
+  if (cfg.mode === "single" && generatorIds.length !== 1) throw new HTTPException(400, { message: "単一AIモードでは生成AIを1つだけ選んでください" });
+  if (cfg.mode === "multi" && generatorIds.length < 2) throw new HTTPException(400, { message: "複数AIモードでは生成AIを2つ以上選んでください" });
+  if (confidential && ids.some((id) => !creds.get(id)!.isLocal)) throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを選べます" });
+  return { mode: cfg.mode, generatorIds, evaluatorId };
+}
 const ProjectDeleteInput = z.object({ confirmName: z.string() });
 
 /** 最後に使った日時を記録する間隔（毎回は書かない） */
@@ -218,14 +247,21 @@ export function orgAdmin(ctx: ImplementationContext, opts: OrgAdminOptions) {
     app.patch("/api/projects/:id", async (c) => {
       const input = await ctx.body(c, ProjectPatchInput);
       const p = await ctx.loadProject(c, c.req.param("id"), input.archived !== undefined ? "admin" : "editor");
+      const aiConfig = input.aiConfig ? await checkAiConfig(store, p.orgId, input.aiConfig, p.confidential) : undefined;
       const updated = await store.updateProject(p.id, {
         name: input.name,
         purpose: input.purpose,
         archivedAt: input.archived === undefined ? undefined : input.archived ? new Date().toISOString() : null,
+        aiConfig,
       });
       if (!updated) throw new HTTPException(404, { message: "プロジェクトが見つかりません" });
       if (input.name !== undefined || input.purpose !== undefined) {
         await audit(store, { orgId: p.orgId, actor: ctx.actorOf(c), action: "project.update", targetType: "project", targetId: p.id, detail: { before: { name: p.name, purpose: p.purpose }, after: { name: updated.name, purpose: updated.purpose } } });
+      }
+      if (aiConfig) {
+        const labels = new Map((await store.listCredentials(p.orgId)).map((x) => [x.id, x.label]));
+        const view = (a: typeof aiConfig) => ({ mode: a.mode, generators: a.generatorIds.map((id) => labels.get(id) ?? id), evaluator: a.evaluatorId ? (labels.get(a.evaluatorId) ?? a.evaluatorId) : null });
+        await audit(store, { orgId: p.orgId, actor: ctx.actorOf(c), action: "project.ai", targetType: "project", targetId: p.id, detail: { name: p.name, before: view(p.aiConfig), after: view(aiConfig) } });
       }
       if (input.archived !== undefined) {
         await audit(store, { orgId: p.orgId, actor: ctx.actorOf(c), action: input.archived ? "project.archive" : "project.unarchive", targetType: "project", targetId: p.id, detail: { name: p.name } });

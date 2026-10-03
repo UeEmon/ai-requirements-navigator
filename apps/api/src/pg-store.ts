@@ -490,11 +490,12 @@ export class PgStore implements Store {
     );
     return toProject(rows[0]);
   }
-  async updateProject(id: string, patch: { name?: string; purpose?: string; archivedAt?: string | null }) {
+  async updateProject(id: string, patch: { name?: string; purpose?: string; archivedAt?: string | null; aiConfig?: Project["aiConfig"] }) {
     const { rows } = await this.pool.query(
       `UPDATE projects SET name = COALESCE($2, name), purpose = COALESCE($3, purpose),
-         archived_at = CASE WHEN $4::boolean THEN $5::timestamptz ELSE archived_at END WHERE id = $1 RETURNING *`,
-      [id, patch.name ?? null, patch.purpose ?? null, patch.archivedAt !== undefined, patch.archivedAt ?? null],
+         archived_at = CASE WHEN $4::boolean THEN $5::timestamptz ELSE archived_at END,
+         ai_config = COALESCE($6::jsonb, ai_config) WHERE id = $1 RETURNING *`,
+      [id, patch.name ?? null, patch.purpose ?? null, patch.archivedAt !== undefined, patch.archivedAt ?? null, patch.aiConfig ? JSON.stringify(patch.aiConfig) : null],
     );
     return rows[0] ? toProject(rows[0]) : null;
   }

@@ -41,7 +41,7 @@ import { discovery } from "./discovery.js";
 import { connect } from "./connect.js";
 import { keySetup, type GoogleOAuthConfig } from "./key-setup.js";
 import { repoSetup } from "./repo-setup.js";
-import { orgAdmin, resolveMember, seedAdmin } from "./org-admin.js";
+import { checkAiConfig, orgAdmin, resolveMember, seedAdmin } from "./org-admin.js";
 import { handoff } from "./handoff.js";
 import { scope } from "./scope.js";
 import { nfrSheet } from "./nfr-sheet.js";
@@ -582,7 +582,7 @@ export function createApp(deps: AppDeps) {
     const archived = c.req.query("archived"); // 省略: 使用中だけ / 1: アーカイブだけ / all: すべて
     const list = (await store.listProjects(orgId)).filter((p) => (archived === "all" ? true : archived === "1" ? Boolean(p.archivedAt) : !p.archivedAt));
     return c.json(
-      list.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, phaseKey: p.phaseKey, phaseName: PHASES.find((x) => x.key === p.phaseKey)?.name ?? (p.phaseKey === "done" ? "完了" : p.phaseKey), confidential: p.confidential, createdAt: p.createdAt, archivedAt: p.archivedAt ?? null })),
+      list.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, phaseKey: p.phaseKey, phaseName: PHASES.find((x) => x.key === p.phaseKey)?.name ?? (p.phaseKey === "done" ? "完了" : p.phaseKey), confidential: p.confidential, createdAt: p.createdAt, archivedAt: p.archivedAt ?? null, aiConfig: p.aiConfig })),
     );
   });
 
@@ -590,17 +590,8 @@ export function createApp(deps: AppDeps) {
     const orgId = c.req.param("orgId");
     need(c, orgId, "editor");
     const input = await body(c, ProjectInput);
-    const creds = new Map((await store.listCredentials(orgId)).map((x) => [x.id, x]));
-    const ids = [...input.aiConfig.generatorIds, ...(input.aiConfig.evaluatorId ? [input.aiConfig.evaluatorId] : [])];
-    const unknown = ids.filter((id) => !creds.has(id));
-    if (unknown.length) throw new HTTPException(400, { message: `組織に登録されていないAIです: ${unknown.join(", ")}` });
-    if (input.aiConfig.mode === "single" && input.aiConfig.generatorIds.length !== 1)
-      throw new HTTPException(400, { message: "単一AIモードでは生成AIを1つだけ選んでください" });
-    if (input.aiConfig.mode === "multi" && input.aiConfig.generatorIds.length < 2)
-      throw new HTTPException(400, { message: "複数AIモードでは生成AIを2つ以上選んでください" });
-    if (input.confidential && ids.some((id) => !creds.get(id)!.isLocal))
-      throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを選べます" });
-    const project = await store.createProject({ orgId, ...input });
+    const aiConfig = await checkAiConfig(store, orgId, input.aiConfig, input.confidential);
+    const project = await store.createProject({ orgId, ...input, aiConfig });
     await audit(store, {
       orgId,
       actor: actorOf(c),

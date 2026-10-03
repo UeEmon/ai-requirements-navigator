@@ -520,7 +520,7 @@ export interface Store {
   getProject(id: string): Promise<Project | null>;
   /** 組織のプロジェクト（新しい順） */
   listProjects(orgId: string): Promise<Project[]>;
-  updateProject(id: string, patch: { name?: string; purpose?: string; archivedAt?: string | null }): Promise<Project | null>;
+  updateProject(id: string, patch: { name?: string; purpose?: string; archivedAt?: string | null; aiConfig?: AIConfig }): Promise<Project | null>;
   /** プロジェクトと、その要件・設計・履歴などをすべて消す（監査ログは残す） */
   deleteProject(id: string): Promise<boolean>;
   setProjectPhase(id: string, phaseKey: string): Promise<void>;
@@ -766,9 +766,10 @@ export class MemoryStore implements Store {
     if (!c || c.orgId !== orgId) return false;
     return this.creds.delete(id);
   }
-  async updateProject(id: string, patch: { name?: string; purpose?: string; archivedAt?: string | null }) {
+  async updateProject(id: string, patch: { name?: string; purpose?: string; archivedAt?: string | null; aiConfig?: AIConfig }) {
     const p = this.projects.get(id);
     if (!p) return null;
+    if (patch.aiConfig !== undefined) p.aiConfig = { ...patch.aiConfig, generatorIds: [...patch.aiConfig.generatorIds] };
     if (patch.name !== undefined) p.name = patch.name;
     if (patch.purpose !== undefined) p.purpose = patch.purpose;
     if (patch.archivedAt !== undefined) p.archivedAt = patch.archivedAt;

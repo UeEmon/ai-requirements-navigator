@@ -48,6 +48,7 @@ export type AuditAction =
   | "project.update"
   | "project.archive"
   | "project.unarchive"
+  | "project.ai"
   | "project.delete"
   | "token.create"
   | "token.revoke"
