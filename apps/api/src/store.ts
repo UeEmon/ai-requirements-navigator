@@ -37,11 +37,22 @@ export interface UsageRow {
   calls: number;
 }
 
+/**
+ * プロジェクトの AI の使い方
+ * - single: 単一AI（生成AI 1つ。評価しない）
+ * - review: 単独AI＋評価AI（生成AI 1つの案を、評価AIが審査して直した案を作る）
+ * - multi: 複数AI＋評価AI（生成AI 2つ以上の案を、評価AIが匿名で比べる。評価AIは省略可）
+ */
+export type AIMode = "single" | "review" | "multi";
 export interface AIConfig {
-  mode: "single" | "multi";
+  mode: AIMode;
   generatorIds: string[];
   evaluatorId: string | null;
 }
+/** 案を作る AI（複数AIのときだけ全部、ほかは最初の1つ） */
+export const generatorIdsOf = (a: AIConfig) => (a.mode === "multi" ? a.generatorIds : a.generatorIds.slice(0, 1));
+/** 評価・審査する AI（単一AIでは使わない） */
+export const evaluatorIdOf = (a: AIConfig) => (a.mode === "single" ? null : a.evaluatorId);
 
 export interface Project {
   id: string;

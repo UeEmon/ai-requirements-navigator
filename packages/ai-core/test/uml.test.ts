@@ -161,10 +161,17 @@ describe("UMLの複数AI比較", () => {
     expect(seen).toContain("予約 Reservation（id 予約ID、customerId 顧客、startAt 日時、status 状態）");
   });
 
-  it("1案しかないときは評価しない。全滅ならエラー", async () => {
-    const r = await compareUmlModels([new MockProvider("c"), new MockProvider("bad", () => "x")], new MockProvider("judge"), "予約", "", reqs);
+  it("1案しかないときも、評価AIがあれば審査する（単独AI＋評価AI）。評価AIがなければ評価しない。全滅ならエラー", async () => {
+    let seen = "";
+    const judge = new MockProvider("judge", async (req) => {
+      seen = req.messages[0]!.content;
+      return (await new MockProvider("judge").complete(req)).text;
+    });
+    const r = await compareUmlModels([new MockProvider("c"), new MockProvider("bad", () => "x")], judge, "予約", "", reqs);
     expect(r.candidates).toHaveLength(1);
-    expect(r.evaluation).toBeNull();
+    expect(r.evaluation?.evaluatorId).toBe("judge");
+    expect(seen).toContain("案は1つだけです");
+    expect((await compareUmlModels([new MockProvider("c")], undefined, "予約", "", reqs)).evaluation).toBeNull();
     expect(r.failures.map((f) => f.providerId)).toEqual(["bad"]);
     await expect(compareUmlModels([new MockProvider("bad", () => "x")], undefined, "予約", "", reqs)).rejects.toThrow();
   });

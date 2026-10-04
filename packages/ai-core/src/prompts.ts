@@ -82,6 +82,18 @@ export function buildEvaluatorPrompt(
         c.content.items.map((i) => `- [${i.type}/${i.priority}] ${i.title}${i.description ? `：${i.description}` : ""}`).join("\n"),
     )
     .join("\n\n");
+  if (labeled.length === 1) {
+    // 単独AI＋評価AI: 1つの案を審査し、直した案を作る
+    return `${buildGeneratorPrompt(ctx)}
+
+# 審査する案（1つ）
+${blocks}
+
+案は1つだけです。比較ではなく、案${labeled[0]!.label}を審査してください。
+- scores と comments には案${labeled[0]!.label}だけを入れる。weaknesses には、不足している要件・誤り・あいまいな書き方を具体的に書く
+- merged には、指摘を直した改善案を入れる（良い項目はそのまま残し、不足を足し、誤りを直す）
+- recommendedLabel は、直す必要がほとんどなければ "${labeled[0]!.label}"、改善案のほうがよければ "merged"`;
+  }
   return `${buildGeneratorPrompt(ctx)}
 
 # 評価対象の案（提示順はランダム）

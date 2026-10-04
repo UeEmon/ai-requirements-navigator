@@ -705,7 +705,8 @@ export async function compareUmlModels(
   }));
 
   let evaluation: UmlComparison["evaluation"] = null;
-  if (evaluator && candidates.length >= 2) {
+  // 生成AIが1つでも、評価AIがあれば審査する（単独AI＋評価AI）
+  if (evaluator && candidates.length >= 1) {
     emit({ type: "evaluator", providerId: evaluator.id, status: "running" });
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -715,7 +716,7 @@ export async function compareUmlModels(
 # 評価対象の設計モデル（提示順はランダム）
 ${candidates.map((c) => `### 案${c.label}\n${summarizeUmlModel(c.model)}`).join("\n\n")}
 
-全ての案（${candidates.map((c) => c.label).join(", ")}）を評価してください。`;
+${candidates.length === 1 ? `案は1つだけです。比較ではなく、案${candidates[0]!.label}を審査し、weaknesses に直すべき点（要件との対応漏れ・矛盾・粒度の問題）を具体的に書いてください。` : `全ての案（${candidates.map((c) => c.label).join(", ")}）を評価してください。`}`;
       const res = await evaluator.complete({ system: UML_EVAL_SYSTEM, messages: [{ role: "user", content: body }], json: true, signal: ctrl.signal });
       const ev = UmlEvaluationContent.parse(extractJson(res.text));
       const totals: Record<string, number> = {};

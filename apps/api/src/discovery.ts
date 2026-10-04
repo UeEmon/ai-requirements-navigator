@@ -19,7 +19,7 @@ import { z } from "zod";
 import { audit } from "./audit.js";
 import { ExtractError, extractText, MAX_UPLOAD_BYTES } from "./extract.js";
 import type { AnyContext, ImplementationContext } from "./implementation.js";
-import type { AnalysisRecord, JobProgress, Project, ProjectDocument } from "./store.js";
+import { evaluatorIdOf, generatorIdsOf, type AnalysisRecord, type JobProgress, type Project, type ProjectDocument } from "./store.js";
 import { usageOf } from "./store.js";
 
 export const DOCUMENT_KINDS = { minutes: "議事録", existing: "既存システムの資料", business: "業務マニュアル・規程", other: "その他" } as const;
@@ -97,9 +97,11 @@ export function discovery(ctx: ImplementationContext) {
 
     const ids = [...new Set([...p.aiConfig.generatorIds, ...(p.aiConfig.evaluatorId ? [p.aiConfig.evaluatorId] : [])])];
     const b = await ctx.budget(p.orgId, ids);
-    const gens = (p.aiConfig.mode === "multi" ? p.aiConfig.generatorIds : p.aiConfig.generatorIds.slice(0, 1)).filter((id) => !b.excluded.has(id));
+    const gens = generatorIdsOf(p.aiConfig).filter((id) => !b.excluded.has(id));
     if (!gens.length) throw new HTTPException(429, { message: `使えるAIがすべて今月の上限に達しています。${b.warnings.join(" ")}` });
-    const evaluatorId = p.aiConfig.mode === "multi" && p.aiConfig.evaluatorId && !b.excluded.has(p.aiConfig.evaluatorId) && gens.length >= 2 ? p.aiConfig.evaluatorId : null;
+    // 複数AIは2つ以上の案を比べる。単独AI＋評価AIは1つの案を審査する
+    const ev0 = evaluatorIdOf(p.aiConfig);
+    const evaluatorId = ev0 && !b.excluded.has(ev0) && (p.aiConfig.mode === "review" || gens.length >= 2) ? ev0 : null;
     const providers = await ctx.providersOf(p.orgId, gens);
     const evaluator = evaluatorId ? (await ctx.providersOf(p.orgId, [evaluatorId]))[0] : undefined;
     if (p.confidential && [...providers, ...(evaluator ? [evaluator] : [])].some((x) => !x.isLocal)) {

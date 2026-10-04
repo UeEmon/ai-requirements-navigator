@@ -416,12 +416,13 @@ export async function analyzeDocuments(
   if (failures.length) warnings.push(`${failures.length}件のAIで分析に失敗しました。`);
 
   let evaluation: AnalysisComparison["evaluation"] = null;
-  if (evaluator && candidates.length >= 2) {
+  // 生成AIが1つでも、評価AIがあれば審査する（単独AI＋評価AI）
+  if (evaluator && candidates.length >= 1) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeout);
     opts.onProgress?.({ type: "evaluator", providerId: evaluator.id, status: "running" });
     try {
-      const body = `${prompt}\n\n# 評価対象の分析（提示順はランダム）\n${candidates.map((c) => `### 案${c.label}\n${summarizeAnalysis(c.analysis)}`).join("\n\n")}\n\n全ての案（${candidates.map((c) => c.label).join(", ")}）を評価してください。`;
+      const body = `${prompt}\n\n# 評価対象の分析（提示順はランダム）\n${candidates.map((c) => `### 案${c.label}\n${summarizeAnalysis(c.analysis)}`).join("\n\n")}\n\n${candidates.length === 1 ? `案は1つだけです。比較ではなく、案${candidates[0]!.label}を審査し、weaknesses に見落とし・根拠の弱い点を具体的に書いてください。` : `全ての案（${candidates.map((c) => c.label).join(", ")}）を評価してください。`}`;
       const res = await evaluator.complete({ system: ANALYSIS_EVAL_SYSTEM, messages: [{ role: "user", content: body }], json: true, maxTokens: 4000, signal: ctrl.signal });
       const ev = AnalysisEvaluationContent.parse(extractJson(res.text));
       const totals: Record<string, number> = {};

@@ -803,9 +803,17 @@ function renderKeyGuide(){
 }
 /** 取得方法の項目を開いて表示する（ほかのタブから） */
 function openKeyGuide(id){ switchTab("admin"); const d=$("#kg-"+id); if(d){ d.open=true; d.scrollIntoView({block:"start"}); } }
+/** AI の使い方（モード） */
+const AI_MODES=[
+  ["multi","複数AI＋評価AI","生成AI 2つ以上が別々に案を作り、評価AIが提供元を伏せて比べ、良いところを合わせた案も作ります"],
+  ["review","単独AI＋評価AI","生成AI 1つが案を作り、評価AIが審査して、足りない点・誤りを指摘し、直した案を作ります（費用を抑えつつ確認したいとき）"],
+  ["single","単一AI","生成AI 1つが案を作ります。評価はしません（いちばん安く速い）"],
+];
+const modeOptions = cur => AI_MODES.map(([v,l])=>`<option value="${v}" ${v===cur?"selected":""}>${l}</option>`).join("");
+const modeDesc = m => (AI_MODES.find(x=>x[0]===m)||[])[2]||"";
 /** AI の名前（削除済みなら知らせる） */
 const aiLabel = id => { const p=S.providers.find(x=>x.id===id); return p ? p.label : "（削除されたAI）"; };
-const aiSummary = a => a ? (a.mode==="single" ? `単一AI：${aiLabel(a.generatorIds[0])}` : `複数AI：${a.generatorIds.map(aiLabel).join("・")}${a.evaluatorId?`／評価：${aiLabel(a.evaluatorId)}`:"／評価AIなし"}`) : "";
+const aiSummary = a => a ? (a.mode==="single" ? `単一AI：${aiLabel(a.generatorIds[0])}` : a.mode==="review" ? `単独AI＋評価AI：${aiLabel(a.generatorIds[0])}／評価：${a.evaluatorId?aiLabel(a.evaluatorId):"（未設定）"}` : `複数AI：${a.generatorIds.map(aiLabel).join("・")}${a.evaluatorId?`／評価：${aiLabel(a.evaluatorId)}`:"／評価AIなし"}`) : "";
 /** 開いているプロジェクトの AI（モード・生成AI・評価AI）を見る・変える */
 function renderProjectAi(){
   const box=$("#jAi"); if(!box||!S.project) return;
@@ -818,9 +826,10 @@ function renderProjectAi(){
     <p style="margin:6px 0">${esc(aiSummary(a))}</p>
     ${missing.length?`<p class="note err">削除された AI が選ばれています（${missing.length}件）。このままでは AI を呼び出せないため、「変更する」で選び直してください。</p>`:""}
     <div id="jaForm" hidden>
-      <div class="row"><label class="f">モード<select id="jaMode"><option value="multi" ${a.mode==="multi"?"selected":""}>複数AI＋評価AI（案を比べて選ぶ）</option><option value="single" ${a.mode==="single"?"selected":""}>単一AI</option></select></label></div>
-      <div style="margin-top:8px"><div class="hint" id="jaGenHint"></div><div class="chk">${usable.map(p=>`<label><input type="${a.mode==="single"?"radio":"checkbox"}" name="jaGen" value="${p.id}" ${a.generatorIds.includes(p.id)?"checked":""}>${vname(p)}</label>`).join("")||'<span class="hint">選べる AI がありません。「AI設定」で登録してください</span>'}</div></div>
-      <div class="row" style="margin-top:8px" id="jaEvW"><label class="f" style="min-width:260px">評価AI（案を匿名で比べて点数を付ける AI）<select id="jaEv"><option value="">使わない（案を並べて人が選ぶ）</option>${usable.map(p=>`<option value="${p.id}" ${p.id===a.evaluatorId?"selected":""}>${esc(p.label)}（${esc(vinfo(p.vendor).name)}・${esc(p.model)}）</option>`).join("")}</select></label></div>
+      <div class="row"><label class="f">モード<select id="jaMode">${modeOptions(a.mode)}</select></label></div>
+      <p class="hint" id="jaModeDesc"></p>
+      <div style="margin-top:8px"><div class="hint" id="jaGenHint"></div><div class="chk">${usable.map(p=>`<label><input type="${a.mode==="multi"?"checkbox":"radio"}" name="jaGen" value="${p.id}" ${a.generatorIds.includes(p.id)?"checked":""}>${vname(p)}</label>`).join("")||'<span class="hint">選べる AI がありません。「AI設定」で登録してください</span>'}</div></div>
+      <div class="row" style="margin-top:8px" id="jaEvW"><label class="f" style="min-width:260px"><span id="jaEvLabel">評価AI</span><select id="jaEv"><option value="" id="jaEvNone">使わない（案を並べて人が選ぶ）</option>${usable.map(p=>`<option value="${p.id}" ${p.id===a.evaluatorId?"selected":""}>${esc(p.label)}（${esc(vinfo(p.vendor).name)}・${esc(p.model)}）</option>`).join("")}</select></label></div>
       <p class="hint" id="jaWarn"></p>
       ${conf?`<p class="hint">機密プロジェクトのため、ローカルLLMだけを選べます。</p>`:""}
       <div class="row" style="margin-top:6px"><button class="btn" id="jaSave">保存</button><button class="btn ghost" id="jaCancel">やめる</button></div>
@@ -831,21 +840,26 @@ function renderProjectAi(){
   const form=$("#jaForm");
   const sync=()=>{
     const mode=$("#jaMode").value;
+    const one = mode!=="multi";
     const ins=[...form.querySelectorAll('input[name=jaGen]')], was=ins.map(i=>i.checked);
-    ins.forEach(i=>{ i.type = mode==="single"?"radio":"checkbox"; });
+    ins.forEach(i=>{ i.type = one?"radio":"checkbox"; });
     const first=was.indexOf(true);
-    ins.forEach((i,k)=>{ i.checked = mode==="single" ? k===first : was[k]; });
+    ins.forEach((i,k)=>{ i.checked = one ? k===first : was[k]; });
+    $("#jaModeDesc").textContent = modeDesc(mode);
     $("#jaEvW").hidden = mode==="single";
-    $("#jaGenHint").textContent = mode==="single" ? "生成AI（1つ）" : "生成AI（2つ以上。それぞれが案を作ります）";
+    $("#jaEvNone").hidden = mode==="review"; if(mode==="review" && !$("#jaEv").value){ const g=[...form.querySelectorAll('input[name=jaGen]:checked')].map(i=>i.value); const o=[...$("#jaEv").options].find(o=>o.value && !g.includes(o.value)); if(o) $("#jaEv").value=o.value; }
+    $("#jaEvLabel").textContent = mode==="review" ? "評価AI（案を審査し、直した案を作る AI。必須）" : "評価AI（案を匿名で比べて点数を付ける AI）";
+    $("#jaGenHint").textContent = one ? "生成AI（1つ）" : "生成AI（2つ以上。それぞれが案を作ります）";
     const gens=[...form.querySelectorAll('input[name=jaGen]:checked')].map(i=>i.value), ev=$("#jaEv").value;
-    $("#jaWarn").textContent = mode==="multi" && ev && gens.includes(ev) ? "評価AIが生成AIにも入っています。自分の案を評価することになるため、別の AI にするのがおすすめです。" : "";
+    $("#jaWarn").textContent = mode!=="single" && ev && gens.includes(ev) ? (mode==="review" ? "評価AIが生成AIと同じです。自分の案を審査することになり、見落としに気づきにくいため、別の AI にしてください。" : "評価AIが生成AIにも入っています。自分の案を評価することになるため、別の AI にするのがおすすめです。") : "";
   };
   $("#jaEdit").onclick=()=>{ form.hidden=!form.hidden; sync(); };
   $("#jaCancel").onclick=()=>{ form.hidden=true; };
   $("#jaMode").onchange=sync; form.querySelectorAll('input[name=jaGen]').forEach(i=>i.onchange=sync); $("#jaEv").onchange=sync;
   $("#jaSave").onclick=async()=>{
     const mode=$("#jaMode").value, gens=[...form.querySelectorAll('input[name=jaGen]:checked')].map(i=>i.value);
-    const body={aiConfig:{mode, generatorIds:gens, evaluatorId: mode==="multi" ? ($("#jaEv").value||null) : null}};
+    if(mode==="review" && !$("#jaEv").value){ $("#jaMsg").innerHTML=`<div class="note err">単独AI＋評価AIでは、評価AIを選んでください</div>`; return; }
+    const body={aiConfig:{mode, generatorIds:gens, evaluatorId: mode!=="single" ? ($("#jaEv").value||null) : null}};
     try{ const u=await api(`/api/projects/${S.project.id}`,{method:"PATCH",body}); S.project={...S.project, aiConfig:u.aiConfig}; toast("このプロジェクトの AI を変更しました"); renderProjectAi(); loadProjectList(); }
     catch(e){ $("#jaMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>`; }
   };
@@ -900,12 +914,18 @@ function renderProject(){
       <label class="f">名称<input id="jN" placeholder="例：美容室のWeb予約システム"></label>
       <label class="f">目的<textarea id="jP" rows="2" placeholder="何を解決したいか"></textarea></label>
       <label class="hint"><input type="checkbox" id="jC"> 機密プロジェクト（ローカルLLMのみ使用）</label>
-      <div class="row"><label class="f">モード<select id="jMode"><option value="multi">複数AI＋評価AI</option><option value="single">単一AI</option></select></label>
-      <label class="f" id="jEvW">評価AI<select id="jEv">${S.providers.map(p=>`<option value="${p.id}">${esc(p.label)}</option>`).join("")}</select></label></div>
-      <div><div class="hint">生成AI</div><div class="chk">${gens||`<span class="hint">先に「AI設定」タブで AI を登録してください</span> <button class="btn sm ghost" type="button" id="jToAi">AI設定を開く</button>`}</div></div>
+      <div class="row"><label class="f">モード<select id="jMode">${modeOptions("multi")}</select></label>
+      <label class="f" id="jEvW">評価AI<select id="jEv"><option value="" id="jEvNone">使わない</option>${S.providers.map((p,i)=>`<option value="${p.id}" ${i===2?"selected":""}>${esc(p.label)}</option>`).join("")}</select></label></div>
+      <p class="hint" id="jModeDesc">${esc(modeDesc("multi"))}</p>
+      <div><div class="hint" id="jGenHint">生成AI（2つ以上）</div><div class="chk">${gens||`<span class="hint">先に「AI設定」タブで AI を登録してください</span> <button class="btn sm ghost" type="button" id="jToAi">AI設定を開く</button>`}</div></div>
       <div><button class="btn" id="jGo">作成してヒアリングを始める</button></div><div id="jMsg"></div>
     </div>`;
-  $("#jMode").onchange=()=>{$("#jEvW").hidden=$("#jMode").value==="single"};
+  $("#jMode").onchange=()=>{ const m=$("#jMode").value, one=m!=="multi";
+    $("#jEvW").hidden=m==="single"; $("#jEvNone").hidden=m==="review"; $("#jModeDesc").textContent=modeDesc(m);
+    $("#jGenHint").textContent= one?"生成AI（1つ）":"生成AI（2つ以上）";
+    const ins=[...document.querySelectorAll('input[name=g]')], first=ins.findIndex(i=>i.checked);
+    ins.forEach((i,k)=>{ const was=i.checked; i.type=one?"radio":"checkbox"; i.checked= one ? k===Math.max(first,0) && (was||first<0) : was; });
+    if(m==="review" && !$("#jEv").value){ const o=[...$("#jEv").options].find(o=>o.value && !ins.some(i=>i.checked&&i.value===o.value)); if(o) $("#jEv").value=o.value; } };
   $("#jOpenGo").onclick=()=>openProject($("#jOpen").value.trim());
   loadProjectList();
   if($("#jToAi")) $("#jToAi").onclick=()=>switchTab("admin");
@@ -918,7 +938,7 @@ function renderProject(){
   $("#jGo").onclick=async()=>{
     const mode=$("#jMode").value; const ids=[...document.querySelectorAll('input[name=g]:checked')].map(i=>i.value);
     const body={name:$("#jN").value.trim(), purpose:$("#jP").value.trim(), confidential:$("#jC").checked,
-      aiConfig:{mode, generatorIds:ids, evaluatorId: mode==="multi"?$("#jEv").value:null}};
+      aiConfig:{mode, generatorIds:ids, evaluatorId: mode!=="single" ? ($("#jEv").value||null) : null}};
     try{ const p=await api(`/api/orgs/${S.orgId}/projects`,{method:"POST",body}); await openProject(p.id); switchTab("hear"); }
     catch(e){ $("#jMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   };
@@ -1213,7 +1233,9 @@ function readRule(pre){
 function renderRound(){
   const r=S.round, ev=r.evaluation, out=$("#roundOut");
   const crit=[["coverage","網羅性"],["accuracy","正確性"],["consistency","一貫性"],["feasibility","実現可能性"],["clarity","分かりやすさ"]];
-  let html=`<div class="panel"><h2>案の比較</h2>`;
+  // 単独AI＋評価AI: 1つの案を評価AIが審査し、直した案（改善案）を作る
+  const review = ev && r.candidates.length===1;
+  let html=`<div class="panel"><h2>${review?"案の審査":"案の比較"}</h2>${review?`<p class="hint">生成AIの案（案${esc(r.candidates[0].label)}）を評価AIが審査し、指摘を直した「改善案」を作りました。どちらからでも、チェックした項目を採用できます。</p>`:""}`;
   html+=r.warnings.map(w=>`<div class="note warn">${esc(w)}</div>`).join("");
   if(ev){
     html+=`<div class="scroll"><table class="t"><thead><tr><th>評価基準（評価：${esc(ev.evaluator||"")}）</th>${r.candidates.map(c=>`<th>案${c.label}</th>`).join("")}</tr></thead><tbody>
@@ -1222,7 +1244,7 @@ function renderRound(){
       <div class="verdict"><b>評価AIの所見：</b>${esc(ev.recommendation)}</div>`;
   }
   html+=`<div class="cands">`;
-  if(ev) html+=`<div class="cand ${ev.recommendedLabel==="merged"?"rec":""}"><header><b>統合案</b>${ev.recommendedLabel==="merged"?'<span class="pill">推奨</span>':""}<span class="score">${ev.mergedTotal}</span></header>
+  if(ev) html+=`<div class="cand ${ev.recommendedLabel==="merged"?"rec":""}"><header><b>${review?"改善案（評価AIが直した案）":"統合案"}</b>${ev.recommendedLabel==="merged"?'<span class="pill">推奨</span>':""}${review?"":`<span class="score">${ev.mergedTotal}</span>`}</header>
     ${itemsHtml(ev.merged.items,"merged")}<div><button class="btn sm" data-pick="merged">チェックした項目を採用</button></div></div>`;
   for(const c of r.candidates){
     const rec=ev&&ev.recommendedLabel===c.label, cm=ev?.comments?.[c.label];
@@ -1383,7 +1405,7 @@ const UML_CRIT=[["traceability","要件との対応"],["consistency","整合性"
 async function renderUmlCompare(show){
   const r=S.umlCompare, ev=r.evaluation, cur=show || ev?.recommendedLabel || r.candidates[0].label;
   const c=r.candidates.find(x=>x.label===cur) || r.candidates[0];
-  $("#umlMsg").innerHTML=`<div style="margin-top:12px"><h3>設計モデルの比較（作成したAIは採用後に表示）</h3>
+  $("#umlMsg").innerHTML=`<div style="margin-top:12px"><h3>${r.candidates.length>1?"設計モデルの比較（作成したAIは採用後に表示）":"評価AIによる設計モデルの審査（指摘を確かめてから採用してください）"}</h3>
     ${(r.warnings||[]).map(w=>`<div class="note warn">${esc(w)}</div>`).join("")}
     ${ev?`<div class="scroll"><table class="t"><thead><tr><th>評価基準（評価：${esc(ev.evaluator||"")}）</th>${r.candidates.map(x=>`<th>案${x.label}</th>`).join("")}</tr></thead><tbody>
       ${UML_CRIT.map(([k,n])=>`<tr><td>${n}</td>${r.candidates.map(x=>`<td class="mono">${ev.scores[x.label]?.[k]??"―"}</td>`).join("")}</tr>`).join("")}
@@ -2251,7 +2273,7 @@ function renderAnalysis(){
   if(!a){ el.innerHTML=anState.docs.length?'<p class="hint" style="margin-top:10px">資料を選んで「AIで分析する」を押してください。</p>':""; return }
   const c=current(), an=c.analysis, ev=a.evaluation, adopted=a.status==="adopted";
   const m=an.metrics;
-  const cmp = a.candidates.length>1 ? `<h3 style="margin:16px 0 6px">分析の比較（作成したAIは採用後に表示）</h3>
+  const cmp = a.candidates.length>1 || ev ? `<h3 style="margin:16px 0 6px">${a.candidates.length>1?"分析の比較（作成したAIは採用後に表示）":"評価AIによる分析の審査"}</h3>
     <div class="scroll"><table class="t"><thead><tr><th>${ev?`評価（${esc(ev.evaluator)}）`:"項目"}</th>${a.candidates.map(x=>`<th>案${x.label}${a.mapping?`<br><span class="tag">${esc(a.mapping[x.label])}</span>`:""}</th>`).join("")}</tr></thead><tbody>
       ${ev?AN_CRIT.map(([k,n])=>`<tr><td>${n}</td>${a.candidates.map(x=>`<td class="mono">${ev.scores[x.label]?.[k]??"―"}</td>`).join("")}</tr>`).join("")+`<tr><td><b>総合</b></td>${a.candidates.map(x=>`<td class="mono"><b>${ev.totals[x.label]??"―"}</b></td>`).join("")}</tr>`:""}
       <tr><td>見直し率</td>${a.candidates.map(x=>`<td class="mono">${pct(x.analysis.metrics.reviewRate)}</td>`).join("")}</tr>

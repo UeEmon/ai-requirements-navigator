@@ -28,7 +28,7 @@ const InviteInput = z.object({ email, role: RoleSchema, name: z.string().trim().
 const MemberPatchInput = z.object({ role: RoleSchema.optional(), name: z.string().trim().max(100).optional() }).strict();
 const OrgPatchInput = z.object({ name: z.string().trim().min(1).max(200) }).strict();
 const AiConfigInput = z.object({
-  mode: z.enum(["single", "multi"]),
+  mode: z.enum(["single", "review", "multi"]),
   generatorIds: z.array(z.string()).min(1).max(4),
   evaluatorId: z.string().nullable().default(null),
 });
@@ -47,14 +47,16 @@ const ProjectPatchInput = z
  * - 組織に登録された AI だけ／単一AIは生成AIが1つ／複数AIは2つ以上／評価AIは複数AIのときだけ（単一AIでは使わない）
  * - 機密プロジェクトはローカルLLMだけ
  */
-export async function checkAiConfig(store: Store, orgId: string, cfg: { mode: "single" | "multi"; generatorIds: string[]; evaluatorId: string | null }, confidential: boolean) {
+export async function checkAiConfig(store: Store, orgId: string, cfg: { mode: "single" | "review" | "multi"; generatorIds: string[]; evaluatorId: string | null }, confidential: boolean) {
   const creds = new Map((await store.listCredentials(orgId)).map((x) => [x.id, x]));
   const generatorIds = [...new Set(cfg.generatorIds)];
-  const evaluatorId = cfg.mode === "multi" ? cfg.evaluatorId : null;
+  const evaluatorId = cfg.mode === "single" ? null : cfg.evaluatorId;
   const ids = [...generatorIds, ...(evaluatorId ? [evaluatorId] : [])];
   const unknown = ids.filter((id) => !creds.has(id));
   if (unknown.length) throw new HTTPException(400, { message: `組織に登録されていないAIです: ${unknown.join(", ")}` });
   if (cfg.mode === "single" && generatorIds.length !== 1) throw new HTTPException(400, { message: "単一AIモードでは生成AIを1つだけ選んでください" });
+  if (cfg.mode === "review" && generatorIds.length !== 1) throw new HTTPException(400, { message: "単独AI＋評価AIモードでは生成AIを1つだけ選んでください" });
+  if (cfg.mode === "review" && !evaluatorId) throw new HTTPException(400, { message: "単独AI＋評価AIモードでは評価AIを選んでください" });
   if (cfg.mode === "multi" && generatorIds.length < 2) throw new HTTPException(400, { message: "複数AIモードでは生成AIを2つ以上選んでください" });
   if (confidential && ids.some((id) => !creds.get(id)!.isLocal)) throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを選べます" });
   return { mode: cfg.mode, generatorIds, evaluatorId };

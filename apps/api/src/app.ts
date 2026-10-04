@@ -60,6 +60,8 @@ import {
   type ProviderCredential,
   type Requirement,
   type Store,
+  evaluatorIdOf,
+  generatorIdsOf,
 } from "./store.js";
 import { checkBudget, usageReport } from "./usage.js";
 
@@ -128,7 +130,7 @@ const ProjectInput = z.object({
   purpose: z.string().max(2000).default(""),
   confidential: z.boolean().default(false),
   aiConfig: z.object({
-    mode: z.enum(["single", "multi"]),
+    mode: z.enum(["single", "review", "multi"]),
     generatorIds: z.array(z.string()).min(1).max(4),
     evaluatorId: z.string().nullable().default(null),
   }),
@@ -732,9 +734,9 @@ export function createApp(deps: AppDeps) {
     const phase = phaseOrThrow(input.phaseKey ?? project.phaseKey);
 
     // 今月の上限: 組織の上限なら停止、AI個別の上限ならそのAIを外して続行
-    const evaluatorId = project.aiConfig.mode === "multi" ? project.aiConfig.evaluatorId : null;
-    const b = await budget(project.orgId, [...project.aiConfig.generatorIds, ...(evaluatorId ? [evaluatorId] : [])]);
-    const generatorIds = project.aiConfig.generatorIds.filter((id) => !b.excluded.has(id));
+    const evaluatorId = evaluatorIdOf(project.aiConfig);
+    const b = await budget(project.orgId, [...generatorIdsOf(project.aiConfig), ...(evaluatorId ? [evaluatorId] : [])]);
+    const generatorIds = generatorIdsOf(project.aiConfig).filter((id) => !b.excluded.has(id));
     if (!generatorIds.length) throw new HTTPException(429, { message: `生成AIがすべて今月の上限に達しています。${b.warnings.join(" ")}` });
     const useEvaluator = evaluatorId && !b.excluded.has(evaluatorId) ? evaluatorId : null;
     if (evaluatorId && !useEvaluator) b.warnings.push("評価AIが使えないため、今回は評価なしで案を表示します。");
@@ -853,20 +855,21 @@ export function createApp(deps: AppDeps) {
   async function executeUml(p: Project, actor: string, report?: (pr: JobProgress) => Promise<void>) {
     const reqs = await reqsForUml(p);
     if (!reqs.length) throw new HTTPException(400, { message: "要件がまだありません。ヒアリングで要件を確定してから生成してください" });
-    const evaluatorId = p.aiConfig.mode === "multi" ? p.aiConfig.evaluatorId : null;
-    const ids = [...new Set([...p.aiConfig.generatorIds, ...(p.aiConfig.evaluatorId ? [p.aiConfig.evaluatorId] : [])])];
+    const evaluatorId = evaluatorIdOf(p.aiConfig);
+    const ids = [...new Set([...generatorIdsOf(p.aiConfig), ...(evaluatorId ? [evaluatorId] : [])])];
     const b = await budget(p.orgId, ids);
     const usable = ids.filter((id) => !b.excluded.has(id));
     if (!usable.length) throw new HTTPException(429, { message: `使えるAIがすべて今月の上限に達しています。${b.warnings.join(" ")}` });
     const labels = await labelsOf(p.orgId);
-    const gens = p.aiConfig.generatorIds.filter((id) => !b.excluded.has(id));
+    const gens = generatorIdsOf(p.aiConfig).filter((id) => !b.excluded.has(id));
     if (p.confidential) {
       const all = await providersOf(p.orgId, usable);
       if (all.some((x) => !x.isLocal)) throw new HTTPException(400, { message: "機密プロジェクトではローカルLLMだけを使えます" });
     }
 
-    // 複数AIモードで生成AIが2つ以上使えるときは、比較して利用者が選ぶ
-    if (p.aiConfig.mode === "multi" && gens.length >= 2) {
+    // 複数AIモードで生成AIが2つ以上使えるときは、比較して利用者が選ぶ。
+    // 単独AI＋評価AIでは、1つの案を評価AIが審査して、利用者が採用する
+    if ((p.aiConfig.mode === "multi" && gens.length >= 2) || (p.aiConfig.mode === "review" && evaluatorId && !b.excluded.has(evaluatorId) && gens.length >= 1)) {
       const useEvaluator = evaluatorId && !b.excluded.has(evaluatorId) ? evaluatorId : null;
       if (evaluatorId && !useEvaluator) b.warnings.push("評価AIが使えないため、今回は評価なしで案を表示します。");
       const tracker = progressTracker(labels, gens, useEvaluator, report);

@@ -260,6 +260,47 @@ describe("プロジェクトの整理", () => {
     expect(log.entries[log.entries.length - 1].detail).toMatchObject({ before: { mode: "multi", generators: ["A", "B"], evaluator: "評価" }, after: { evaluator: "評価2" } });
   });
 
+  it("単独AI＋評価AI: 生成AI 1つの案を評価AIが審査し、直した案を作る（ヒアリング・UML・資料分析）", async () => {
+    const t = setup();
+    const orgId = (await (await t.app.request("/api/orgs", json({ name: "組織" }))).json()).id;
+    const as = (role: string, init: RequestInit = {}) => ({ ...init, headers: { ...(init.headers as Record<string, string>), "x-org-id": orgId, "x-role": role, "x-user-id": `u-${role}` } });
+    const add = async (label: string) => (await (await t.app.request(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor: "mock", model: "mock", label })))).json()).id as string;
+    const [g, e, g2] = [await add("生成"), await add("審査"), await add("生成2")];
+    const create = (aiConfig: unknown) => t.app.request(`/api/orgs/${orgId}/projects`, as("editor", json({ name: "予約", purpose: "電話予約を減らす", aiConfig })));
+    // 決まり: 生成AIは1つ、評価AIは必須
+    expect((await (await create({ mode: "review", generatorIds: [g, g2], evaluatorId: e })).json()).error).toContain("生成AIを1つだけ");
+    expect((await (await create({ mode: "review", generatorIds: [g], evaluatorId: null })).json()).error).toContain("評価AIを選んで");
+    const r = await create({ mode: "review", generatorIds: [g], evaluatorId: e });
+    expect(r.status).toBe(201);
+    const p = await r.json();
+    expect(p.aiConfig).toEqual({ mode: "review", generatorIds: [g], evaluatorId: e });
+
+    // ヒアリング: 案は1つ、評価AIが審査して改善案（merged）を作る
+    const round = await (await t.app.request(`/api/projects/${p.id}/rounds`, as("editor", json({ answer: "電話予約が多くて困っている" })))).json();
+    expect(round.candidates).toHaveLength(1);
+    expect(round.evaluation).toBeTruthy();
+    expect(Object.keys(round.evaluation.scores)).toEqual([round.candidates[0].label]);
+    expect(round.evaluation.merged.items.length).toBeGreaterThan(0);
+    const dec = await t.app.request(`/api/rounds/${round.id}/decision`, as("editor", json({ pick: "merged" })));
+    expect(dec.status).toBe(201);
+    // 使った量は生成AIと評価AIの両方に付く
+    const usage = await (await t.app.request(`/api/orgs/${orgId}/usage`, as("admin"))).json();
+    const used = Object.fromEntries(usage.providers.map((x: { label: string; calls: number }) => [x.label, x.calls]));
+    expect(used).toMatchObject({ 生成: 1, 審査: 1, 生成2: 0 });
+
+    // UML: 1つの設計モデルを評価AIが審査し、利用者が採用する
+    const uml = await (await t.app.request(`/api/projects/${p.id}/uml/generate`, as("editor", { method: "POST" }))).json();
+    expect(uml.mode).toBe("compare");
+    expect(uml.candidates).toHaveLength(1);
+    expect(uml.evaluation).toBeTruthy();
+    expect((await t.app.request(`/api/uml-rounds/${uml.umlRoundId}/adopt`, as("editor", json({ label: uml.candidates[0].label, reason: "審査済み" })))).status).toBe(201);
+
+    // 単一AIに変えると、評価AIは使わない
+    await t.app.request(`/api/projects/${p.id}`, as("editor", json({ aiConfig: { mode: "single", generatorIds: [g], evaluatorId: e } }, "PATCH")));
+    const r2 = await (await t.app.request(`/api/projects/${p.id}/rounds`, as("editor", json({ answer: "店長と客が使う", phaseKey: "actors" })))).json();
+    expect(r2.evaluation).toBeNull();
+  });
+
   it("開発用ログインでは、メンバーの設定は使わない（一覧と招待は試せる）", async () => {
     const t = setup();
     const orgId = (await (await t.app.request("/api/orgs", json({ name: "組織" }))).json()).id;
