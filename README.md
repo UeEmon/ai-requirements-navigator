@@ -87,7 +87,7 @@ scripts/         ライセンス検査、テンプレート初期化
 | データ | `STORE` | postgres コンテナ | RDS |
 | APIキー暗号化 | `KEY_ENCRYPTION` | `local`（MASTER_KEY） | `aws-kms` |
 | 成果物 | `STORAGE` | ボリューム | S3 |
-| 認証 | `AUTH_MODE` | `dev` / `oidc`（Keycloak） | `oidc`（Cognito） |
+| 認証 | `AUTH_MODE` | `dev` / `local`（要件ナビのログイン） / `oidc`（Keycloak） | `oidc`（Cognito） / `local` |
 
 詳しくは [ADR 0003](docs/adr/0003-same-image-aws-and-docker.md)。
 

@@ -6,7 +6,7 @@
 #   3. docker compose up -d   → http://localhost:8787
 #
 # 版は .env の ARN_VERSION で選ぶ（例: 0.1.0。main は最新の開発版）。更新は docker compose pull → docker compose up -d
-# 既定では、このPCからだけ接続できる（127.0.0.1）。ほかのPCに公開するのは AUTH_MODE=oidc のときだけにする
+# 既定では、このPCからだけ接続できる（127.0.0.1）。ほかのPCに公開するのは AUTH_MODE=local か oidc のときだけにする
 
 services:
   app:
@@ -25,6 +25,9 @@ services:
       STORAGE: local
       STORAGE_DIR: /data/artifacts
       AUTH_MODE: ${AUTH_MODE:-dev}
+      LOCAL_SESSION_HOURS: ${LOCAL_SESSION_HOURS:-12}
+      LOCAL_PASSWORD_MIN_LENGTH: ${LOCAL_PASSWORD_MIN_LENGTH:-10}
+      LOCAL_SETUP_TOKEN: ${LOCAL_SETUP_TOKEN:-}
     volumes:
       - artifacts:/data/artifacts
     depends_on:

@@ -290,31 +290,31 @@ export function handoff(ctx: ImplementationContext, deps: { scope?: () => ScopeA
 
   function routes(app: Hono<any>) {
     app.get("/api/projects/:id/tests", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       const t = await tests(p);
       return c.json({ cases: t.cases, trace: t.trace, counts: t.counts, stories: t.stories.length });
     });
 
     app.get("/api/projects/:id/tests.csv", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "export");
       const t = await tests(p);
       const utf8 = encodeURIComponent(`${p.name}_テストケース.csv`);
       return c.body(testCasesCsv(t.cases), 200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="tests.csv"; filename*=UTF-8''${utf8}` });
     });
 
     app.get("/api/projects/:id/design/tables", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       const { model: _m, ...rest } = await designTables(p);
       return c.json(rest);
     });
 
     app.get("/api/projects/:id/readiness", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json(await readiness(p));
     });
 
     app.get("/api/projects/:id/handoff.json", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "export");
       const b = await bundle(p);
       const utf8 = encodeURIComponent(`${p.name}_引き継ぎ.json`);
       return c.body(JSON.stringify(b, null, 2), 200, { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="handoff.json"; filename*=UTF-8''${utf8}` });

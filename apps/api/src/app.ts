@@ -42,6 +42,8 @@ import { connect } from "./connect.js";
 import { keySetup, type GoogleOAuthConfig } from "./key-setup.js";
 import { repoSetup } from "./repo-setup.js";
 import { checkAiConfig, orgAdmin, resolveMember, seedAdmin } from "./org-admin.js";
+import type { LocalAuth } from "./local-auth.js";
+import { permissionLabel, permissionsOf, type Permission } from "./permissions.js";
 import { handoff } from "./handoff.js";
 import { scope } from "./scope.js";
 import { nfrSheet } from "./nfr-sheet.js";
@@ -86,6 +88,8 @@ export interface AppDeps {
   googleOAuth?: GoogleOAuthConfig;
   /** API キーの自動発行で、Google の処理の完了を確かめる間隔（テスト用） */
   keySetupPollMs?: number;
+  /** 要件ナビのログイン（AUTH_MODE=local。メールアドレスとパスワード） */
+  localAuth?: LocalAuth;
   /** ログイン画面用（AUTH_MODE=oidc のとき） */
   oidc?: { client: OidcClient; orgClaim: string; roleClaim: string };
   /** このサーバーの外から見たURL（開発用パッケージや AGENTS.md に書く） */
@@ -100,6 +104,7 @@ export interface AppDeps {
 }
 
 type Env = { Variables: { principal: Principal; token?: ApiToken } };
+const ROLE_NAME: Record<Role, string> = { admin: "管理者", editor: "編集者", reviewer: "レビュー担当", viewer: "閲覧者" };
 
 /* ------------------------------------------------------------------ */
 /* 入力の形                                                             */
@@ -262,7 +267,7 @@ export function createApp(deps: AppDeps) {
       keyAutoIssue: { openai: true, gemini: Boolean(deps.googleOAuth) },
       // 自動で取得できない API キー・トークンの取得方法
       keyGuides: keyGuides({ googleOAuth: Boolean(deps.googleOAuth) }),
-      auth: deps.devAuth ? "dev" : "oidc",
+      auth: deps.devAuth ? "dev" : deps.localAuth ? "local" : "oidc",
       oidc: deps.oidc ? { orgClaim: deps.oidc.orgClaim, roleClaim: deps.oidc.roleClaim } : null,
     }),
   );
@@ -314,16 +319,23 @@ export function createApp(deps: AppDeps) {
   app.post("/api/orgs", async (c) => {
     const token = c.req.header("x-bootstrap-token");
     const allowed = deps.bootstrapToken ? token === deps.bootstrapToken : deps.devAuth;
-    if (!allowed) throw new HTTPException(403, { message: "組織の作成には初期セットアップ用トークンが必要です" });
+    if (!allowed) throw new HTTPException(403, { message: deps.localAuth ? "組織の作成には初期セットアップ用トークン（BOOTSTRAP_TOKEN）が必要です。最初の組織は、ログイン画面の「初期設定」で作れます" : "組織の作成には初期セットアップ用トークンが必要です" });
     const { name, adminEmail } = await body(
       c,
       z.object({ name: z.string().min(1).max(200), adminEmail: z.string().trim().toLowerCase().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "メールアドレスの形式が正しくありません").optional() }),
     );
+    // 管理者は組織に1人以上。要件ナビのログインでは、最初の管理者のメールアドレスが必須
+    if (deps.localAuth && !adminEmail) throw new HTTPException(400, { message: "最初の管理者のメールアドレスを入れてください（組織には管理者が1人以上必要です）" });
     const org = await store.createOrg(name);
     // 最初の管理者を招待しておく（ログイン画面で、このメールアドレスでログインすると管理者になる）
     const admin = await seedAdmin(store, org.id, adminEmail);
     await audit(store, { orgId: org.id, actor: "bootstrap", action: "org.create", targetType: "org", targetId: org.id, detail: { name, adminEmail: adminEmail ?? null } });
-    return c.json({ ...org, adminInvited: admin ? admin.email : null }, 201);
+    // 要件ナビのログイン: アカウントがなければ、パスワードを決めるリンクを返す
+    let adminSetupUrl: string | null = null;
+    if (deps.localAuth && admin && !(await deps.localAuth.hasPassword(admin.email))) {
+      adminSetupUrl = (await deps.localAuth.issueLink({ member: admin, actor: "bootstrap", baseUrl: deps.publicUrl ?? new URL(c.req.url).origin })).url;
+    }
+    return c.json({ ...org, adminInvited: admin ? admin.email : null, adminSetupUrl }, 201);
   });
 
   /**
@@ -335,33 +347,52 @@ export function createApp(deps: AppDeps) {
     return c.json((await store.listOrgs()).map((o) => ({ id: o.id, name: o.name, createdAt: o.createdAt })));
   });
 
+  // 要件ナビのログイン（初期設定・ログイン・招待のリンク）。ログイン前に使う
+  deps.localAuth?.publicRoutes(app, body);
+
+  /**
+   * 利用者を確かめ、使う組織・役割・権限を決める。
+   * ログイン画面（local / oidc）のときは、組織と役割を「組織のメンバー」から決める（wanted: 画面で選んだ組織 x-org-id）
+   */
+  const principalFor = async (req: Request, wanted: string | undefined) => {
+    const raw = await deps.authenticate(req);
+    if (!raw) return null;
+    const p = deps.devAuth ? raw : await resolveMember(store, raw, wanted, nowFn());
+    // 組織が見つからないときは既定の権限（各窓口が「見つかりません」を返す）
+    const org = p.orgId ? await store.getOrg(p.orgId) : null;
+    p.permissions = p.orgId ? permissionsOf(org?.rolePermissions, p.role) : [];
+    return p;
+  };
+
   /* ---------- 以降は認証必須 ---------- */
   app.use("/api/*", async (c, next) => {
     // 外部連携 API（/api/v1）はトークンでも使えるため、connect.ts の認証に任せる
     if (c.req.path.startsWith("/api/v1/")) return next();
     // Google からの戻り先（ブラウザの移動）。暗号化した state で組織と利用者を確かめる（key-setup.ts）
     if (c.req.path === "/api/oauth/google/callback") return next();
-    const raw = await deps.authenticate(c.req.raw);
-    if (!raw) throw new HTTPException(401, { message: "ログインが必要です" });
-    // ログイン画面のときは、組織と役割を「組織のメンバー」から決める（画面で選んだ組織は x-org-id）
-    const p = deps.devAuth ? raw : await resolveMember(store, raw, c.req.header("x-org-id") || undefined, nowFn());
+    const p = await principalFor(c.req.raw, c.req.header("x-org-id") || undefined);
+    if (!p) throw new HTTPException(401, { message: "ログインが必要です" });
     c.set("principal", p);
     await next();
   });
+  deps.localAuth?.routes(app, body);
 
   const actorOf = (c: Context<Env>) => c.get("principal").userId;
-  const need = (c: Context<Env>, orgId: string, role: Role) => {
+  /** 役割ごとの権限（組織の設定。permissions.ts）で、操作できるかを確かめる */
+  const need = (c: Context<Env>, orgId: string, perm: Permission) => {
     const p = c.get("principal");
     if (p.orgId !== orgId) throw new HTTPException(404, { message: "見つかりません" });
-    if (!hasRole(p, role)) throw new HTTPException(403, { message: `この操作には ${role} 以上の権限が必要です` });
+    if (!(p.permissions ?? permissionsOf(null, p.role)).includes(perm)) {
+      throw new HTTPException(403, { message: `この操作には「${permissionLabel(perm)}」の権限が必要です（あなたの役割: ${ROLE_NAME[p.role] ?? p.role}）。組織の管理者に相談してください` });
+    }
   };
-  const loadProject = async (c: Context<Env>, id: string, role: Role): Promise<Project> => {
+  const loadProject = async (c: Context<Env>, id: string, role: Permission): Promise<Project> => {
     const p = await store.getProject(id);
     if (!p) throw new HTTPException(404, { message: "プロジェクトが見つかりません" });
     need(c, p.orgId, role);
     return p;
   };
-  const loadRequirement = async (c: Context<Env>, id: string, role: Role) => {
+  const loadRequirement = async (c: Context<Env>, id: string, role: Permission) => {
     const r = await store.getRequirement(id);
     if (!r || r.deletedAt) throw new HTTPException(404, { message: "要件が見つかりません" });
     const p = await loadProject(c, r.projectId, role);
@@ -425,7 +456,7 @@ export function createApp(deps: AppDeps) {
 
   app.get("/api/orgs/:orgId", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "viewer");
+    need(c, orgId, "project.view");
     const org = await store.getOrg(orgId);
     if (!org) throw new HTTPException(404, { message: "見つかりません" });
     return c.json(org);
@@ -434,7 +465,7 @@ export function createApp(deps: AppDeps) {
   /** 組織全体の月間トークン上限（null で上限なし） */
   app.put("/api/orgs/:orgId/limits", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "admin");
+    need(c, orgId, "org.settings");
     const { monthlyTokenLimit } = await body(c, LimitInput);
     const before = await store.getOrg(orgId);
     const org = await store.setOrgLimit(orgId, monthlyTokenLimit);
@@ -452,7 +483,7 @@ export function createApp(deps: AppDeps) {
 
   app.get("/api/orgs/:orgId/providers", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "viewer");
+    need(c, orgId, "project.view");
     return c.json((await store.listCredentials(orgId)).map(publicCredential));
   });
 
@@ -496,14 +527,14 @@ export function createApp(deps: AppDeps) {
 
   app.post("/api/orgs/:orgId/providers", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "admin");
+    need(c, orgId, "ai.manage");
     return c.json(await registerCredential(c, orgId, await body(c, CredentialInput)), 201);
   });
 
   /** 登録済みAIの変更（モデル名・表示名・接続先・APIキー・月間上限） */
   app.patch("/api/orgs/:orgId/providers/:id", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "admin");
+    need(c, orgId, "ai.manage");
     const input = await body(c, CredentialPatchInput);
     const current = (await store.listCredentials(orgId)).find((x) => x.id === c.req.param("id"));
     if (!current) throw new HTTPException(404, { message: "見つかりません" });
@@ -542,7 +573,7 @@ export function createApp(deps: AppDeps) {
 
   app.delete("/api/orgs/:orgId/providers/:id", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "admin");
+    need(c, orgId, "ai.manage");
     const current = (await store.listCredentials(orgId)).find((x) => x.id === c.req.param("id"));
     const ok = current ? await store.deleteCredential(orgId, current.id) : false;
     if (!ok || !current) throw new HTTPException(404, { message: "見つかりません" });
@@ -559,7 +590,7 @@ export function createApp(deps: AppDeps) {
 
   app.get("/api/orgs/:orgId/usage", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "admin");
+    need(c, orgId, "usage.view");
     const org = await store.getOrg(orgId);
     return c.json(await usageReport(store, orgId, org?.monthlyTokenLimit ?? null, await store.listCredentials(orgId), tz, nowFn()));
   });
@@ -567,7 +598,7 @@ export function createApp(deps: AppDeps) {
   /** 監査ログ（新しい順。before に前回の最後の id を渡すと続きを返す） */
   app.get("/api/orgs/:orgId/audit", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "admin");
+    need(c, orgId, "audit.view");
     const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200);
     const entries = await store.listAudit(orgId, { limit, before: c.req.query("before") || undefined, action: c.req.query("action") || undefined });
     return c.json({ entries, next: entries.length === limit ? entries.at(-1)!.id : null });
@@ -580,7 +611,7 @@ export function createApp(deps: AppDeps) {
   /** 組織のプロジェクトの一覧（名前で選んで開くため） */
   app.get("/api/orgs/:orgId/projects", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "viewer");
+    need(c, orgId, "project.view");
     const archived = c.req.query("archived"); // 省略: 使用中だけ / 1: アーカイブだけ / all: すべて
     const list = (await store.listProjects(orgId)).filter((p) => (archived === "all" ? true : archived === "1" ? Boolean(p.archivedAt) : !p.archivedAt));
     return c.json(
@@ -590,7 +621,7 @@ export function createApp(deps: AppDeps) {
 
   app.post("/api/orgs/:orgId/projects", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "editor");
+    need(c, orgId, "project.create");
     const input = await body(c, ProjectInput);
     const aiConfig = await checkAiConfig(store, orgId, input.aiConfig, input.confidential);
     const project = await store.createProject({ orgId, ...input, aiConfig });
@@ -608,7 +639,7 @@ export function createApp(deps: AppDeps) {
   /** サンプル事例（本システム自身の要求事項）をプロジェクトとして読み込む。AIは呼び出さない */
   app.post("/api/orgs/:orgId/samples", async (c) => {
     const orgId = c.req.param("orgId");
-    need(c, orgId, "editor");
+    need(c, orgId, "project.create");
     const input = await body(c, z.object({ sample: z.enum(Object.keys(SAMPLES) as [keyof typeof SAMPLES]).default("requirements-navigator") }));
     // プロジェクトのAIの構成は、組織に登録済みのAIから決める（3つ以上: 複数AI＋評価AI、2つ: 複数AI、1つ: 単一AI）
     const creds = (await store.listCredentials(orgId)).filter((x) => x.vendor !== "mock" || deps.allowMock);
@@ -631,13 +662,13 @@ export function createApp(deps: AppDeps) {
   });
 
   app.get("/api/projects/:id", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "viewer");
+    const p = await loadProject(c, c.req.param("id"), "project.view");
     return c.json({ ...p, phase: PHASES.find((x) => x.key === p.phaseKey) ?? null });
   });
 
   /** フェーズを移動する（次へ進む・前に戻る・完了にする） */
   app.post("/api/projects/:id/phase", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "editor");
+    const p = await loadProject(c, c.req.param("id"), "requirements.edit");
     const { phaseKey } = await body(c, PhaseInput);
     if (phaseKey !== "done") phaseOrThrow(phaseKey);
     await store.setProjectPhase(p.id, phaseKey);
@@ -646,7 +677,7 @@ export function createApp(deps: AppDeps) {
   });
 
   app.post("/api/projects/:id/ambiguity", async (c) => {
-    await loadProject(c, c.req.param("id"), "viewer");
+    await loadProject(c, c.req.param("id"), "project.view");
     const { text } = await body(c, z.object({ text: z.string().max(10_000) }));
     return c.json(detectAmbiguity(text));
   });
@@ -666,7 +697,7 @@ export function createApp(deps: AppDeps) {
 
   /** 保存済みの質問ガイド（なければAIを使わない既定のもの）。stale=true なら要件が増減している */
   app.get("/api/projects/:id/guide", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "viewer");
+    const p = await loadProject(c, c.req.param("id"), "project.view");
     const phase = phaseOrThrow(c.req.query("phaseKey") ?? (p.phaseKey === "done" ? PHASES.at(-1)!.key : p.phaseKey));
     const ctx = await guideContext(p, phase);
     const saved = (await store.latestGuides(p.id)).find((g) => g.phaseKey === phase.key);
@@ -675,7 +706,7 @@ export function createApp(deps: AppDeps) {
 
   /** AIが観点の網羅状況を判定し、次の質問・回答候補・用語解説を作る */
   app.post("/api/projects/:id/guide", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "editor");
+    const p = await loadProject(c, c.req.param("id"), "requirements.edit");
     const input = await body(c, GuideInput);
     const phase = phaseOrThrow(input.phaseKey ?? (p.phaseKey === "done" ? PHASES.at(-1)!.key : p.phaseKey));
     const ctx = await guideContext(p, phase);
@@ -706,7 +737,7 @@ export function createApp(deps: AppDeps) {
 
   /** 全フェーズの観点の網羅状況 */
   app.get("/api/projects/:id/coverage", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "viewer");
+    const p = await loadProject(c, c.req.param("id"), "project.view");
     const guides = await store.latestGuides(p.id);
     const phases = PHASES.map((ph) => {
       const g = guides.find((x) => x.phaseKey === ph.key);
@@ -1004,7 +1035,8 @@ export function createApp(deps: AppDeps) {
   });
   const cn = connect(moduleCtx, ho, {
     scope: () => sc,
-    authenticate: deps.authenticate,
+    // 利用者のトークンで /api/v1 を使うときも、組織と権限は画面と同じ決め方にする
+    authenticate: (req) => principalFor(req, req.headers.get("x-org-id") || undefined),
     encryptor: deps.encryptor,
     publicUrl: deps.publicUrl,
     allowPrivateWebhooks: deps.webhookAllowPrivate,
@@ -1082,6 +1114,7 @@ export function createApp(deps: AppDeps) {
   repoSetup(moduleCtx, { filesOf: (c, p) => cn.agentFiles(c, p), pollMs: deps.keySetupPollMs }).routes(app);
   orgAdmin(moduleCtx, {
     devAuth: deps.devAuth,
+    local: deps.localAuth,
     publicUrl: deps.publicUrl,
     usageOf: async (orgId) => {
       const org = await store.getOrg(orgId);
@@ -1110,7 +1143,7 @@ export function createApp(deps: AppDeps) {
   app.get("/api/jobs/:id", async (c) => {
     const job = await store.getJob(c.req.param("id"));
     if (!job) throw new HTTPException(404, { message: "見つかりません" });
-    need(c, job.orgId, "viewer");
+    need(c, job.orgId, "project.view");
     if (job.createdBy !== actorOf(c) && !hasRole(c.get("principal"), "admin")) throw new HTTPException(404, { message: "見つかりません" });
     return c.json({
       id: job.id,
@@ -1131,7 +1164,7 @@ export function createApp(deps: AppDeps) {
   /* ------------------------------------------------------------------ */
 
   app.post("/api/projects/:id/rounds", async (c) => {
-    const project = await loadProject(c, c.req.param("id"), "editor");
+    const project = await loadProject(c, c.req.param("id"), "requirements.edit");
     const input = await body(c, RoundInput);
     if (wantsAsync(c)) {
       // 受け付け時点で、上限やフェーズの誤りはすぐに返す
@@ -1146,7 +1179,7 @@ export function createApp(deps: AppDeps) {
   app.post("/api/rounds/:id/decision", async (c) => {
     const round = await store.getRound(c.req.param("id"));
     if (!round) throw new HTTPException(404, { message: "見つかりません" });
-    const project = await loadProject(c, round.projectId, "editor");
+    const project = await loadProject(c, round.projectId, "requirements.edit");
     if (round.status === "decided") throw new HTTPException(409, { message: "このラウンドは決定済みです" });
     const input = await body(c, DecisionInput);
 
@@ -1219,7 +1252,7 @@ export function createApp(deps: AppDeps) {
   });
 
   app.get("/api/projects/:id/uml", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "viewer");
+    const p = await loadProject(c, c.req.param("id"), "project.view");
     const { diagrams, rec } = await diagramsOf(p);
     const labels = await labelsOf(p.orgId);
     return c.json({
@@ -1230,7 +1263,7 @@ export function createApp(deps: AppDeps) {
 
   /** AIが要件から設計モデル（クラス・シーケンス・状態・アクティビティ）を作る */
   app.post("/api/projects/:id/uml/generate", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "editor");
+    const p = await loadProject(c, c.req.param("id"), "requirements.edit");
     if (wantsAsync(c)) {
       if (!(await reqsForUml(p)).length) throw new HTTPException(400, { message: "要件がまだありません。ヒアリングで要件を確定してから生成してください" });
       await budget(p.orgId, []);
@@ -1243,7 +1276,7 @@ export function createApp(deps: AppDeps) {
   app.post("/api/uml-rounds/:id/adopt", async (c) => {
     const round = await store.getUmlRound(c.req.param("id"));
     if (!round) throw new HTTPException(404, { message: "見つかりません" });
-    const p = await loadProject(c, round.projectId, "editor");
+    const p = await loadProject(c, round.projectId, "requirements.edit");
     if (round.status === "decided") throw new HTTPException(409, { message: "この比較は決定済みです" });
     const input = await body(c, UmlAdoptInput);
     const cand = round.candidates.find((x) => x.label === input.label);
@@ -1275,14 +1308,14 @@ export function createApp(deps: AppDeps) {
   /* ------------------------------------------------------------------ */
 
   app.get("/api/projects/:id/requirements", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "viewer");
+    const p = await loadProject(c, c.req.param("id"), "project.view");
     // 機能要件・非機能要件は EARS の文型と表現を検査した結果を付ける
     return c.json((await store.listRequirements(p.id)).map((r) => ({ ...r, lint: lintOf(r) })));
   });
 
   /** 要件の手直し。変更前の内容は版として残る */
   app.patch("/api/requirements/:id", async (c) => {
-    const { r, p } = await loadRequirement(c, c.req.param("id"), "editor");
+    const { r, p } = await loadRequirement(c, c.req.param("id"), "requirements.edit");
     await assertNotBaselined(p);
     const input = await body(c, RequirementPatchInput);
     const { reason, ...patch } = input;
@@ -1312,7 +1345,7 @@ export function createApp(deps: AppDeps) {
 
   /** 要件の削除（論理削除。番号は再利用しない） */
   app.delete("/api/requirements/:id", async (c) => {
-    const { r, p } = await loadRequirement(c, c.req.param("id"), "editor");
+    const { r, p } = await loadRequirement(c, c.req.param("id"), "requirements.edit");
     await assertNotBaselined(p);
     await store.deleteRequirement(r.id);
     await audit(store, {
@@ -1327,12 +1360,12 @@ export function createApp(deps: AppDeps) {
   });
 
   app.get("/api/requirements/:id/versions", async (c) => {
-    const { r } = await loadRequirement(c, c.req.param("id"), "viewer");
+    const { r } = await loadRequirement(c, c.req.param("id"), "project.view");
     return c.json({ current: r, history: await store.listRequirementVersions(r.id) });
   });
 
   app.get("/api/projects/:id/decisions", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "viewer");
+    const p = await loadProject(c, c.req.param("id"), "project.view");
     return c.json(await store.listDecisions(p.id));
   });
 
@@ -1384,14 +1417,14 @@ export function createApp(deps: AppDeps) {
 
   for (const format of ["md", "docx", "pdf"] as const) {
     app.get(`/api/projects/:id/spec.${format}`, async (c) => {
-      const p = await loadProject(c, c.req.param("id"), "viewer");
+      const p = await loadProject(c, c.req.param("id"), "export");
       return fileResponse(c, p, format, await renderSpec(p, format, []));
     });
   }
 
   /** 仕様書を出力し、保存先（ローカルボリューム / S3）に版として残す */
   app.post("/api/projects/:id/exports", async (c) => {
-    const p = await loadProject(c, c.req.param("id"), "editor");
+    const p = await loadProject(c, c.req.param("id"), "requirements.edit");
     const input = await body(c, ExportInput);
     const images: SpecImage[] = input.images.map((i) => ({ title: i.title, png: Buffer.from(i.png, "base64"), width: i.width, height: i.height }));
     for (const img of images) {

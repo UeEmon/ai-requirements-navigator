@@ -43,11 +43,49 @@ import type {
   Review,
   OrgMember,
   OrgMemberPatch,
+  OrgPatch,
+  LocalUser,
+  LocalUserPatch,
+  LocalSession,
+  AuthTicket,
 } from "./store.js";
 
 const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
 
-const toOrg = (r: any): Org => ({ id: r.id, name: r.name, monthlyTokenLimit: r.monthly_token_limit ?? null, createdAt: iso(r.created_at) });
+const toOrg = (r: any): Org => ({
+  id: r.id,
+  name: r.name,
+  monthlyTokenLimit: r.monthly_token_limit ?? null,
+  description: r.description ?? "",
+  contactEmail: r.contact_email ?? "",
+  allowedEmailDomains: r.allowed_email_domains ?? [],
+  rolePermissions: r.role_permissions ?? null,
+  createdAt: iso(r.created_at),
+});
+const toUser = (r: any): LocalUser => ({
+  id: r.id,
+  email: r.email,
+  name: r.name,
+  passwordHash: r.password_hash,
+  failedLogins: r.failed_logins,
+  lockedUntil: r.locked_until ? iso(r.locked_until) : null,
+  passwordChangedAt: r.password_changed_at ? iso(r.password_changed_at) : null,
+  lastLoginAt: r.last_login_at ? iso(r.last_login_at) : null,
+  createdAt: iso(r.created_at),
+  updatedAt: iso(r.updated_at),
+});
+const toSession = (r: any): LocalSession => ({ id: r.id, userId: r.user_id, tokenHash: r.token_hash, expiresAt: iso(r.expires_at), createdAt: iso(r.created_at) });
+const toTicket = (r: any): AuthTicket => ({
+  id: r.id,
+  tokenHash: r.token_hash,
+  email: r.email,
+  purpose: r.purpose,
+  orgId: r.org_id,
+  createdBy: r.created_by,
+  expiresAt: iso(r.expires_at),
+  usedAt: r.used_at ? iso(r.used_at) : null,
+  createdAt: iso(r.created_at),
+});
 const toCred = (r: any): ProviderCredential => ({
   id: r.id,
   orgId: r.org_id,
@@ -441,6 +479,88 @@ export class PgStore implements Store {
   async setOrgLimit(id: string, monthlyTokenLimit: number | null) {
     const { rows } = await this.pool.query("UPDATE orgs SET monthly_token_limit = $2 WHERE id = $1 RETURNING *", [id, monthlyTokenLimit]);
     return rows[0] ? toOrg(rows[0]) : null;
+  }
+  async updateOrg(id: string, patch: OrgPatch) {
+    const cols: Record<string, string> = { name: "name", description: "description", contactEmail: "contact_email", allowedEmailDomains: "allowed_email_domains", rolePermissions: "role_permissions", monthlyTokenLimit: "monthly_token_limit" };
+    const sets: string[] = [];
+    const vals: unknown[] = [id];
+    for (const [k, col] of Object.entries(cols)) {
+      const v = (patch as Record<string, unknown>)[k];
+      if (v === undefined) continue;
+      vals.push(k === "rolePermissions" ? (v === null ? null : JSON.stringify(v)) : v);
+      sets.push(`${col} = $${vals.length}`);
+    }
+    if (!sets.length) return this.getOrg(id);
+    const { rows } = await this.pool.query(`UPDATE orgs SET ${sets.join(", ")} WHERE id = $1 RETURNING *`, vals);
+    return rows[0] ? toOrg(rows[0]) : null;
+  }
+
+  async countUsers() {
+    const { rows } = await this.pool.query("SELECT count(*)::int AS n FROM local_users");
+    return rows[0].n as number;
+  }
+  async getUser(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM local_users WHERE id = $1", [id]);
+    return rows[0] ? toUser(rows[0]) : null;
+  }
+  async getUserByEmail(email: string) {
+    const { rows } = await this.pool.query("SELECT * FROM local_users WHERE email = $1", [email.toLowerCase()]);
+    return rows[0] ? toUser(rows[0]) : null;
+  }
+  async createUser(u: { email: string; name: string; passwordHash: string | null }) {
+    const { rows } = await this.pool.query(
+      "INSERT INTO local_users(email, name, password_hash, password_changed_at) VALUES ($1,$2,$3, CASE WHEN $3::text IS NULL THEN NULL ELSE now() END) RETURNING *",
+      [u.email.toLowerCase(), u.name, u.passwordHash],
+    );
+    return toUser(rows[0]);
+  }
+  async updateUser(id: string, patch: LocalUserPatch) {
+    const cols: Record<string, string> = { name: "name", passwordHash: "password_hash", failedLogins: "failed_logins", lockedUntil: "locked_until", passwordChangedAt: "password_changed_at", lastLoginAt: "last_login_at" };
+    const sets: string[] = [];
+    const vals: unknown[] = [id];
+    for (const [k, col] of Object.entries(cols)) {
+      const v = (patch as Record<string, unknown>)[k];
+      if (v === undefined) continue;
+      vals.push(v);
+      sets.push(`${col} = $${vals.length}`);
+    }
+    const { rows } = await this.pool.query(`UPDATE local_users SET ${[...sets, "updated_at = now()"].join(", ")} WHERE id = $1 RETURNING *`, vals);
+    return rows[0] ? toUser(rows[0]) : null;
+  }
+  async createSession(s: Omit<LocalSession, "id" | "createdAt">) {
+    const { rows } = await this.pool.query("INSERT INTO local_sessions(user_id, token_hash, expires_at) VALUES ($1,$2,$3) RETURNING *", [s.userId, s.tokenHash, s.expiresAt]);
+    // 期限切れのものを片付ける（ついでに）
+    await this.pool.query("DELETE FROM local_sessions WHERE expires_at < now() - interval '1 day'");
+    return toSession(rows[0]);
+  }
+  async getSessionByHash(tokenHash: string) {
+    const { rows } = await this.pool.query("SELECT * FROM local_sessions WHERE token_hash = $1", [tokenHash]);
+    return rows[0] ? toSession(rows[0]) : null;
+  }
+  async deleteSession(id: string) {
+    await this.pool.query("DELETE FROM local_sessions WHERE id = $1", [id]);
+  }
+  async deleteUserSessions(userId: string, exceptId?: string) {
+    const r = await this.pool.query("DELETE FROM local_sessions WHERE user_id = $1 AND id <> COALESCE($2::uuid, '00000000-0000-0000-0000-000000000000'::uuid)", [userId, exceptId ?? null]);
+    return r.rowCount ?? 0;
+  }
+  async createTicket(t: Omit<AuthTicket, "id" | "createdAt" | "usedAt">) {
+    const { rows } = await this.pool.query(
+      "INSERT INTO auth_tickets(token_hash, email, purpose, org_id, created_by, expires_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+      [t.tokenHash, t.email.toLowerCase(), t.purpose, t.orgId, t.createdBy, t.expiresAt],
+    );
+    return toTicket(rows[0]);
+  }
+  async getTicketByHash(tokenHash: string) {
+    const { rows } = await this.pool.query("SELECT * FROM auth_tickets WHERE token_hash = $1", [tokenHash]);
+    return rows[0] ? toTicket(rows[0]) : null;
+  }
+  async useTicket(id: string) {
+    const r = await this.pool.query("UPDATE auth_tickets SET used_at = now() WHERE id = $1 AND used_at IS NULL", [id]);
+    return (r.rowCount ?? 0) > 0;
+  }
+  async revokeTickets(email: string) {
+    await this.pool.query("UPDATE auth_tickets SET used_at = now() WHERE email = $1 AND used_at IS NULL", [email.toLowerCase()]);
   }
 
   async addCredential(c: Omit<ProviderCredential, "id" | "createdAt" | "updatedAt">) {

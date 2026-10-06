@@ -269,7 +269,7 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
     /** 登録前: 貼り付けたキーを確かめ、モデル一覧を返す */
     app.post("/api/orgs/:orgId/providers/check", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "ai.manage");
       const input = await ctx.body(c, CheckInput);
       const info = VENDOR_INFO[input.vendor];
       let apiKey: string | undefined;
@@ -285,7 +285,7 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
     /** 登録済み: 保存したキーで接続できるか、モデルIDが一覧にあるかを確かめる */
     app.post("/api/orgs/:orgId/providers/:id/check", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "ai.manage");
       const cr = (await store.listCredentials(orgId)).find((x) => x.id === c.req.param("id"));
       if (!cr) throw new HTTPException(404, { message: "見つかりません" });
       const apiKey = cr.encryptedKey ? await ctx.encryptor.decrypt(cr.encryptedKey, { orgId }) : null;
@@ -305,14 +305,14 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
     /* ----- ChatGPT（OpenAI） ----- */
     app.post("/api/orgs/:orgId/providers/auto/openai/projects", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "ai.manage");
       const input = await ctx.body(c, OpenAIProjectsInput);
       return c.json({ projects: await openaiProjects(adminKeyOrThrow(input.adminKey)) });
     });
 
     app.post("/api/orgs/:orgId/providers/auto/openai", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "ai.manage");
       const input = await ctx.body(c, OpenAIIssueInput);
       const adminKey = adminKeyOrThrow(input.adminKey);
       const org = await store.getOrg(orgId);
@@ -338,7 +338,7 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
     /** 自動発行したキーで、モデルの一覧を取得し直す */
     app.post("/api/orgs/:orgId/providers/auto/models", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "ai.manage");
       const pk = await pendingOf(c, orgId, (await ctx.body(c, PendingInput)).pending);
       return c.json(await checkResult(pk.v, { apiKey: pk.key }));
     });
@@ -346,7 +346,7 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
     /** 自動発行したキーを、選んだモデルで登録する */
     app.post("/api/orgs/:orgId/providers/auto/finish", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "ai.manage");
       const input = await ctx.body(c, FinishInput);
       const pk = await pendingOf(c, orgId, input.pending);
       // 同じキーを二重に登録しない
@@ -359,7 +359,7 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
     /* ----- Gemini（Google でログイン） ----- */
     app.get("/api/orgs/:orgId/providers/auto/google/start", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "ai.manage");
       if (!opts.google) {
         throw new HTTPException(501, { message: "Google でのログインは設定されていません（サーバーの GOOGLE_OAUTH_CLIENT_ID と GOOGLE_OAUTH_CLIENT_SECRET。docs/ai-keys.md）" });
       }
@@ -429,7 +429,7 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
 
     app.post("/api/orgs/:orgId/providers/auto/google/projects", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "ai.manage");
       const input = await ctx.body(c, GoogleProjectsInput);
       const token = await googleSession(c, orgId, input.session);
       const out: Array<{ id: string; name: string }> = [];
@@ -449,7 +449,7 @@ export function keySetup(ctx: ImplementationContext, opts: KeySetupOptions) {
 
     app.post("/api/orgs/:orgId/providers/auto/google", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "ai.manage");
       const input = await ctx.body(c, GoogleIssueInput);
       const token = await googleSession(c, orgId, input.session);
       const org = await store.getOrg(orgId);

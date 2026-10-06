@@ -1,4 +1,5 @@
 import type { Role } from "./auth.js";
+import type { RolePermissions } from "./permissions.js";
 import { randomUUID } from "node:crypto";
 import type { AcceptanceCriteria, BusinessRule, GlossaryTerm, ImplReport, MatchedResults, AnalysisComparison, CandidateContent, ChangeKind, Ears, Guide, NfrDecision, NfrProfile, NfrSuggestion, SizingSuggestion, ImpactOptionKey, ImpactReport, RequirementItem, RequirementType, ScoredEvaluation, ScreenModel, TaskPlan, UmlComparison, UmlModel, Usage, Vendor } from "@arn/ai-core";
 
@@ -7,6 +8,51 @@ export interface Org {
   name: string;
   /** 組織全体の月間トークン上限（入力＋出力）。null は上限なし */
   monthlyTokenLimit: number | null;
+  /** 組織の説明（画面に出す） */
+  description?: string;
+  /** 問い合わせ先（管理者の連絡先。招待の文に入れる） */
+  contactEmail?: string;
+  /** 招待できるメールアドレスのドメイン（空ならどこでも） */
+  allowedEmailDomains?: string[];
+  /** 役割ごとの権限（null は既定。permissions.ts） */
+  rolePermissions?: RolePermissions | null;
+  createdAt: string;
+}
+export type OrgPatch = Partial<Pick<Org, "name" | "description" | "contactEmail" | "allowedEmailDomains" | "rolePermissions" | "monthlyTokenLimit">>;
+
+/** 要件ナビのログイン（AUTH_MODE=local）の利用者。組織をまたいで1人1つ。パスワードはハッシュだけを保存する */
+export interface LocalUser {
+  id: string;
+  email: string;
+  name: string;
+  /** scrypt のハッシュ（local-auth.ts）。まだ設定していなければ null */
+  passwordHash: string | null;
+  failedLogins: number;
+  lockedUntil: string | null;
+  passwordChangedAt: string | null;
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export type LocalUserPatch = Partial<Pick<LocalUser, "name" | "passwordHash" | "failedLogins" | "lockedUntil" | "passwordChangedAt" | "lastLoginAt">>;
+/** ログイン中の状態。トークンはハッシュだけを保存する */
+export interface LocalSession {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: string;
+  createdAt: string;
+}
+/** パスワードを決めるための一回限りのリンク（招待・再設定）。トークンはハッシュだけを保存する */
+export interface AuthTicket {
+  id: string;
+  tokenHash: string;
+  email: string;
+  purpose: "setup" | "reset";
+  orgId: string | null;
+  createdBy: string;
+  expiresAt: string;
+  usedAt: string | null;
   createdAt: string;
 }
 
@@ -521,6 +567,26 @@ export interface Store {
   deleteMember(orgId: string, id: string): Promise<boolean>;
   getOrg(id: string): Promise<Org | null>;
   setOrgLimit(id: string, monthlyTokenLimit: number | null): Promise<Org | null>;
+  /** 組織設定の変更（undefined の項目は変えない） */
+  updateOrg(id: string, patch: OrgPatch): Promise<Org | null>;
+
+  /* 要件ナビのログイン（AUTH_MODE=local） */
+  countUsers(): Promise<number>;
+  getUser(id: string): Promise<LocalUser | null>;
+  getUserByEmail(email: string): Promise<LocalUser | null>;
+  createUser(u: { email: string; name: string; passwordHash: string | null }): Promise<LocalUser>;
+  updateUser(id: string, patch: LocalUserPatch): Promise<LocalUser | null>;
+  createSession(s: Omit<LocalSession, "id" | "createdAt">): Promise<LocalSession>;
+  getSessionByHash(tokenHash: string): Promise<LocalSession | null>;
+  deleteSession(id: string): Promise<void>;
+  /** その人のログインをすべて終わらせる（except は残す） */
+  deleteUserSessions(userId: string, exceptId?: string): Promise<number>;
+  createTicket(t: Omit<AuthTicket, "id" | "createdAt" | "usedAt">): Promise<AuthTicket>;
+  getTicketByHash(tokenHash: string): Promise<AuthTicket | null>;
+  /** 使い済みにする（まだ使われていなければ true） */
+  useTicket(id: string): Promise<boolean>;
+  /** 同じメールアドレスの、まだ使われていないリンクを無効にする */
+  revokeTickets(email: string): Promise<void>;
 
   addCredential(c: Omit<ProviderCredential, "id" | "createdAt" | "updatedAt">): Promise<ProviderCredential>;
   listCredentials(orgId: string): Promise<ProviderCredential[]>;
@@ -756,6 +822,74 @@ export class MemoryStore implements Store {
     if (!o) return null;
     o.monthlyTokenLimit = monthlyTokenLimit;
     return o;
+  }
+  async updateOrg(id: string, patch: OrgPatch) {
+    const o = this.orgs.get(id);
+    if (!o) return null;
+    for (const [k, v] of Object.entries(patch)) if (v !== undefined) (o as any)[k] = v;
+    return structuredClone(o);
+  }
+  private users: LocalUser[] = [];
+  private sessions: LocalSession[] = [];
+  private tickets: AuthTicket[] = [];
+  async countUsers() {
+    return this.users.length;
+  }
+  async getUser(id: string) {
+    const u = this.users.find((x) => x.id === id);
+    return u ? { ...u } : null;
+  }
+  async getUserByEmail(email: string) {
+    const u = this.users.find((x) => x.email === email.toLowerCase());
+    return u ? { ...u } : null;
+  }
+  async createUser(u: { email: string; name: string; passwordHash: string | null }) {
+    const email = u.email.toLowerCase();
+    if (this.users.some((x) => x.email === email)) throw new Error("duplicate user");
+    const r: LocalUser = { id: randomUUID(), email, name: u.name, passwordHash: u.passwordHash, failedLogins: 0, lockedUntil: null, passwordChangedAt: u.passwordHash ? now() : null, lastLoginAt: null, createdAt: now(), updatedAt: now() };
+    this.users.push(r);
+    return { ...r };
+  }
+  async updateUser(id: string, patch: LocalUserPatch) {
+    const u = this.users.find((x) => x.id === id);
+    if (!u) return null;
+    Object.assign(u, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)), { updatedAt: now() });
+    return { ...u };
+  }
+  async createSession(s: Omit<LocalSession, "id" | "createdAt">) {
+    const r: LocalSession = { ...s, id: randomUUID(), createdAt: now() };
+    this.sessions.push(r);
+    return { ...r };
+  }
+  async getSessionByHash(tokenHash: string) {
+    const s = this.sessions.find((x) => x.tokenHash === tokenHash);
+    return s ? { ...s } : null;
+  }
+  async deleteSession(id: string) {
+    this.sessions = this.sessions.filter((x) => x.id !== id);
+  }
+  async deleteUserSessions(userId: string, exceptId?: string) {
+    const n = this.sessions.length;
+    this.sessions = this.sessions.filter((x) => x.userId !== userId || x.id === exceptId);
+    return n - this.sessions.length;
+  }
+  async createTicket(t: Omit<AuthTicket, "id" | "createdAt" | "usedAt">) {
+    const r: AuthTicket = { ...t, email: t.email.toLowerCase(), id: randomUUID(), usedAt: null, createdAt: now() };
+    this.tickets.push(r);
+    return { ...r };
+  }
+  async getTicketByHash(tokenHash: string) {
+    const t = this.tickets.find((x) => x.tokenHash === tokenHash);
+    return t ? { ...t } : null;
+  }
+  async useTicket(id: string) {
+    const t = this.tickets.find((x) => x.id === id);
+    if (!t || t.usedAt) return false;
+    t.usedAt = now();
+    return true;
+  }
+  async revokeTickets(email: string) {
+    for (const t of this.tickets) if (t.email === email.toLowerCase() && !t.usedAt) t.usedAt = now();
   }
   async addCredential(c: Omit<ProviderCredential, "id" | "createdAt" | "updatedAt">) {
     const r: ProviderCredential = { ...c, id: randomUUID(), createdAt: now(), updatedAt: null };

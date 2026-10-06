@@ -21,7 +21,7 @@ import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { audit } from "./audit.js";
-import type { Role } from "./auth.js";
+import type { Permission } from "./permissions.js";
 import { maskKey, type KeyEncryptor } from "./crypto.js";
 import {
   checkIntegration,
@@ -44,8 +44,8 @@ export interface ImplementationContext {
   encryptor: KeyEncryptor;
   fetchImpl: FetchLike;
   timeoutMs?: number;
-  need: (c: AnyContext, orgId: string, role: Role) => void;
-  loadProject: (c: AnyContext, id: string, role: Role) => Promise<Project>;
+  need: (c: AnyContext, orgId: string, perm: Permission) => void;
+  loadProject: (c: AnyContext, id: string, perm: Permission) => Promise<Project>;
   actorOf: (c: AnyContext) => string;
   body: <T extends z.ZodTypeAny>(c: Context, schema: T) => Promise<z.infer<T>>;
   parseOrThrow: <T extends z.ZodTypeAny>(schema: T, json: unknown) => z.infer<T>;
@@ -338,13 +338,13 @@ export function implementation(ctx: ImplementationContext) {
     // 連携先（組織の管理者が登録。一覧は登録先を選ぶため閲覧者以上が見られる。トークンは返さない）
     app.get("/api/orgs/:orgId/integrations", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "viewer");
+      ctx.need(c, orgId, "project.view");
       return c.json((await store.listIntegrations(orgId)).map(publicIntegration));
     });
 
     app.post("/api/orgs/:orgId/integrations", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "integration.manage");
       const input = await ctx.body(c, IntegrationInput);
       const config: Record<string, string> = ctx.parseOrThrow(INTEGRATION_CONFIG[input.kind], input.config);
       const target = integrationTarget(input.kind, config);
@@ -377,7 +377,7 @@ export function implementation(ctx: ImplementationContext) {
     /** 連携設定の自動化: トークンの持ち主を確かめ、選べるリポジトリ・プロジェクト・種別・ラベルを返す（トークンは保存しない） */
     app.post("/api/orgs/:orgId/integrations/discover", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "integration.manage");
       const input = await ctx.body(c, DiscoverInput);
       let token = input.token?.trim() ?? "";
       let base: Record<string, string> = {};
@@ -405,7 +405,7 @@ export function implementation(ctx: ImplementationContext) {
 
     app.patch("/api/orgs/:orgId/integrations/:id", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "integration.manage");
       const input = await ctx.body(c, IntegrationPatchInput);
       const cur = await findIntegration(orgId, c.req.param("id"));
       const config = input.config
@@ -437,7 +437,7 @@ export function implementation(ctx: ImplementationContext) {
 
     app.delete("/api/orgs/:orgId/integrations/:id", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "integration.manage");
       const cur = await findIntegration(orgId, c.req.param("id"));
       await store.deleteIntegration(orgId, cur.id);
       await audit(store, {
@@ -454,7 +454,7 @@ export function implementation(ctx: ImplementationContext) {
     /** 接続確認（トークンでリポジトリ・プロジェクトを読めるか） */
     app.post("/api/orgs/:orgId/integrations/:id/test", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "integration.manage");
       const i = await findIntegration(orgId, c.req.param("id"));
       const secret = await ctx.encryptor.decrypt(i.encryptedSecret, { orgId });
       try {
@@ -467,13 +467,13 @@ export function implementation(ctx: ImplementationContext) {
 
     // タスク分解
     app.get("/api/projects/:id/tasks", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       const rec = await store.latestTaskPlan(p.id);
       return c.json(rec ? await planView(rec, await store.listRequirements(p.id), p.orgId) : null);
     });
 
     app.post("/api/projects/:id/tasks/generate", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       if (jobs.wantsAsync(c)) {
         if (!(await store.listRequirements(p.id)).some((r) => TASK_TARGET_TYPES.includes(r.type))) {
           throw new HTTPException(400, { message: "機能要件・非機能要件がまだありません。ヒアリングで要件を確定してから分解してください" });
@@ -492,7 +492,7 @@ export function implementation(ctx: ImplementationContext) {
       json: { type: "application/json; charset=utf-8", ext: "json" },
     } as const;
     app.get("/api/projects/:id/tasks/file/:format", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "export");
       const format = c.req.param("format") as keyof typeof FILES;
       if (!(format in FILES)) throw new HTTPException(400, { message: `形式が正しくありません: ${format}` });
       const rec = await planOf(p, c.req.query("planId") || undefined);
@@ -515,7 +515,7 @@ export function implementation(ctx: ImplementationContext) {
 
     /** 課題管理ツールへの登録（登録済みのものは飛ばす） */
     app.post("/api/projects/:id/tasks/register", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "tasks.publish");
       const input = await ctx.body(c, RegisterInput);
       if (jobs.wantsAsync(c)) {
         await validateRegister(p, input);
@@ -525,13 +525,13 @@ export function implementation(ctx: ImplementationContext) {
     });
 
     app.get("/api/projects/:id/tasks/exports", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       const rec = await store.latestTaskPlan(p.id);
       return c.json(rec ? await store.listTaskExports(rec.id) : []);
     });
 
     app.get("/api/projects/:id/trace", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json(await trace(p));
     });
   }

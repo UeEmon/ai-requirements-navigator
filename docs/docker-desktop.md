@@ -71,7 +71,7 @@ grep '^MASTER_KEY=' .env
 | `ARN_PORT` | 8787 | このPCで 8787 番が使われている |
 | `DB_PORT` | 5432 | このPCにほかの PostgreSQL がある（例: 15432） |
 | `ARN_BIND` | 127.0.0.1 | ほかのPCからも使う（[6-5](#6-5-社内のほかのpcから使う) を参照） |
-| `AUTH_MODE` | dev | ログイン画面を使う（[6-2](#6-2-ログイン画面を使うkeycloak) を参照） |
+| `AUTH_MODE` | dev | `local`: 要件ナビのログイン（メールアドレスとパスワード）／`oidc`: ログイン画面（[6-2](#6-2-ログイン画面を使うkeycloak) を参照） |
 | `ALLOW_MOCK_PROVIDER` | true | 模擬AI（APIキーなしのお試し用）を使わせない場合は false |
 
 データベースの接続先や成果物の保存先など、コンテナの中の場所は `docker-compose.yml` が決めるため、`.env` で変える必要はありません。
@@ -149,10 +149,11 @@ claude mcp add --transport http requirements-navigator http://localhost:8787/mcp
 
 ### 6-5. 社内のほかのPCから使う
 
-開発用のログインは誰でも管理者を名乗れるため、**必ずログイン画面（`AUTH_MODE=oidc`）にしてから**公開します。
+開発用のログインは誰でも管理者を名乗れるため、**必ず要件ナビのログイン（`AUTH_MODE=local`）かログイン画面（`AUTH_MODE=oidc`）にしてから**公開します。いちばん手軽なのは `AUTH_MODE=local` です（Keycloak を用意せず、メールアドレスとパスワードでログイン。最初に開いた人が「初期設定」で組織と管理者を作るため、`LOCAL_SETUP_TOKEN` も設定してください。[ログインの設定](auth.md)）。
 
 ```text
-AUTH_MODE=oidc
+AUTH_MODE=local   # または oidc
+LOCAL_SETUP_TOKEN=<初期設定に必要な長いランダムな文字列>
 NODE_ENV=production
 ALLOW_MOCK_PROVIDER=false
 BOOTSTRAP_TOKEN=<最初の組織を作るための長いランダムな文字列>

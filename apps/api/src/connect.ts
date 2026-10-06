@@ -220,7 +220,7 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
         else throw new HTTPException(400, { message: "projectId を指定してください（list_projects・GET /api/v1/projects で確認できます）" });
       }
     }
-    if (!t) return ctx.loadProject(c, id, need === "read" ? "viewer" : "editor");
+    if (!t) return ctx.loadProject(c, id, need === "read" ? "project.view" : "requirements.edit");
     const p = await store.getProject(id);
     if (!p || p.orgId !== t.orgId || (t.projectIds && !t.projectIds.includes(p.id))) throw new HTTPException(404, { message: "プロジェクトが見つかりません" });
     if (!t.scopes.includes(need)) throw new HTTPException(403, { message: `このトークンには ${need} の権限がありません` });
@@ -827,12 +827,12 @@ echo
     /* 管理者: トークン */
     app.get("/api/orgs/:orgId/api-tokens", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "agent.manage");
       return c.json((await store.listApiTokens(orgId)).map(publicToken));
     });
     app.post("/api/orgs/:orgId/api-tokens", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "agent.manage");
       if (tokenOf(c)) throw new HTTPException(403, { message: "トークンでトークンは発行できません" });
       const input = await ctx.body(c, TokenInput);
       if (input.projectIds) {
@@ -857,7 +857,7 @@ echo
     });
     app.delete("/api/orgs/:orgId/api-tokens/:id", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "agent.manage");
       if (!(await store.revokeApiToken(orgId, c.req.param("id")))) throw new HTTPException(404, { message: "トークンが見つかりません" });
       await audit(store, { orgId, actor: ctx.actorOf(c), action: "token.revoke", targetType: "api_token", targetId: c.req.param("id") });
       return c.body(null, 204);
@@ -866,12 +866,12 @@ echo
     /* 管理者: Webhook */
     app.get("/api/orgs/:orgId/webhooks", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "agent.manage");
       return c.json((await store.listWebhooks(orgId)).map(publicWebhook));
     });
     app.post("/api/orgs/:orgId/webhooks", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "agent.manage");
       const input = await ctx.body(c, WebhookInput);
       await checkWebhookTarget(input.url);
       const secret = `whsec_${randomBytes(24).toString("base64url")}`;
@@ -881,14 +881,14 @@ echo
     });
     app.delete("/api/orgs/:orgId/webhooks/:id", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "agent.manage");
       if (!(await store.deleteWebhook(orgId, c.req.param("id")))) throw new HTTPException(404, { message: "Webhook が見つかりません" });
       await audit(store, { orgId, actor: ctx.actorOf(c), action: "webhook.delete", targetType: "webhook", targetId: c.req.param("id") });
       return c.body(null, 204);
     });
     app.post("/api/orgs/:orgId/webhooks/:id/test", async (c) => {
       const orgId = c.req.param("orgId");
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "agent.manage");
       const w = (await store.listWebhooks(orgId)).find((x) => x.id === c.req.param("id"));
       if (!w) throw new HTTPException(404, { message: "Webhook が見つかりません" });
       const st = await deliver(w, "ping", { message: "要件ナビからの接続確認です" });
@@ -897,7 +897,7 @@ echo
 
     /* 画面: 実装・テストの状況と、質問への回答 */
     app.get("/api/projects/:id/connect", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       const runs = await store.listTestRuns(p.id, 10);
       return c.json({
         status: await status(p),
@@ -909,7 +909,7 @@ echo
     app.post("/api/questions/:id/answer", async (c) => {
       const q = await store.getQuestion(c.req.param("id"));
       if (!q) throw new HTTPException(404, { message: "質問が見つかりません" });
-      const p = await ctx.loadProject(c, q.projectId, "editor");
+      const p = await ctx.loadProject(c, q.projectId, "requirements.edit");
       const input = await ctx.body(c, AnswerInput);
       const actor = ctx.actorOf(c);
       const a = await store.answerQuestion(q.id, { status: input.status, answer: input.answer, answeredBy: actor });

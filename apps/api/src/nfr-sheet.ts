@@ -209,13 +209,13 @@ export function nfrSheet(ctx: ImplementationContext) {
   ) {
     /** 似たシステムの事例（参考類型と社内事例）の一覧 */
     app.get("/api/projects/:id/nfr/cases", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json((await casesFor(p)).map((x) => ({ id: x.id, name: x.name, source: x.source, description: x.description, profile: x.profile, levels: x.levels })));
     });
 
     /** 決めた水準に過大なものがないか、複数AIに見直してもらう */
     app.post("/api/projects/:id/nfr/review", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       if (jobs.wantsAsync(c)) {
         await ctx.budget(p.orgId, []);
         return jobs.enqueue(c, p, "nfrReview", {});
@@ -224,13 +224,13 @@ export function nfrSheet(ctx: ImplementationContext) {
     });
 
     app.get("/api/projects/:id/nfr", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json(await view(p));
     });
 
     /** システムの性格（推奨水準の元になる） */
     app.put("/api/projects/:id/nfr/profile", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const profile = (await ctx.body(c, ProfileInput)) as NfrProfile;
       const s = await load(p.id);
       await store.saveNfrSheet({ ...s, profile });
@@ -239,7 +239,7 @@ export function nfrSheet(ctx: ImplementationContext) {
     });
 
     app.patch("/api/projects/:id/nfr/items/:key", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const item = NFR_ITEM_BY_KEY.get(c.req.param("key"));
       if (!item) throw new HTTPException(404, { message: "非機能要件の項目が見つかりません" });
       const input = await ctx.body(c, ItemInput);
@@ -275,7 +275,7 @@ export function nfrSheet(ctx: ImplementationContext) {
 
     /** 複数AIに推奨水準を提案させる（既定では未検討の項目だけ） */
     app.post("/api/projects/:id/nfr/suggest", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, SuggestInput);
       if (jobs.wantsAsync(c)) {
         await ctx.budget(p.orgId, []);
@@ -286,7 +286,7 @@ export function nfrSheet(ctx: ImplementationContext) {
 
     /** AIの意見が一致した提案を、未検討の項目にまとめて採用する（意見が分かれた項目は人が決める） */
     app.post("/api/projects/:id/nfr/apply-suggestions", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, ApplyInput);
       const s = await load(p.id);
       const applied: string[] = [];
@@ -311,7 +311,7 @@ export function nfrSheet(ctx: ImplementationContext) {
 
     /** 決めた水準から EARS の非機能要件を作る・直す（確定後は変更要求にする） */
     app.post("/api/projects/:id/nfr/requirements", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const { systemName } = await ctx.body(c, RequirementsInput);
       const s = await load(p.id);
       const baselined = await store.latestBaseline(p.id);

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { createApp } from "./app.js";
 import { scheduleAuditPurge } from "./audit.js";
 import { devAuthenticator, discoveryUrlOf, OidcClient, OidcDiscoveryCache, oidcAuthenticator, type Authenticator } from "./auth.js";
+import { localAuth, type LocalAuth } from "./local-auth.js";
 import { KmsKeyEncryptor, LocalKeyEncryptor, type KeyEncryptor } from "./crypto.js";
 import { migrate } from "./migrate.js";
 import { PgStore } from "./pg-store.js";
@@ -12,8 +13,9 @@ import { MemoryStore, type Store } from "./store.js";
 
 /**
  * 実行環境は環境変数だけで切り替える（コードは同じ）。
- *   ローカルDocker: STORE=postgres KEY_ENCRYPTION=local STORAGE=local AUTH_MODE=dev|oidc
- *   AWS:           STORE=postgres KEY_ENCRYPTION=aws-kms STORAGE=s3 AUTH_MODE=oidc
+ *   ローカルDocker: STORE=postgres KEY_ENCRYPTION=local STORAGE=local AUTH_MODE=dev|local|oidc
+ *   AWS:           STORE=postgres KEY_ENCRYPTION=aws-kms STORAGE=s3 AUTH_MODE=oidc|local
+ * AUTH_MODE: dev（お試し。パスワードなし）/ local（要件ナビのログイン。メールアドレスとパスワード）/ oidc（Cognito・Keycloak）
  */
 const env = process.env;
 const bool = (v: string | undefined, d: boolean) => (v === undefined ? d : v === "true" || v === "1");
@@ -55,11 +57,21 @@ async function main() {
   if ((env.STORAGE ?? "local") === "s3") storage = new S3Storage(required("S3_BUCKET"), env.AWS_REGION);
   else storage = new LocalFsStorage(resolve(env.STORAGE_DIR ?? "./data/artifacts"));
 
-  const devAuth = (env.AUTH_MODE ?? "dev") === "dev";
-  if (devAuth && isProd) throw new Error("本番環境では AUTH_MODE=oidc を使ってください");
+  const authMode = env.AUTH_MODE ?? "dev";
+  if (!["dev", "local", "oidc"].includes(authMode)) throw new Error("AUTH_MODE は dev・local・oidc のどれかにしてください");
+  const devAuth = authMode === "dev";
+  if (devAuth && isProd) throw new Error("本番環境では AUTH_MODE=local か oidc を使ってください");
   let authenticate: Authenticator = devAuthenticator;
   let oidc: Parameters<typeof createApp>[0]["oidc"];
-  if (!devAuth) {
+  let local: LocalAuth | undefined;
+  if (authMode === "local") {
+    local = localAuth(store, {
+      sessionHours: Number(env.LOCAL_SESSION_HOURS ?? 12),
+      passwordMinLength: Number(env.LOCAL_PASSWORD_MIN_LENGTH ?? 10),
+      setupToken: env.LOCAL_SETUP_TOKEN || undefined,
+    });
+    authenticate = local.authenticate;
+  } else if (!devAuth) {
     const opts = {
       issuer: required("OIDC_ISSUER"),
       discoveryUrl: env.OIDC_DISCOVERY_URL || undefined,
@@ -98,6 +110,7 @@ async function main() {
     timeoutMs: Number(env.AI_TIMEOUT_MS ?? 90_000),
     usageTimezone: env.USAGE_TIMEZONE || "Asia/Tokyo",
     oidc,
+    localAuth: local,
     publicUrl: env.PUBLIC_URL || undefined,
     // Gemini の API キーを Google でログインして自動発行する（docs/ai-keys.md）
     googleOAuth:
@@ -115,7 +128,7 @@ async function main() {
 
   const port = Number(env.PORT ?? 8787);
   serve({ fetch: app.fetch, port }, () => {
-    console.log(`listening on :${port}  store=${store.constructor.name} auth=${devAuth ? "dev" : "oidc"} mock=${allowMock}`);
+    console.log(`listening on :${port}  store=${store.constructor.name} auth=${authMode} mock=${allowMock}`);
   });
 }
 

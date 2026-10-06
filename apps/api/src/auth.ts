@@ -15,13 +15,17 @@ export interface Principal {
   name?: string;
   /** 組織と役割がトークンのクレーム（Cognito の属性・グループ、Keycloak のロール）から来たか */
   fromClaims?: boolean;
+  /** 要件ナビのログイン（AUTH_MODE=local）のセッション */
+  sessionId?: string;
+  /** 選んだ組織で持つ権限（permissions.ts。認証の後に組織の設定から決める） */
+  permissions?: string[];
 }
 
 export type Authenticator = (req: Request) => Promise<Principal | null>;
 
 /**
  * 開発用: ヘッダーで利用者を名乗る（x-user-id / x-org-id / x-role）。
- * 本番では AUTH_MODE=oidc にして必ず無効化すること。
+ * 本番では AUTH_MODE=local か oidc にして必ず無効化すること。
  */
 export const devAuthenticator: Authenticator = async (req) => {
   const orgId = req.headers.get("x-org-id");

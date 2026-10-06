@@ -4,7 +4,7 @@
 #   → http://localhost:8787
 #
 # 既定では、このPCからだけ接続できます（127.0.0.1）。開発用の認証（AUTH_MODE=dev）は
-# 誰でも管理者を名乗れるため、ほかのPCに公開するときは AUTH_MODE=oidc にしてから
+# 誰でも管理者を名乗れるため、ほかのPCに公開するときは AUTH_MODE=local か oidc にしてから
 # ARN_BIND=0.0.0.0 にしてください。
 #
 # 任意のプロファイル:
@@ -28,6 +28,9 @@ services:
       STORAGE: local
       STORAGE_DIR: /data/artifacts
       AUTH_MODE: ${AUTH_MODE:-dev}
+      LOCAL_SESSION_HOURS: ${LOCAL_SESSION_HOURS:-12}
+      LOCAL_PASSWORD_MIN_LENGTH: ${LOCAL_PASSWORD_MIN_LENGTH:-10}
+      LOCAL_SETUP_TOKEN: ${LOCAL_SETUP_TOKEN:-}
     volumes:
       - artifacts:/data/artifacts
     depends_on:

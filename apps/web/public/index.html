@@ -256,6 +256,7 @@ tr.sub td{border-bottom:none;padding-top:0}
   <section class="view" id="v-org">
     <div class="panel" id="orgPanel"></div>
     <div class="panel" id="memberPanel"></div>
+    <div class="panel" id="rolePanel"></div>
     <div class="panel" id="auditPanel" hidden></div></section>
   <section class="view" id="v-admin">
     <div class="panel" id="provPanel"></div>
@@ -273,8 +274,14 @@ const sess = { get(k){try{return sessionStorage.getItem("arn."+k)}catch(e){retur
 const S = { meta:null, orgId:store.get("orgId")||"", role:store.get("role")||"admin", user:"", token:sess.get("idToken")||"", refresh:sess.get("refreshToken")||"", providers:[], project:null, round:null, guide:null, umlCompare:null };
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 function toast(t){const el=$("#toast");el.textContent=t;el.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>el.hidden=true,2600)}
-const isOidc = () => S.meta?.auth === "oidc";
-const canEdit = () => ["admin","editor"].includes(S.role);
+/** ログインして使う（要件ナビのログイン AUTH_MODE=local か、Cognito・Keycloak の oidc） */
+const isOidc = () => S.meta?.auth === "oidc" || S.meta?.auth === "local";
+const isLocal = () => S.meta?.auth === "local";
+/* 役割ごとの権限（組織の管理者が「組織」タブで変えられる。/api/me の permissions）。読み込む前は既定で判断する */
+const PERM_MIN={"project.view":"viewer","export":"viewer","project.create":"editor","requirements.edit":"editor","review.approve":"reviewer","tasks.publish":"editor","project.settings":"editor","project.manage":"admin","ai.manage":"admin","integration.manage":"admin","agent.manage":"admin","usage.view":"admin","audit.view":"admin","org.settings":"admin","member.manage":"admin"};
+const ROLE_RANK={viewer:0,reviewer:1,editor:2,admin:3};
+const can = p => S.perms ? S.perms.includes(p) : ROLE_RANK[S.role] >= ROLE_RANK[PERM_MIN[p]||"admin"];
+const canEdit = () => can("requirements.edit");
 
 function authHeaders(){
   const h = {};
@@ -284,7 +291,7 @@ function authHeaders(){
   return h;
 }
 async function api(path, opts={}, retried=false){
-  if (isOidc() && S.token && tokenExpiresSoon()) await refreshTokens();
+  if (isOidc() && !isLocal() && S.token && tokenExpiresSoon()) await refreshTokens();
   const headers = {"content-type":"application/json", ...authHeaders(), ...(opts.headers||{})};
   const res = await fetch(path, {...opts, headers, body: opts.body && typeof opts.body !== "string" ? JSON.stringify(opts.body) : opts.body});
   if (res.status === 401 && isOidc() && !retried && S.refresh) { if (await refreshTokens()) return api(path, opts, true); }
@@ -323,6 +330,7 @@ function jwtClaims(t){
 }
 const ROLE_ORDER=["admin","editor","reviewer","viewer"];
 function applyClaims(){
+  if (isLocal()) { S.orgId = S.orgId || store.get("orgId") || ""; S.user = sess.get("user") || ""; S.exp = 0; return; }
   const c = jwtClaims(S.token), o = S.meta?.oidc || {};
   // 組織と役割は要件ナビの「組織のメンバー」で決まる（loadMe）。ここでは前回選んだ組織か、クレームの組織を仮に使う
   S.orgId = S.orgId || store.get("orgId") || c[o.orgClaim] || "";
@@ -335,8 +343,14 @@ const tokenExpiresSoon = () => S.exp && Date.now() > S.exp - 60_000;
 function setTokens(t){
   S.token=t.idToken; S.refresh=t.refreshToken||""; sess.set("idToken",S.token); sess.set("refreshToken",S.refresh||null); applyClaims();
 }
+/** 要件ナビのログイン: ログインできたとき */
+function setLocalSession(t){
+  S.token=t.token; S.refresh=""; sess.set("idToken",S.token); sess.set("refreshToken",null);
+  if(t.user){ S.user = t.user.name ? `${t.user.name}（${t.user.email}）` : t.user.email; sess.set("user", S.user); }
+  if(t.orgId){ S.orgId=t.orgId; store.set("orgId", t.orgId); }
+}
 async function refreshTokens(){
-  if (!S.refresh) return false;
+  if (!S.refresh || isLocal()) return false;
   try{
     const r = await fetch("/api/auth/refresh",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({refreshToken:S.refresh})});
     if (!r.ok) throw new Error();
@@ -344,11 +358,13 @@ async function refreshTokens(){
   }catch(e){ return false }
 }
 function signedOut(msg){
-  S.token=""; S.refresh=""; S.exp=0; sess.set("idToken",null); sess.set("refreshToken",null);
+  S.token=""; S.refresh=""; S.exp=0; S.perms=null; sess.set("idToken",null); sess.set("refreshToken",null); sess.set("user",null);
+  if (isLocal()) { renderConn(); localLoginView(msg); return; }
   renderConn(); $("#hear").innerHTML=`<div class="panel"><h2>ログインしてください</h2>${msg?`<p class="hint">${esc(msg)}</p>`:""}<button class="btn" id="loginBig">ログイン</button></div>`;
   $("#loginBig").onclick=login;
 }
 async function login(){
+  if (isLocal()) { localLoginView(); return; }
   try{
     const conf = await (await fetch("/api/auth/config")).json();
     if (conf.error) throw new Error(conf.error);
@@ -376,6 +392,7 @@ async function handleCallback(){
   setTokens(data); toast("ログインしました");
 }
 async function logout(){
+  if (isLocal()) { try{ await api("/api/auth/local/logout",{method:"POST"}); }catch(e){} signedOut("ログアウトしました"); return; }
   const idToken = S.token;
   let conf = {}; try{ conf = await (await fetch("/api/auth/config")).json() }catch(e){}
   signedOut("ログアウトしました");
@@ -386,6 +403,123 @@ async function logout(){
     u.searchParams.set("logout_uri", back); if (idToken) u.searchParams.set("id_token_hint", idToken);
     location.assign(u.toString());
   }
+}
+
+/* ---------- 要件ナビのログイン（AUTH_MODE=local。メールアドレスとパスワード） ---------- */
+const btnBusy = (btn, on, text) => { if(!btn) return; if(on){ btn.dataset.t=btn.textContent; btn.textContent=text; btn.disabled=true; } else { btn.textContent=btn.dataset.t||btn.textContent; btn.disabled=false; } };
+const pwField = (id, label, auto="current-password", min=0) => `<label class="f" style="min-width:240px">${label}<input id="${id}" type="password" autocomplete="${auto}" ${min?`minlength="${min}"`:""} required></label>`;
+/** ログイン画面（利用者が1人もいなければ初期設定） */
+async function localLoginView(msg){
+  switchTab("hear");
+  const el=$("#hear");
+  let st={setupRequired:false, passwordMinLength:10};
+  try{ st=await (await fetch("/api/auth/local/status")).json(); }catch(e){}
+  if(st.setupRequired){
+    el.innerHTML=`<div class="panel" style="max-width:640px"><h2>初期設定</h2>
+      <p class="hint">はじめに、組織と、組織の管理者（あなた）のアカウントを作ります。管理者は、ほかの人の招待・役割・パスワードの再設定を行います（組織に1人以上必要です）。</p>
+      <form id="suForm" autocomplete="on">
+        <div class="row"><label class="f" style="min-width:260px">組織の名前<input id="suOrg" required placeholder="例：株式会社サンプル 情報システム部"></label>
+          <label class="f">あなたの名前<input id="suName" autocomplete="name" placeholder="例：管理 太郎"></label></div>
+        <div class="row"><label class="f" style="min-width:260px">メールアドレス（ログインに使います）<input id="suEmail" type="email" autocomplete="username" required></label></div>
+        <div class="row">${pwField("suPw",`パスワード（${st.passwordMinLength}文字以上）`,"new-password",st.passwordMinLength)}${pwField("suPw2","パスワード（確認）","new-password")}</div>
+        ${st.setupTokenRequired?`<div class="row"><label class="f" style="min-width:260px">初期設定用のトークン（サーバーの LOCAL_SETUP_TOKEN）<input id="suTok" type="password" required></label></div>`:""}
+        <div class="row"><button class="btn" type="submit" id="suGo">組織と管理者を作る</button></div>
+        <div id="suMsg" aria-live="polite"></div></form></div>`;
+    $("#suForm").onsubmit=async ev=>{
+      ev.preventDefault();
+      if($("#suPw").value!==$("#suPw2").value){ $("#suMsg").innerHTML=`<p class="note err">確認のパスワードが一致しません</p>`; return; }
+      btnBusy($("#suGo"),true,"作成中…");
+      try{
+        const body={orgName:$("#suOrg").value.trim(), name:$("#suName").value.trim(), email:$("#suEmail").value.trim(), password:$("#suPw").value};
+        if($("#suTok")) body.setupToken=$("#suTok").value;
+        const r=await fetch("/api/auth/local/setup",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+        const d=await r.json().catch(()=>({}));
+        if(!r.ok) throw new Error(d.error||`HTTP ${r.status}`);
+        setLocalSession(d); await afterLocalLogin(); toast("組織と管理者のアカウントを作りました。次に AI を登録してください"); switchTab("admin");
+      }catch(e){ btnBusy($("#suGo"),false); $("#suMsg").innerHTML=`<p class="note err">${esc(e.message)}</p>`; }
+    };
+    return;
+  }
+  el.innerHTML=`<div class="panel" style="max-width:520px"><h2>ログイン</h2>${msg?`<p class="hint">${esc(msg)}</p>`:""}
+    <form id="liForm" autocomplete="on">
+      <div class="row"><label class="f" style="min-width:280px">メールアドレス<input id="liEmail" type="email" autocomplete="username" required value="${esc(store.get("lastEmail")||"")}"></label></div>
+      <div class="row">${pwField("liPw","パスワード")}</div>
+      <div class="row"><button class="btn" type="submit" id="liGo">ログイン</button></div>
+      <div id="liMsg" aria-live="polite"></div></form>
+    <p class="hint" style="margin-top:10px">アカウントは、組織の管理者が招待して作ります（招待で届くリンクからパスワードを決めます）。パスワードを忘れたときは、組織の管理者に「パスワード再設定のリンク」を発行してもらってください。</p></div>`;
+  (store.get("lastEmail")?$("#liPw"):$("#liEmail")).focus();
+  $("#liForm").onsubmit=async ev=>{
+    ev.preventDefault();
+    btnBusy($("#liGo"),true,"ログイン中…");
+    try{
+      const r=await fetch("/api/auth/local/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({email:$("#liEmail").value.trim(),password:$("#liPw").value})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(d.error||`HTTP ${r.status}`);
+      store.set("lastEmail", $("#liEmail").value.trim());
+      setLocalSession(d); await afterLocalLogin(); toast("ログインしました");
+    }catch(e){ btnBusy($("#liGo"),false); $("#liPw").value=""; $("#liMsg").innerHTML=`<p class="note err">${esc(e.message)}</p>`; }
+  };
+}
+async function afterLocalLogin(){ S.project=null; await loadMe(); renderConn(); await reload(); }
+/** 招待・パスワード再設定のリンク（#auth=…）から来たとき。表示したら true */
+async function handleLocalLink(){
+  const m=location.hash.match(/^#auth=([A-Za-z0-9_-]{10,200})$/);
+  if(!m) return false;
+  const token=m[1];
+  history.replaceState(null,"",location.pathname+location.search);
+  switchTab("hear");
+  const el=$("#hear");
+  let t;
+  try{
+    const r=await fetch("/api/auth/local/ticket",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token})});
+    t=await r.json(); if(!r.ok) throw new Error(t.error||`HTTP ${r.status}`);
+  }catch(e){ el.innerHTML=`<div class="panel" style="max-width:560px"><h2>リンクを使えません</h2><p class="note err">${esc(e.message)}</p><button class="btn" id="lkLogin">ログイン画面へ</button></div>`; $("#lkLogin").onclick=()=>localLoginView(); return true; }
+  const setup=t.purpose==="setup";
+  el.innerHTML=`<div class="panel" style="max-width:600px"><h2>${setup?"パスワードを決める":"パスワードの再設定"}</h2>
+    <p>${setup?`${t.orgName?`「${esc(t.orgName)}」の要件ナビに招待されています。`:""}`:""}<span class="mono">${esc(t.email)}</span> ${setup?"のアカウントを作ります。":"の新しいパスワードを決めます。ほかの端末でのログインは終わります。"}</p>
+    <p class="hint">このリンクは ${esc(fmtDate(t.expiresAt))} まで、1回だけ使えます。</p>
+    <form id="lkForm"><input type="email" autocomplete="username" value="${esc(t.email)}" hidden>
+      ${setup?`<div class="row"><label class="f">あなたの名前<input id="lkName" autocomplete="name" value="${esc(t.name||"")}" placeholder="例：開発 花子"></label></div>`:""}
+      <div class="row">${pwField("lkPw",`パスワード（${t.passwordMinLength}文字以上）`,"new-password",t.passwordMinLength)}${pwField("lkPw2","パスワード（確認）","new-password")}</div>
+      <div class="row"><button class="btn" type="submit" id="lkGo">${setup?"アカウントを作ってログイン":"再設定してログイン"}</button></div>
+      <div id="lkMsg" aria-live="polite"></div></form></div>`;
+  $("#lkForm").onsubmit=async ev=>{
+    ev.preventDefault();
+    if($("#lkPw").value!==$("#lkPw2").value){ $("#lkMsg").innerHTML=`<p class="note err">確認のパスワードが一致しません</p>`; return; }
+    btnBusy($("#lkGo"),true,"設定中…");
+    try{
+      const body={token,password:$("#lkPw").value}; if($("#lkName")?.value.trim()) body.name=$("#lkName").value.trim();
+      const r=await fetch("/api/auth/local/accept",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(d.error||`HTTP ${r.status}`);
+      store.set("lastEmail", t.email); setLocalSession(d); await afterLocalLogin(); toast(setup?"アカウントを作りました":"パスワードを再設定しました");
+    }catch(e){ btnBusy($("#lkGo"),false); $("#lkMsg").innerHTML=`<p class="note err">${esc(e.message)}</p>`; }
+  };
+  return true;
+}
+/** 自分のアカウント（表示名・パスワードの変更） */
+function accountView(){
+  let d=$("#acctDlg");
+  if(!d){ d=document.createElement("dialog"); d.id="acctDlg"; d.className="panel"; d.style.maxWidth="560px"; document.body.appendChild(d); }
+  d.innerHTML=`<h2>アカウント</h2><p class="mono">${esc(S.user)}</p>
+    <h3>表示名</h3><div class="row"><label class="f">名前<input id="acName" value="${esc(S.meName||"")}"></label><button class="btn sm" id="acNameGo">保存</button></div>
+    <h3 style="margin-top:12px">パスワードの変更</h3>
+    <form id="acPwForm"><input type="email" autocomplete="username" value="${esc(S.meEmail||"")}" hidden>
+      <div class="row">${pwField("acCur","今のパスワード")}</div>
+      <div class="row">${pwField("acNew","新しいパスワード","new-password")}${pwField("acNew2","新しいパスワード（確認）","new-password")}</div>
+      <div class="row"><button class="btn" type="submit" id="acPwGo">パスワードを変える</button><button class="btn ghost" type="button" id="acClose">閉じる</button></div>
+      <p class="hint">変えると、ほかの端末でのログインは終わります（この画面はそのまま使えます）。</p>
+      <div id="acMsg" aria-live="polite"></div></form>`;
+  d.showModal();
+  $("#acClose").onclick=()=>d.close();
+  $("#acNameGo").onclick=async()=>{ try{ const r=await api("/api/auth/local/profile",{method:"PATCH",body:{name:$("#acName").value.trim()}}); S.meName=r.name; S.user=r.name?`${r.name}（${r.email}）`:r.email; sess.set("user",S.user); renderConn(); toast("表示名を変えました"); }catch(e){ toast(e.message) } };
+  $("#acPwForm").onsubmit=async ev=>{
+    ev.preventDefault();
+    if($("#acNew").value!==$("#acNew2").value){ $("#acMsg").innerHTML=`<p class="note err">確認のパスワードが一致しません</p>`; return; }
+    try{ const r=await api("/api/auth/local/password",{method:"POST",body:{currentPassword:$("#acCur").value,newPassword:$("#acNew").value}});
+      $("#acMsg").innerHTML=`<p class="note">✓ パスワードを変えました${r.endedSessions?`（ほかの端末のログイン ${r.endedSessions}件を終わらせました）`:""}</p>`; $("#acCur").value=$("#acNew").value=$("#acNew2").value=""; }
+    catch(e){ $("#acMsg").innerHTML=`<p class="note err">${esc(e.message)}</p>`; }
+  };
 }
 
 /* ---------- 接続 ---------- */
@@ -412,8 +546,9 @@ function renderConn(){
   $("#conn").innerHTML = S.token
     ? `<span class="who">${esc(S.user)}</span>
        ${myOrgs.length>1?`<label class="cl">組織<select id="cMyOrg">${myOrgs.map(o=>`<option value="${esc(o.orgId)}" ${o.orgId===S.orgId?"selected":""}>${esc(o.name)}（${esc(ROLE_JA[o.role]||o.role)}）</option>`).join("")}</select></label>`:`<span class="hint">（${esc(ROLE_JA[S.role]||S.role)}）</span>`}
-       <button class="btn sm ghost" id="cHelp" title="組織・プロジェクトの関係">？</button><button class="btn sm ghost" id="cOut">ログアウト</button>`
-    : `<button class="btn sm" id="cIn">ログイン</button><button class="btn sm ghost" id="cNewOrg">組織を作成</button>`;
+       <button class="btn sm ghost" id="cHelp" title="組織・プロジェクトの関係">？</button>${isLocal()?`<button class="btn sm ghost" id="cAcct" title="表示名・パスワードの変更">アカウント</button>`:""}<button class="btn sm ghost" id="cOut">ログアウト</button>`
+    : isLocal() ? `<button class="btn sm" id="cIn">ログイン</button>` : `<button class="btn sm" id="cIn">ログイン</button><button class="btn sm ghost" id="cNewOrg">組織を作成</button>`;
+  $("#cAcct") && ($("#cAcct").onclick = accountView);
   $("#cOut") && ($("#cOut").onclick = logout);
   $("#cMyOrg") && ($("#cMyOrg").onchange = async e => { S.orgId = e.target.value; store.set("orgId", S.orgId); S.project=null; store.set("projectId", null); await loadMe(); renderConn(); reload(); });
   $("#cHelp") && ($("#cHelp").onclick = toggleCtxHelp);
@@ -424,12 +559,18 @@ const ROLE_JA={admin:"管理者",editor:"編集者",reviewer:"レビュー担当
 const ROLE_DESC={admin:"AI設定・連携先・承認の設定まで、すべて操作できます",editor:"ヒアリング・要件の編集・確定ができます",reviewer:"要件を見て、レビュー（承認・差し戻し）ができます",viewer:"見るだけです"};
 /** ログイン画面: 入っている組織と、選んだ組織での役割（組織のメンバーで決まる） */
 async function loadMe(){
+  if(S.meta?.auth==="dev"){
+    if(!S.orgId){ S.perms=null; return; }
+    try{ S.perms=(await api("/api/me")).permissions||null; }catch(e){ S.perms=null; }
+    return;
+  }
   if(!isOidc() || !S.token) return;
   try{
     let me = await api("/api/me");
     S.myOrgs = me.orgs || [];
     if(!S.myOrgs.some(o=>o.orgId===S.orgId)){ S.orgId = S.myOrgs[0]?.orgId || ""; store.set("orgId", S.orgId||null); me = await api("/api/me"); }
-    S.role = me.role; S.orgName = S.myOrgs.find(o=>o.orgId===S.orgId)?.name || "";
+    S.role = me.role; S.perms = me.permissions || null; S.orgName = S.myOrgs.find(o=>o.orgId===S.orgId)?.name || "";
+    S.meName = me.name || ""; S.meEmail = me.email || "";
     if(me.email) S.user = me.name ? `${me.name}（${me.email}）` : me.email;
   }catch(e){ S.myOrgs=[]; }
 }
@@ -446,7 +587,7 @@ function switchOrg(id){
 /** 今どの組織・プロジェクトで、どの役割で使っているか */
 async function renderCtx(){
   const el=$("#ctx"); if(!el) return;
-  if(!S.orgId && !S.token){ el.innerHTML=`<span>はじめに、右上で組織を選ぶか「＋ 新しい組織を作る」を選んでください</span>`; return; }
+  if(!S.orgId && !S.token){ el.innerHTML=`<span>${isOidc()?"ログインしてください":"はじめに、右上で組織を選ぶか「＋ 新しい組織を作る」を選んでください"}</span>`; return; }
   let orgName=(S.devOrgs||[]).find(o=>o.id===S.orgId)?.name || S.orgName;
   if(!orgName && S.orgId){ try{ orgName=(await api(`/api/orgs/${S.orgId}`)).name; S.orgName=orgName; }catch(e){} }
   el.innerHTML=`<span>組織 <b>${esc(orgName||"（不明）")}</b></span><span class="sep">›</span>
@@ -461,8 +602,8 @@ function toggleCtxHelp(){
   h.innerHTML=`<b>組織・プロジェクト・ログインの関係</b>
     <dl><dt>組織</dt><dd>会社や部署の単位です。AI の API キー、課題管理ツールの連携、利用者と役割は、組織ごとに設定します。</dd>
     <dt>プロジェクト</dt><dd>要件定義をする1つのシステムです。組織の中にいくつでも作れ、「プロジェクト設定」タブで一覧から開きます。</dd>
-    <dt>役割</dt><dd>${ROLE_ORDER.map(r=>`${ROLE_JA[r]}：${ROLE_DESC[r]}`).join("<br>")}<br>メンバーと役割は、管理者が「組織」タブで招待・変更します。</dd>
-    ${S.meta?.auth==="dev"?`<dt>開発用ログイン</dt><dd>パスワードなしで、組織と役割を選ぶだけで使えるお試し用のログインです。誰でもどの組織の管理者にもなれるため、社内で共有する場合はログイン画面（AUTH_MODE=oidc）にしてください。役割を切り替えると、別の利用者として扱います（レビューの依頼と承認を1人で試せます）。</dd>`:`<dt>ログイン</dt><dd>ログイン画面は本人の確認だけに使います。どの組織に入れるかと役割は、組織の管理者が「組織」タブで決めます（メールアドレスで招待）。複数の組織に入っている場合は、右上で組織を切り替えます。</dd>`}
+    <dt>役割</dt><dd>${ROLE_ORDER.map(r=>`${ROLE_JA[r]}：${ROLE_DESC[r]}`).join("<br>")}<br>（既定の内容です。役割ごとにできることは「組織」タブの「役割ごとにできること」で確認でき、管理者が変えられます）<br>ユーザーと役割は、管理者が「組織」タブで招待・変更します。組織には管理者が1人以上必要です。</dd>
+    ${S.meta?.auth==="dev"?`<dt>開発用ログイン</dt><dd>パスワードなしで、組織と役割を選ぶだけで使えるお試し用のログインです。誰でもどの組織の管理者にもなれるため、社内で共有する場合はログイン画面（AUTH_MODE=oidc）にしてください。役割を切り替えると、別の利用者として扱います（レビューの依頼と承認を1人で試せます）。</dd>`:isLocal()?`<dt>ログイン</dt><dd>メールアドレスとパスワードでログインします（要件ナビのログイン）。アカウントは、組織の管理者が招待して作ります。どの組織に入れるかと役割は、組織の管理者が「組織」タブで決めます。複数の組織に入っている場合は、右上で組織を切り替えます。パスワードは右上の「アカウント」で変えられます。</dd>`:`<dt>ログイン</dt><dd>ログイン画面は本人の確認だけに使います。どの組織に入れるかと役割は、組織の管理者が「組織」タブで決めます（メールアドレスで招待）。複数の組織に入っている場合は、右上で組織を切り替えます。</dd>`}
     <dt>ID</dt><dd>組織とプロジェクトには、内部の番号（ID）があります。ふだんは名前で選べばよく、ID は他の人に同じプロジェクトを開いてもらうときや、AI コーディングツールの設定に使います。</dd></dl>`;
 }
 async function createOrg(){
@@ -613,7 +754,7 @@ async function openEdit(id){
   catch(e){ fillModels("eM-"+id, [], p.model, `<span class="st bad">${esc(e.message)}</span>`); }
 }
 function renderProviders(){
-  const isAdmin = S.role === "admin";
+  const isAdmin = can("ai.manage");
   S.checks = S.checks || {};
   const lim = v => v==null ? "上限なし" : Number(v).toLocaleString();
   const std = vendorList().filter(v=>v.standard), others = vendorList().filter(v=>!v.standard);
@@ -649,7 +790,7 @@ function renderProviders(){
         <button class="btn sm" data-save="${p.id}">保存</button><button class="btn sm ghost" data-cancel="${p.id}">取消</button></div>
         ${vi.keyUrl?`<p class="hint">キーの全文はここでは表示できません。分からなくなったときは ${extLink(vi.keyUrl, vi.maker+" の管理画面")} で新しく発行して入れ直してください${vi.autoIssue?.mode!=="none"?"（上の「"+esc(vi.name)+" を登録」から自動で発行し直すこともできます）":""}。キーを入れ直すと、保存したときに新しいキーで一覧を確かめます。</p>`:""}<div id="eMsg-${p.id}"></div></td></tr>`;}).join("") || `<tr><td colspan="6" class="hint">まだ登録されていません。上で使うAIを選んでください</td></tr>`}
     </tbody></table></div>
-    ${isAdmin?"":`<p class="note warn">登録・変更・削除は admin 権限が必要です。</p>`}`;
+    ${isAdmin?"":`<p class="note warn">AI の登録・変更・削除には「AI設定」の権限が必要です（組織の管理者に相談してください）。</p>`}`;
   const numOrNull = v => v.trim()==="" ? null : Math.floor(Number(v));
   const msg = (h) => { const m=$("#pMsg"); if(m) m.innerHTML=h; };
   const err = e => msg(`<div class="note err">${esc(e.message||e)}</div>`);
@@ -778,7 +919,7 @@ function takeGoogleReturn(){
 function renderAdmin(){
   renderProviders();
   renderKeyGuide();
-  if (S.role === "admin") loadUsage(); else $("#usagePanel").hidden=true;
+  if (can("usage.view")) loadUsage(); else $("#usagePanel").hidden=true;
 }
 /** 自動で取得できない API キー・トークンの取得方法 */
 function renderKeyGuide(){
@@ -817,7 +958,7 @@ const aiSummary = a => a ? (a.mode==="single" ? `単一AI：${aiLabel(a.generato
 /** 開いているプロジェクトの AI（モード・生成AI・評価AI）を見る・変える */
 function renderProjectAi(){
   const box=$("#jAi"); if(!box||!S.project) return;
-  const a=S.project.aiConfig||{mode:"multi",generatorIds:[],evaluatorId:null}, ed=canEdit();
+  const a=S.project.aiConfig||{mode:"multi",generatorIds:[],evaluatorId:null}, ed=can("project.settings");
   const conf=S.project.confidential;
   const usable=S.providers.filter(p=>!conf||p.isLocal);
   const missing=[...a.generatorIds, ...(a.evaluatorId?[a.evaluatorId]:[])].filter(id=>!S.providers.some(p=>p.id===id));
@@ -876,8 +1017,8 @@ async function loadProjectList(){
         <td>${esc(p.phaseName||"")}</td><td class="hint" style="min-width:12em">${esc(aiSummary(p.aiConfig))}</td><td class="mono">${esc((p.createdAt||"").slice(0,10))}</td>
         <td><button class="btn sm ghost mono" data-jcopy="${esc(p.id)}" title="ID をコピー（共有用）">${esc(p.id.slice(0,8))}…</button></td>
         <td style="white-space:nowrap">${S.project?.id===p.id?'<span class="hint">開いています</span>':`<button class="btn sm" data-jopen="${esc(p.id)}">開く</button>`}
-          ${canEdit()?`<button class="btn sm ghost" data-jren="${esc(p.id)}">名前を変える</button>`:""}
-          ${S.role==="admin"?`<button class="btn sm ghost" data-jarch="${esc(p.id)}" data-arch="${p.archivedAt?"0":"1"}">${p.archivedAt?"元に戻す":"アーカイブ"}</button> <button class="btn sm danger" data-jdel="${esc(p.id)}">削除</button>`:""}</td></tr>
+          ${can("project.settings")?`<button class="btn sm ghost" data-jren="${esc(p.id)}">名前を変える</button>`:""}
+          ${can("project.manage")?`<button class="btn sm ghost" data-jarch="${esc(p.id)}" data-arch="${p.archivedAt?"0":"1"}">${p.archivedAt?"元に戻す":"アーカイブ"}</button> <button class="btn sm danger" data-jdel="${esc(p.id)}">削除</button>`:""}</td></tr>
         <tr id="jr-${esc(p.id)}" hidden><td colspan="6"><div class="row"><label class="f" style="min-width:220px">名前<input id="jrn-${esc(p.id)}" value="${esc(p.name)}"></label><label class="f" style="flex:1;min-width:240px">目的<input id="jrp-${esc(p.id)}" value="${esc(p.purpose||"")}"></label><button class="btn sm" data-jrsave="${esc(p.id)}">保存</button></div></td></tr>
         ${p.archivedAt?`<tr><td colspan="6" class="hint" style="padding-top:0">アーカイブ：${esc(fmtDate(p.archivedAt))}（一覧には出しません。開けば見られます）</td></tr>`:""}`).join("")}</tbody></table>`
       : `<p class="hint">${showArch?"この組織にはプロジェクトがありません。":"この組織にはまだプロジェクトがありません。下の「新規作成」か「サンプル事例を読み込む」で作ってください。"}</p>`;
@@ -898,17 +1039,16 @@ async function loadProjectList(){
 }
 /* ---------- プロジェクト設定タブ ---------- */
 function renderProject(){
-  const isAdmin = S.role === "admin";
   const gens = S.providers.map(p=>`<label><input type="checkbox" name="g" value="${p.id}" id="g-${p.id}">${esc(p.label)}</label>`).join("");
   $("#projPanel").innerHTML = `<h2>プロジェクト</h2>
-    ${S.project?`<p>開いているプロジェクト: <b>${esc(S.project.name)}</b>${S.role==="admin"?` <button class="btn sm ghost" type="button" id="jRepo">このプロジェクトのリポジトリを作る（GitHub）</button>`:""}</p>`:""}
+    ${S.project?`<p>開いているプロジェクト: <b>${esc(S.project.name)}</b>${can("integration.manage")?` <button class="btn sm ghost" type="button" id="jRepo">このプロジェクトのリポジトリを作る（GitHub）</button>`:""}</p>`:""}
     ${S.project?`<div id="jAi"></div>`:""}
     <h3 style="margin-top:12px">この組織のプロジェクト</h3>
     <div class="scroll" id="jList"><p class="hint">読み込み中…</p></div>
     <details class="hint" style="margin-top:6px"><summary>ID で開く（ほかの人から共有された場合など）</summary>
       <div class="row" style="margin-top:6px"><label class="f" style="flex:1">プロジェクトID<input id="jOpen" placeholder="例：3f2a…（「プロジェクト設定」の一覧の ID）" spellcheck="false"></label><button class="btn ghost" id="jOpenGo">開く</button></div>
       <p>プロジェクトは組織の中にあるため、別の組織のプロジェクトは開けません（右上で組織を切り替えてください）。</p></details>
-    ${canEdit()?`<div class="note" style="background:var(--accent-soft)">使い方を見るには、本システム自身の要求事項を題材にした<b>サンプル事例</b>を読み込めます（資料・分析・EARSの要件・非機能要件シート入り。AIは呼び出しません）。<button class="btn sm ghost" id="jSample" style="margin-left:6px">サンプル事例を読み込む</button></div>`:""}
+    ${can("project.create")?`<div class="note" style="background:var(--accent-soft)">使い方を見るには、本システム自身の要求事項を題材にした<b>サンプル事例</b>を読み込めます（資料・分析・EARSの要件・非機能要件シート入り。AIは呼び出しません）。<button class="btn sm ghost" id="jSample" style="margin-left:6px">サンプル事例を読み込む</button></div>`:""}
     <h3 style="margin-top:16px">新規作成</h3>
     <div style="display:flex;flex-direction:column;gap:10px">
       <label class="f">名称<input id="jN" placeholder="例：美容室のWeb予約システム"></label>
@@ -945,50 +1085,71 @@ function renderProject(){
   loadIntegrations();
   loadDevConnect();
 }
-/* ---------- 組織タブ（概要・名前・メンバーと役割・監査ログ） ---------- */
+/* ---------- 組織タブ（組織設定・ユーザーと役割・役割ごとにできること・監査ログ） ---------- */
 const fmtDate = t => t ? new Date(t).toLocaleString("ja-JP",{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "―";
 async function renderOrg(){
-  const isAdmin = S.role === "admin";
-  const op=$("#orgPanel"), mp=$("#memberPanel");
-  if(!S.orgId && !S.token){ op.innerHTML=`<p class="hint">先に右上で組織を選んでください</p>`; mp.innerHTML=""; return; }
+  const op=$("#orgPanel"), mp=$("#memberPanel"), rp=$("#rolePanel");
+  if(!S.orgId){ op.innerHTML=`<p class="hint">${isOidc()?"ログインしてください":"先に右上で組織を選んでください"}</p>`; mp.innerHTML=""; rp.innerHTML=""; $("#auditPanel").hidden=true; return; }
   op.innerHTML=`<h2>組織</h2><p class="hint">読み込み中…</p>`;
   try{
-    const sm=await api(`/api/orgs/${S.orgId}/summary`), c=sm.counts, n=v=>Number(v).toLocaleString();
+    const sm=await api(`/api/orgs/${S.orgId}/summary`), c=sm.counts, o=sm.org, n=v=>Number(v).toLocaleString(), edit=can("org.settings");
     op.innerHTML=`<h2>組織</h2>
-      <div class="row" style="align-items:center"><span style="font-family:var(--f-display);font-size:20px;font-weight:700" id="ogName">${esc(sm.org.name)}</span>
-        ${isAdmin?`<button class="btn sm ghost" id="ogRename">名前を変える</button>`:""}<span class="hint">作成：${esc(fmtDate(sm.org.createdAt))}</span></div>
-      <div id="ogRenameBox" hidden class="row" style="margin-top:6px"><label class="f" style="min-width:260px">組織の名前<input id="ogNewName" value="${esc(sm.org.name)}"></label><button class="btn sm" id="ogSave">保存</button><button class="btn sm ghost" id="ogCancel">やめる</button></div>
+      <div class="row" style="align-items:center"><span style="font-family:var(--f-display);font-size:20px;font-weight:700">${esc(o.name)}</span><span class="hint">作成：${esc(fmtDate(o.createdAt))}</span></div>
+      ${o.description?`<p style="margin:4px 0">${esc(o.description)}</p>`:""}
+      ${o.contactEmail?`<p class="hint" style="margin:2px 0">問い合わせ先：<span class="mono">${esc(o.contactEmail)}</span></p>`:""}
+      ${c.members.admins<1&&sm.memberManagement!=="dev"?`<p class="note warn">この組織には、利用中の管理者がいません。組織には管理者が1人以上必要です。招待中の管理者がログインするか、サーバーの管理者に相談してください。</p>`:""}
       <div class="vgrid" style="margin-top:12px">
-        <div class="vcard"><div class="hint">メンバー</div><div class="vname">${n(c.members.active)}人</div><div class="hint">招待中 ${n(c.members.invited)}人・管理者 ${n(c.members.admins)}人</div></div>
+        <div class="vcard"><div class="hint">ユーザー</div><div class="vname">${n(c.members.active)}人</div><div class="hint">招待中 ${n(c.members.invited)}人・管理者 ${n(c.members.admins)}人（1人以上必要）</div></div>
         <div class="vcard"><div class="hint">プロジェクト</div><div class="vname">${n(c.projects.active)}件</div><div class="hint">アーカイブ ${n(c.projects.archived)}件</div><button class="btn sm ghost" data-goto="project">一覧を開く</button></div>
         <div class="vcard"><div class="hint">登録した AI</div><div class="vname">${n(c.providers)}件</div><button class="btn sm ghost" data-goto="admin">AI設定を開く</button></div>
         <div class="vcard"><div class="hint">課題管理ツールとの連携</div><div class="vname">${n(c.integrations)}件</div><button class="btn sm ghost" data-goto="project">プロジェクト設定を開く</button></div>
         <div class="vcard"><div class="hint">今月の AI の利用量（${esc(sm.usage.month)}）</div><div class="vname">${n(sm.usage.used)} トークン</div><div class="hint">組織の上限：${sm.usage.limit==null?"なし":n(sm.usage.limit)}</div></div>
-      </div>`;
+      </div>
+      ${edit?`<details id="osBox" style="margin-top:14px" ${S.osOpen?"open":""}><summary><b>組織設定を編集する</b></summary>
+        <div class="row" style="margin-top:8px"><label class="f" style="min-width:260px">組織の名前<input id="osName" value="${esc(o.name)}" maxlength="200"></label>
+          <label class="f" style="min-width:240px">問い合わせ先のメールアドレス（任意）<input id="osContact" type="email" value="${esc(o.contactEmail)}" placeholder="it-help@example.com"></label></div>
+        <label class="f">説明（任意）<textarea id="osDesc" rows="2" maxlength="1000" placeholder="例：情報システム部の要件定義で使う組織です">${esc(o.description)}</textarea></label>
+        <div class="row"><label class="f" style="min-width:320px">招待できるメールアドレスのドメイン（空ならどこでも・カンマ区切り）<input id="osDomains" value="${esc((o.allowedEmailDomains||[]).join(", "))}" placeholder="example.co.jp, partner.example.jp"></label>
+          <label class="f">AI の月間トークン上限（組織全体・空なら上限なし）<input id="osLimit" type="number" min="1" step="1000" value="${o.monthlyTokenLimit??""}"></label></div>
+        <div class="row"><button class="btn" id="osSave">組織設定を保存</button><span id="osMsg" aria-live="polite"></span></div>
+        <p class="hint">問い合わせ先は、招待の文に入ります。ドメインを決めると、ほかのドメインのメールアドレスは招待できません（すでにいるユーザーはそのまま）。組織設定の変更とユーザーの管理は、管理者だけができます。</p></details>`
+      :`<p class="hint" style="margin-top:10px">組織設定の変更は、組織の管理者が行います。</p>`}`;
     op.querySelectorAll("[data-goto]").forEach(b=>b.onclick=()=>switchTab(b.dataset.goto));
-    if($("#ogRename")){
-      $("#ogRename").onclick=()=>{ $("#ogRenameBox").hidden=false; $("#ogNewName").focus(); };
-      $("#ogCancel").onclick=()=>{ $("#ogRenameBox").hidden=true; };
-      $("#ogSave").onclick=async()=>{ try{ const o=await api(`/api/orgs/${S.orgId}`,{method:"PATCH",body:{name:$("#ogNewName").value.trim()}}); S.orgName=o.name; await loadDevOrgs(); await loadMe(); renderConn(); renderCtx(); renderOrg(); toast("組織の名前を変えました"); }catch(e){ toast(e.message) } };
+    if(edit){
+      $("#osBox").ontoggle=e=>{ S.osOpen=e.target.open; };
+      $("#osSave").onclick=async()=>{
+        const lim=$("#osLimit").value.trim();
+        const body={name:$("#osName").value.trim(), description:$("#osDesc").value.trim(), contactEmail:$("#osContact").value.trim(),
+          allowedEmailDomains:$("#osDomains").value.split(/[\s,、，]+/).map(x=>x.trim()).filter(Boolean), monthlyTokenLimit: lim?Number(lim):null};
+        try{ const r=await api(`/api/orgs/${S.orgId}`,{method:"PATCH",body}); S.orgName=r.name; await loadDevOrgs(); await loadMe(); renderConn(); renderCtx(); await renderOrg(); toast("組織設定を保存しました"); }
+        catch(e){ $("#osMsg").innerHTML=`<span class="note err">${esc(e.message)}</span>`; }
+      };
     }
   }catch(e){ op.innerHTML=`<h2>組織</h2><p class="note err">${esc(e.message)}</p>`; }
-  if(!isAdmin){ mp.innerHTML=`<h2>メンバーと役割</h2><p class="hint">あなたの役割は「${esc(ROLE_JA[S.role]||S.role)}」です。メンバーの招待と役割の変更は、組織の管理者が行います。</p>`; $("#auditPanel").hidden=true; return; }
-  await renderMembers();
-  auditState.entries=[]; auditState.next=null; loadAudit();
+  if(can("member.manage")) await renderMembers();
+  else mp.innerHTML=`<h2>ユーザーと役割</h2><p class="hint">あなたの役割は「${esc(ROLE_JA[S.role]||S.role)}」です。ユーザーの招待・役割の変更・パスワードの再設定は、組織の管理者が行います。</p>`;
+  await renderRoles();
+  if(can("audit.view")){ auditState.entries=[]; auditState.next=null; loadAudit(); } else $("#auditPanel").hidden=true;
 }
 async function renderMembers(){
   const mp=$("#memberPanel");
   try{
-    const r=await api(`/api/orgs/${S.orgId}/members`);
+    const r=await api(`/api/orgs/${S.orgId}/members`), local=r.auth==="local";
     const ST_JA={active:"利用中",invited:"招待中",removed:"外した"};
-    mp.innerHTML=`<h2>メンバーと役割</h2>
-      ${r.management==="dev"?`<p class="note warn">いまは開発用ログインのため、役割は右上で選んだものが使われます。ここで招待した設定は、ログイン画面（AUTH_MODE=oidc）にすると有効になります。</p>`:`<p class="hint">メンバーと役割は要件ナビで管理します。メールアドレスで招待すると、その人がログイン画面から同じメールアドレスでログインしたときに、この組織に入れます（ログインの仕組みは本人の確認だけに使います）。</p>`}
-      <div class="scroll"><table class="t"><thead><tr><th>名前・メールアドレス</th><th>役割</th><th>状態</th><th>最後に使った日時</th><th></th></tr></thead><tbody>
+    const admins=r.members.filter(m=>m.role==="admin"&&m.status==="active").length;
+    const lastAdmin=m=>m.role==="admin"&&m.status==="active"&&admins<=1;
+    mp.innerHTML=`<h2>ユーザーと役割</h2>
+      ${r.management==="dev"?`<p class="note warn">いまは開発用ログインのため、役割は右上で選んだものが使われます。ここで招待した設定は、要件ナビのログイン（AUTH_MODE=local）かログイン画面（AUTH_MODE=oidc）にすると有効になります。</p>`
+        :local?`<p class="hint">メールアドレスで招待すると、パスワードを決める一回限りのリンク（7日間有効）を発行します。要件ナビからはメールを送らないため、表示された文をメールやチャットで送ってください。パスワードを忘れた人には「パスワード再設定のリンク」を発行します（ほかの組織にも入っている人は、本人が「アカウント」から変えます）。</p>`
+        :`<p class="hint">ユーザーと役割は要件ナビで管理します。メールアドレスで招待すると、その人がログイン画面から同じメールアドレスでログインしたときに、この組織に入れます（ログインの仕組みは本人の確認だけに使います）。</p>`}
+      <p class="hint">管理者 <b>${admins}</b>人（組織に1人以上必要です。最後の管理者は、役割を変えたり外したりできません）</p>
+      <div class="scroll"><table class="t"><thead><tr><th>名前・メールアドレス</th><th>役割</th><th>状態</th>${local?"<th>パスワード</th>":""}<th>最後に使った日時</th><th></th></tr></thead><tbody>
       ${r.members.map(m=>`<tr><td>${m.name?`<b>${esc(m.name)}</b><br>`:""}<span class="mono">${esc(m.email||"（メールアドレスなし）")}</span>${m.source==="idp"?' <span class="tag">ログインの仕組みから</span>':""}</td>
-        <td><select data-mrole="${m.id}" aria-label="役割">${ROLE_ORDER.map(x=>`<option value="${x}" ${x===m.role?"selected":""}>${ROLE_JA[x]}</option>`).join("")}</select></td>
+        <td><select data-mrole="${m.id}" aria-label="役割" ${lastAdmin(m)?`disabled title="最後の管理者のため変えられません。先にほかの人を管理者にしてください"`:""}>${ROLE_ORDER.map(x=>`<option value="${x}" ${x===m.role?"selected":""}>${ROLE_JA[x]}</option>`).join("")}</select></td>
         <td><span class="st ${m.status==="active"?"good":m.status==="invited"?"warn":"bad"}">${ST_JA[m.status]}</span></td>
+        ${local?`<td>${m.hasPassword?'<span class="st good">設定済み</span>':'<span class="st warn">未設定</span>'}</td>`:""}
         <td class="mono">${esc(fmtDate(m.lastSeenAt))}</td>
-        <td style="white-space:nowrap">${m.status==="invited"?`<button class="btn sm ghost" data-minvite="${m.id}">招待の文をコピー</button> `:""}<button class="btn sm danger" data-mdel="${m.id}">${m.status==="invited"?"招待を取り消す":"外す"}</button></td></tr>`).join("")||`<tr><td colspan="5" class="hint">まだメンバーがいません</td></tr>`}
+        <td style="white-space:nowrap">${local&&m.email?`<button class="btn sm ghost" data-mlink="${m.id}">${m.hasPassword?"パスワード再設定のリンク":"パスワードを決めるリンク"}</button> `:""}${!local&&m.status==="invited"?`<button class="btn sm ghost" data-minvite="${m.id}">招待の文をコピー</button> `:""}<button class="btn sm danger" data-mdel="${m.id}" ${lastAdmin(m)?"disabled title=\"最後の管理者は外せません\"":""}>${m.status==="invited"?"招待を取り消す":"外す"}</button></td></tr>`).join("")||`<tr><td colspan="${local?6:5}" class="hint">まだユーザーがいません</td></tr>`}
       </tbody></table></div>
       <h3 style="margin-top:14px">招待する</h3>
       <div class="row"><label class="f" style="min-width:240px">メールアドレス<input id="mvEmail" type="email" placeholder="name@example.com"></label>
@@ -997,35 +1158,69 @@ async function renderMembers(){
         <button class="btn" id="mvGo">招待する</button></div>
       <p class="hint" id="mvRoleDesc">${esc(ROLE_DESC.editor)}</p>
       <div id="mvOut" aria-live="polite"></div>
-      <p class="hint" style="margin-top:8px">要件ナビからはメールを送りません。招待した後に表示される文（ログインのURL入り）を、メールやチャットで送ってください。組織の管理者は、最低1人必要です。</p>`;
+      ${local?"":`<p class="hint" style="margin-top:8px">要件ナビからはメールを送りません。招待した後に表示される文（ログインのURL入り）を、メールやチャットで送ってください。</p>`}`;
     const inviteText=(email,role)=>`要件ナビ（${S.orgName||""}）に招待しました（役割: ${ROLE_JA[role]}）。\n${r.loginUrl}\nを開き、「ログイン」から ${email} でログインしてください（アカウントがなければ、ログイン画面で作れます）。`;
+    const showMsg=(head,msg)=>{ $("#mvOut").innerHTML=`<div class="note" style="background:var(--accent-soft)">✓ ${esc(head)}<textarea id="mvMsg" rows="4" readonly style="margin-top:6px">${esc(msg)}</textarea><button class="btn sm" id="mvCopy">コピー</button></div>`; $("#mvCopy").onclick=()=>copyText(msg); $("#mvOut").scrollIntoView({block:"nearest"}); };
     $("#mvRole").onchange=()=>{ $("#mvRoleDesc").textContent=ROLE_DESC[$("#mvRole").value]; };
     $("#mvGo").onclick=async()=>{
       const body={email:$("#mvEmail").value.trim(), role:$("#mvRole").value}; if($("#mvName").value.trim()) body.name=$("#mvName").value.trim();
       try{ const x=await api(`/api/orgs/${S.orgId}/members`,{method:"POST",body});
         await renderMembers();
-        $("#mvOut").innerHTML=`<div class="note" style="background:var(--accent-soft)">✓ ${esc(x.member.email)} を招待しました。次の文を送ってください。<textarea id="mvMsg" rows="3" readonly style="margin-top:6px">${esc(x.message)}</textarea><button class="btn sm" id="mvCopy">コピー</button></div>`;
-        $("#mvCopy").onclick=()=>copyText(x.message);
+        showMsg(`${x.member.email} を招待しました。次の文を送ってください${x.setupUrl?"（リンクは1回だけ使えます）":""}。`, x.message);
       }catch(e){ $("#mvOut").innerHTML=`<div class="note err">${esc(e.message)}</div>`; }
     };
     mp.querySelectorAll("[data-mrole]").forEach(sel=>sel.onchange=async()=>{
       const m=r.members.find(x=>x.id===sel.dataset.mrole);
-      try{ await api(`/api/orgs/${S.orgId}/members/${m.id}`,{method:"PATCH",body:{role:sel.value}}); toast(`${m.name||m.email} を「${ROLE_JA[sel.value]}」にしました`); if(!S.meta||isOidc()) await loadMe(); renderCtx(); renderMembers(); }
+      try{ await api(`/api/orgs/${S.orgId}/members/${m.id}`,{method:"PATCH",body:{role:sel.value}}); toast(`${m.name||m.email} を「${ROLE_JA[sel.value]}」にしました`); await loadMe(); renderConn(); renderCtx(); renderOrg(); }
       catch(e){ toast(e.message); sel.value=m.role; }
     });
     mp.querySelectorAll("[data-minvite]").forEach(b=>b.onclick=()=>{ const m=r.members.find(x=>x.id===b.dataset.minvite); copyText(inviteText(m.email,m.role)); });
+    mp.querySelectorAll("[data-mlink]").forEach(b=>b.onclick=async()=>{
+      const m=r.members.find(x=>x.id===b.dataset.mlink);
+      if(m.hasPassword && !confirm(`${m.name||m.email} のパスワード再設定のリンクを発行しますか？（前に発行したリンクは使えなくなります。再設定すると、その人のほかの端末でのログインは終わります）`)) return;
+      try{ const x=await api(`/api/orgs/${S.orgId}/members/${m.id}/link`,{method:"POST"}); showMsg(`${m.email} 向けのリンクを発行しました。本人だけに送ってください。`, x.message); }
+      catch(e){ $("#mvOut").innerHTML=`<div class="note err">${esc(e.message)}</div>`; $("#mvOut").scrollIntoView({block:"nearest"}); }
+    });
     mp.querySelectorAll("[data-mdel]").forEach(b=>b.onclick=async()=>{
       const m=r.members.find(x=>x.id===b.dataset.mdel);
       if(!confirm(m.status==="invited"?`${m.email} への招待を取り消しますか？`:`${m.name||m.email} をこの組織から外しますか？（その人は、この組織に入れなくなります。プロジェクトの記録は残ります）`)) return;
-      try{ await api(`/api/orgs/${S.orgId}/members/${m.id}`,{method:"DELETE"}); toast("外しました"); renderMembers(); }catch(e){ toast(e.message) }
+      try{ await api(`/api/orgs/${S.orgId}/members/${m.id}`,{method:"DELETE"}); toast("外しました"); renderOrg(); }catch(e){ toast(e.message) }
     });
-  }catch(e){ mp.innerHTML=`<h2>メンバーと役割</h2><p class="note err">${esc(e.message)}</p>`; }
+  }catch(e){ mp.innerHTML=`<h2>ユーザーと役割</h2><p class="note err">${esc(e.message)}</p>`; }
+}
+/** 役割ごとにできること（全員が見られる。変えられるのは管理者） */
+async function renderRoles(){
+  const rp=$("#rolePanel");
+  try{
+    const m=await api(`/api/orgs/${S.orgId}/permissions`), edit=can("org.settings");
+    const has=(role,key)=>m.roles.find(r=>r.role===role).permissions.includes(key);
+    const tip=(r,p)=>r.role==="admin"?"管理者はすべての操作ができます":p.locked==="admin"?"管理者だけの操作です（ほかの役割には渡せません）":p.locked==="all"?"全員ができます":r.defaults.includes(p.key)?"既定：できる":"既定：できない";
+    const groups=[["project","プロジェクトでの操作"],["org","組織での操作"]];
+    rp.innerHTML=`<h2>役割ごとにできること</h2>
+      <p class="hint">${edit?"役割ごとに、できる操作を選べます。管理者はすべての操作ができます。「組織設定の変更」と「ユーザーの管理」は管理者だけの操作です。":`あなたの役割（${esc(ROLE_JA[S.role]||S.role)}）でできるのは ✓ の操作です。変えたいときは、組織の管理者に相談してください。`}</p>
+      <div class="scroll"><table class="t"><thead><tr><th>操作</th>${m.roles.map(r=>`<th style="text-align:center;white-space:nowrap">${ROLE_JA[r.role]}${r.role===S.role?'<br><span class="hint">（あなた）</span>':""}${r.customized?'<br><span class="tag">変更あり</span>':""}</th>`).join("")}</tr></thead><tbody>
+      ${groups.map(([g,label])=>`<tr><td colspan="${m.roles.length+1}"><b>${label}</b></td></tr>`+m.permissions.filter(p=>p.group===g).map(p=>`<tr><td>${esc(p.label)}<br><span class="hint">${esc(p.desc)}</span></td>${m.roles.map(r=>{
+        const on=has(r.role,p.key), fixed=r.role==="admin"||Boolean(p.locked), changed=r.role!=="admin"&&on!==r.defaults.includes(p.key);
+        return `<td style="text-align:center" title="${esc(tip(r,p))}">${edit?`<input type="checkbox" data-perm="${r.role}|${p.key}" ${on?"checked":""} ${fixed?"disabled":""} aria-label="${esc(ROLE_JA[r.role]+"："+p.label)}">`:(on?"✓":'<span class="hint">―</span>')}${changed?'<br><span class="hint">変更</span>':""}</td>`; }).join("")}</tr>`).join("")).join("")}
+      </tbody></table></div>
+      ${edit?`<div class="row" style="margin-top:8px"><button class="btn" id="rpSave">権限を保存</button><button class="btn ghost" id="rpReset">既定に戻す</button></div>
+        <p class="hint">保存すると、次の操作からすぐに反映されます。変更は監査ログに残ります。</p>`:""}`;
+    if(!edit) return;
+    $("#rpSave").onclick=async()=>{
+      const roles={}; ["editor","reviewer","viewer"].forEach(r=>{ roles[r]=[...rp.querySelectorAll("input[data-perm]")].filter(x=>x.dataset.perm.startsWith(r+"|")&&x.checked).map(x=>x.dataset.perm.split("|")[1]); });
+      try{ await api(`/api/orgs/${S.orgId}/permissions`,{method:"PUT",body:{roles}}); await loadMe(); toast("役割ごとの権限を保存しました"); renderRoles(); }catch(e){ toast(e.message) }
+    };
+    $("#rpReset").onclick=async()=>{
+      if(!confirm("役割ごとの権限を既定に戻しますか？")) return;
+      try{ await api(`/api/orgs/${S.orgId}/permissions`,{method:"PUT",body:{reset:true}}); await loadMe(); toast("既定に戻しました"); renderRoles(); }catch(e){ toast(e.message) }
+    };
+  }catch(e){ rp.innerHTML=`<h2>役割ごとにできること</h2><p class="note err">${esc(e.message)}</p>`; }
 }
 /* ---------- 監査ログ ---------- */
 const ACTION={"org.create":"組織の作成","org.limits.update":"組織の上限変更","provider.create":"AIの登録","provider.update":"AIの変更","provider.delete":"AIの削除",
   "project.create":"プロジェクト作成","project.phase":"フェーズ移動","ai.round":"AIで案を生成","ai.guide":"AIで質問を作成","ai.uml":"AIでUML生成",
   "decision.create":"案の採用","uml.adopt":"UML案の採用","requirement.update":"要件の編集","requirement.delete":"要件の削除","spec.export":"仕様書の出力","auth.login":"ログイン",
-  "ai.tasks":"AIでタスク分解","tasks.export":"課題の登録","integration.create":"連携先の登録","integration.repo.create":"リポジトリの作成","org.update":"組織名の変更","member.invite":"メンバーの招待","member.update":"役割の変更","member.remove":"メンバーを外す","project.update":"プロジェクトの変更","project.archive":"プロジェクトのアーカイブ","project.unarchive":"アーカイブを元に戻す","project.ai":"プロジェクトのAIの変更","project.delete":"プロジェクトの削除","integration.update":"連携先の変更","integration.delete":"連携先の削除"};
+  "ai.tasks":"AIでタスク分解","tasks.export":"課題の登録","integration.create":"連携先の登録","integration.repo.create":"リポジトリの作成","org.update":"組織設定の変更","org.permissions":"役割ごとの権限の変更","member.invite":"ユーザーの招待","member.update":"役割の変更","member.remove":"ユーザーを外す","member.link":"パスワードのリンク発行","auth.setup":"アカウントの作成","auth.reset":"パスワードの再設定","auth.password":"パスワードの変更","project.update":"プロジェクトの変更","project.archive":"プロジェクトのアーカイブ","project.unarchive":"アーカイブを元に戻す","project.ai":"プロジェクトのAIの変更","project.delete":"プロジェクトの削除","integration.update":"連携先の変更","integration.delete":"連携先の削除"};
 const auditState={entries:[], next:null, action:""};
 function auditSummary(e){
   const d=e.detail||{};
@@ -1043,7 +1238,9 @@ function auditSummary(e){
     case "spec.export": return `${d.format}${d.images?`（図${d.images}件）`:""}`;
     case "ai.tasks": return `要件${d.sent?.requirements??0}件／${(d.generators||[]).map(g=>g.label).join("、")}${d.uncovered?.length?`／未対応：${d.uncovered.join(", ")}`:""}`;
     case "tasks.export": return `${d.integration?.label||""}（${d.integration?.target||""}）：登録${d.created}・済${d.skipped}・失敗${d.failed}`;
-    case "org.update": return `${d.before?.name||""} → ${d.after?.name||""}`;
+    case "org.update": { const L={name:"名前",description:"説明",contactEmail:"問い合わせ先",allowedEmailDomains:"招待できるドメイン",monthlyTokenLimit:"月間上限"}; const v=x=>Array.isArray(x)?(x.join(", ")||"どこでも"):x==null||x===""?"なし":String(x); return Object.keys(d.after||{}).map(k=>`${L[k]||k}：${v(d.before?.[k])} → ${v(d.after[k])}`).join("／"); }
+    case "org.permissions": return d.reset?"既定に戻した":(d.changes||[]).map(x=>`${ROLE_JA[x.role]||x.role}：${x.added.length?"＋"+x.added.length:""}${x.removed.length?" −"+x.removed.length:""}`).join("／");
+    case "member.link": return `${d.email||""}（${d.purpose==="reset"?"再設定":"アカウント作成"}）`;
     case "member.invite": return `${d.email||""}（${ROLE_JA[d.role]||d.role||""}）${d.again?"・招待し直し":""}`;
     case "member.update": return `${d.email||""}：${ROLE_JA[d.before?.role]||""} → ${ROLE_JA[d.after?.role]||""}`;
     case "member.remove": return `${d.email||""}${d.wasInvited?"（招待の取り消し）":""}`;
@@ -1063,7 +1260,7 @@ async function loadAudit(more=false){
     auditState.entries = more ? auditState.entries.concat(r.entries) : r.entries; auditState.next=r.next;
     $("#auditPanel").hidden=false;
     $("#auditPanel").innerHTML=`<div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">監査ログ</h2>
-      <label class="f">種類<select id="auF"><option value="">すべて</option>${[["ai.","AIの呼び出し"],["provider.","AIの登録・変更"],["requirement.","要件の手直し"],["decision.","案の採用"],["auth.","ログイン"],["spec.","仕様書の出力"],["tasks.","課題の登録"],["integration.","連携先"],["org.","組織"],["member.","メンバーと役割"],["project.","プロジェクトの整理"]].map(([v,l])=>`<option value="${v}" ${auditState.action===v?"selected":""}>${l}</option>`).join("")}</select></label></div>
+      <label class="f">種類<select id="auF"><option value="">すべて</option>${[["ai.","AIの呼び出し"],["provider.","AIの登録・変更"],["requirement.","要件の手直し"],["decision.","案の採用"],["auth.","ログイン"],["spec.","仕様書の出力"],["tasks.","課題の登録"],["integration.","連携先"],["org.","組織"],["member.","ユーザーと役割"],["project.","プロジェクトの整理"]].map(([v,l])=>`<option value="${v}" ${auditState.action===v?"selected":""}>${l}</option>`).join("")}</select></label></div>
       <p class="hint">誰が・いつ・何をしたかと、AIに送った内容の要約を記録しています。APIキーは記録しません。保持期間を過ぎたものは自動で削除されます。</p>
       <div class="scroll"><table class="t"><thead><tr><th>日時</th><th>利用者</th><th>操作</th><th>内容</th></tr></thead><tbody>
       ${auditState.entries.map(e=>`<tr><td class="mono">${e.at.slice(0,19).replace("T"," ")}</td><td class="mono">${esc(e.actor)}</td><td>${esc(ACTION[e.action]||e.action)}</td>
@@ -1507,7 +1704,7 @@ function renderImpl(){
   const ints=implState.integrations;
   $("#implReg").innerHTML=`<h3 style="margin:18px 0 6px">課題管理ツールに登録</h3>
     ${ints.length?`<div class="row" style="align-items:flex-end"><label class="f">登録先<select id="regTo">${ints.map(i=>`<option value="${esc(i.id)}">${esc(i.label)}（${esc(ITOOL[i.kind]||i.kind)}：${esc(i.target)}）</option>`).join("")}</select></label>
-      <button class="btn" id="regGo" ${canEdit()?"":"disabled"}>選んだストーリーを登録</button></div>
+      <button class="btn" id="regGo" ${can("tasks.publish")?"":"disabled"}>選んだストーリーを登録</button></div>
       <p class="hint">エピックは親の課題、ストーリーは子の課題として登録し、作業タスクと受け入れ条件は本文のチェックリストにします。登録済みのものは飛ばすため、失敗した分だけをやり直せます。</p>`
       :`<p class="hint">連携先がまだありません。「プロジェクト設定」タブで管理者が GitHub・Jira・Backlog の接続を登録してください。ファイル（CSV）で出力して取り込むこともできます。</p>`}
     <div id="regOut"></div>`;
@@ -1674,7 +1871,7 @@ async function loadAcceptance(){
   try{ renderAcceptance(await api(`/api/projects/${S.project.id}/acceptance`)) }catch(e){ $("#hoAccept").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
 function renderAcceptance(a){
-  const c=a.criteria, ed=canEdit(), canCheck=["admin","editor","reviewer"].includes(S.role);
+  const c=a.criteria, ed=canEdit(), canCheck=can("review.approve");
   const ev=a.evaluation;
   $("#hoAccept").innerHTML=`${a.defined?"":'<div class="note warn" style="margin-top:8px">まだ決めていません。下は既定の基準です。内容を確かめて保存してください。</div>'}
     <div class="row" style="margin:10px 0;gap:18px"><span>判定 <b class="st ${ev.accepted?"good":"warn"}" style="font-size:14px">${ev.accepted?"受け入れ基準を満たしています":"受け入れ基準を満たしていません"}</b></span></div>
@@ -1712,12 +1909,12 @@ async function loadReviews(){
 }
 function renderReviews(v){
   const [al,ac]=AP_ST[v.status]||[v.status,""];
-  const canReview=["admin","reviewer","editor"].includes(S.role);
+  const canReview=can("review.approve");
   $("#reviewPanel").innerHTML=`<h2 style="margin:0">レビューと承認</h2>
     <p class="hint" style="margin:4px 0 0">要件定義の内容を関係者に確認してもらい、承認を記録します。依頼した人は承認できません。承認した後に要件が変わると、承認は無効になります。</p>
     <div class="row" style="margin:10px 0;gap:18px"><span>いまの状態 <b class="st ${ac}">${esc(al)}</b></span>
       <span>確定に承認が<b>${v.settings.approvalRequired?`必要（${v.settings.requiredApprovals}人）`:"不要"}</b></span>
-      ${S.role==="admin"?`<label class="cmt"><input type="checkbox" id="rvReq" ${v.settings.approvalRequired?"checked":""}> 確定に承認を必須にする</label>
+      ${can("project.manage")?`<label class="cmt"><input type="checkbox" id="rvReq" ${v.settings.approvalRequired?"checked":""}> 確定に承認を必須にする</label>
         <label class="cmt">承認の人数 <select id="rvNum">${[1,2,3].map(n=>`<option ${n===v.settings.requiredApprovals?"selected":""}>${n}</option>`).join("")}</select></label>`:""}</div>
     ${canEdit()&&!S.baseline?`<div class="row" style="align-items:flex-end"><label class="f" style="flex:1">依頼のメモ（任意）<input id="rvNote" placeholder="例：業務部門の確認をお願いします"></label><button class="btn" id="rvGo">いまの要件でレビューを依頼する</button></div>`:""}
     ${v.reviews.map(r=>{const [l,c]=RV_ST[r.status]||[r.status,""]; return `<div style="border-top:1px solid var(--rule);padding:8px 0;margin-top:8px">
@@ -1829,7 +2026,7 @@ $("#hoPack").onclick=async()=>{
 const WH_EVENTS={"baseline.created":"確定版の作成","change.decided":"変更の決定","review.requested":"レビューの依頼","review.decided":"承認・差し戻し","question.created":"開発からの質問","question.answered":"質問への回答","implementation.reported":"実装状況の報告","test_run.recorded":"テスト結果の登録"};
 async function loadDevConnect(){
   const panel=$("#devPanel"); if(!S.orgId && !S.token){ panel.innerHTML=""; return }
-  if(S.role!=="admin"){ panel.innerHTML=`<h2>開発・テストのツールとの連携</h2><p class="hint">AIコーディングツール・CI 用のトークンと Webhook は、組織の管理者が登録します。</p>`; return }
+  if(!can("agent.manage")){ panel.innerHTML=`<h2>開発・テストのツールとの連携</h2><p class="hint">AIコーディングツール・CI 用のトークンと Webhook は、「開発ツールとの連携」の権限がある人（既定では組織の管理者）が登録します。</p>`; return }
   const [tokens,hooks]=await Promise.all([api(`/api/orgs/${S.orgId}/api-tokens`).catch(()=>[]), api(`/api/orgs/${S.orgId}/webhooks`).catch(()=>[])]);
   const now=new Date().toISOString();
   const tst=t=>t.revokedAt?["失効","bad"]:t.expiresAt&&t.expiresAt<now?["期限切れ","bad"]:["有効","good"];
@@ -2024,7 +2221,7 @@ async function suggestIntegEdit(i){
 }
 async function loadIntegrations(){
   const panel=$("#integPanel"); if(!S.orgId && !S.token){ panel.innerHTML=""; return }
-  const isAdmin=S.role==="admin";
+  const isAdmin=can("integration.manage");
   const list=await api(`/api/orgs/${S.orgId}/integrations`).catch(()=>[]);
   const fields=(kind, cfg={}, pre="n")=>INTEG_FIELDS[kind].map(([k,l,ph])=>`<label class="f">${l}<input id="${pre}-${k}" value="${esc(cfg[k]??"")}" placeholder="${esc(ph)}"></label>`).join("");
   panel.innerHTML=`<h2>課題管理ツールとの連携（組織の管理者）</h2>
@@ -2558,6 +2755,7 @@ function renderCrDetail(x){
 /* ---------- 起動 ---------- */
 async function reload(){
   if(isOidc() && !S.token){ signedOut(); return; }
+  if(S.meta?.auth==="dev") await loadMe(); // 役割ごとの権限（組織の設定）
   await loadProviders();
   const pid=store.get("projectId");
   if(pid && (!S.project || S.project.id!==pid)) { try{ S.project=await api(`/api/projects/${pid}`) }catch(e){ S.project=null; store.set("projectId", null); } }
@@ -2572,7 +2770,9 @@ async function reload(){
 (async()=>{
   try{ S.meta=await (await fetch("/api/meta")).json() }
   catch(e){ $("#hear").innerHTML='<div class="panel note err">APIに接続できません。サーバーが起動しているか確認してください。</div>'; return }
-  if(isOidc()){ await handleCallback(); if(S.token){ applyClaims(); await loadMe(); } }
+  if(isLocal() && await handleLocalLink()){ renderConn(); return; }
+  if(isOidc() && !isLocal()) await handleCallback();
+  if(isOidc() && S.token){ applyClaims(); await loadMe(); }
   const fromGoogle = takeGoogleReturn();
   await loadDevOrgs();
   if(S.meta?.auth==="dev" && S.orgId && !(S.devOrgs||[]).some(o=>o.id===S.orgId)){ S.orgId=""; store.set("orgId",null); store.set("projectId",null); } // データを消した後など

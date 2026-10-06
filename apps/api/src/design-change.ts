@@ -34,6 +34,7 @@ import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { audit } from "./audit.js";
+import type { Permission } from "./permissions.js";
 import { changedSince, latestItems, type AnyContext, type ImplementationContext } from "./implementation.js";
 import type { Baseline, ChangeRequest, JobProgress, Project, Requirement, ScreenRecord } from "./store.js";
 import { usageOf } from "./store.js";
@@ -292,7 +293,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
   /* ルート                                                              */
   /* ------------------------------------------------------------------ */
 
-  const loadChange = async (c: AnyContext, id: string, role: "viewer" | "editor") => {
+  const loadChange = async (c: AnyContext, id: string, role: Permission) => {
     const cr = await store.getChangeRequest(id);
     if (!cr) throw new HTTPException(404, { message: "変更要求が見つかりません" });
     const p = await ctx.loadProject(c, cr.projectId, role);
@@ -308,12 +309,12 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
   ) {
     /* ---------- 画面 ---------- */
     app.get("/api/projects/:id/screens", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json(await screensView(p, await store.latestScreens(p.id)));
     });
 
     app.post("/api/projects/:id/screens/generate", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, ScreenGenerateInput);
       if (jobs.wantsAsync(c)) {
         if (!(await store.listRequirements(p.id)).some((r) => SCREEN_TARGET_TYPES.includes(r.type))) {
@@ -327,7 +328,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
 
     /** クリックで画面を移動できるワイヤーフレーム（スクリプトなしのHTML） */
     app.get("/api/projects/:id/screens/prototype.html", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       const rec = await store.latestScreens(p.id);
       if (!rec) throw new HTTPException(404, { message: "画面がまだありません" });
       const html = renderPrototypeHtml(rec.model, p.name, screenReqs(await store.listRequirements(p.id)));
@@ -344,7 +345,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
 
     /** 画面への意見。見た目の細部は申し送りとして記録し、要件に関わるものは次の作り直しに反映する */
     app.post("/api/projects/:id/screens/feedback", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, FeedbackInput);
       const rec = await store.latestScreens(p.id);
       if (!rec) throw new HTTPException(400, { message: "画面がまだありません" });
@@ -377,7 +378,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
 
     /* ---------- 確定 ---------- */
     app.get("/api/projects/:id/baseline", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       const history = await store.listBaselines(p.id);
       const changes = await store.listChangeRequests(p.id);
       return c.json({
@@ -390,7 +391,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
 
     /** 要件定義を確定する（以後の変更は変更要求で行う） */
     app.post("/api/projects/:id/baseline", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, BaselineInput);
       if (await baselineOf(p.id)) throw new HTTPException(409, { message: "要件定義は確定済みです。変更は変更要求で行ってください" });
       const reqs = await store.listRequirements(p.id);
@@ -439,12 +440,12 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
 
     /* ---------- 変更要求 ---------- */
     app.get("/api/projects/:id/changes", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json(await store.listChangeRequests(p.id));
     });
 
     app.post("/api/projects/:id/changes", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, ChangeInput);
       if (!(await baselineOf(p.id))) {
         throw new HTTPException(400, { message: "要件定義はまだ確定していません。確定前は要件一覧で直接編集できます" });
@@ -503,13 +504,13 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
     });
 
     app.get("/api/changes/:id", async (c) => {
-      const { cr } = await loadChange(c, c.req.param("id"), "viewer");
+      const { cr } = await loadChange(c, c.req.param("id"), "project.view");
       return c.json(cr);
     });
 
     /** 影響分析（トレース＋AI）。保留中のものは分析し直せる */
     app.post("/api/changes/:id/analyze", async (c) => {
-      const { cr, p } = await loadChange(c, c.req.param("id"), "editor");
+      const { cr, p } = await loadChange(c, c.req.param("id"), "requirements.edit");
       if (cr.status === "approved" || cr.status === "rejected") throw new HTTPException(409, { message: "この変更要求は判断済みです" });
       if (jobs.wantsAsync(c)) {
         await ctx.budget(p.orgId, []);
@@ -520,7 +521,7 @@ export function designAndChange(ctx: ImplementationContext, opts: { gate?: Basel
 
     /** 選択肢から判断する */
     app.post("/api/changes/:id/decide", async (c) => {
-      const { cr, p } = await loadChange(c, c.req.param("id"), "editor");
+      const { cr, p } = await loadChange(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, DecideInput);
       if (cr.status === "approved" || cr.status === "rejected") throw new HTTPException(409, { message: "この変更要求は判断済みです" });
       if (!cr.impact && (input.option === "apply" || input.option === "alternative")) {

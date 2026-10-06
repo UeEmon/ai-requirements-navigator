@@ -46,13 +46,13 @@ export function repoSetup(ctx: ImplementationContext, opts: RepoSetupOptions) {
   function routes(app: Hono<any>) {
     /** リポジトリ名の候補（プロジェクト名から） */
     app.get("/api/projects/:id/repo-name", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json({ name: suggestRepoName(p.name), description: `${p.name}（要件ナビで要件定義）`.slice(0, 300) });
     });
 
     app.post("/api/orgs/:orgId/integrations/github/repos", async (c: Context) => {
       const orgId = c.req.param("orgId")!;
-      ctx.need(c, orgId, "admin");
+      ctx.need(c, orgId, "integration.manage");
       const input = await ctx.body(c, CreateRepoInput);
       let token = input.token?.trim() ?? "";
       let apiBase = input.apiBase?.replace(/\/+$/, "") ?? "";
@@ -67,7 +67,7 @@ export function repoSetup(ctx: ImplementationContext, opts: RepoSetupOptions) {
       // 入れるプロジェクト（同じ組織のもの）
       let project: Project | null = null;
       if (input.projectId) {
-        project = await ctx.loadProject(c, input.projectId, "viewer");
+        project = await ctx.loadProject(c, input.projectId, "project.view");
         if (project.orgId !== orgId) throw new HTTPException(404, { message: "プロジェクトが見つかりません" });
       }
       const files = project ? await opts.filesOf(c, project) : [];

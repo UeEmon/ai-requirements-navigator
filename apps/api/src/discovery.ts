@@ -17,6 +17,7 @@ import type { Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { audit } from "./audit.js";
+import type { Permission } from "./permissions.js";
 import { ExtractError, extractText, MAX_UPLOAD_BYTES } from "./extract.js";
 import type { AnyContext, ImplementationContext } from "./implementation.js";
 import { evaluatorIdOf, generatorIdsOf, type AnalysisRecord, type JobProgress, type Project, type ProjectDocument } from "./store.js";
@@ -171,7 +172,7 @@ export function discovery(ctx: ImplementationContext) {
     return analysisView(rec, p.orgId);
   }
 
-  const loadAnalysis = async (c: AnyContext, id: string, role: "viewer" | "editor") => {
+  const loadAnalysis = async (c: AnyContext, id: string, role: Permission) => {
     const a = await store.getAnalysis(id);
     if (!a) throw new HTTPException(404, { message: "分析が見つかりません" });
     const p = await ctx.loadProject(c, a.projectId, role);
@@ -187,12 +188,12 @@ export function discovery(ctx: ImplementationContext) {
   ) {
     /* ---------- 資料 ---------- */
     app.get("/api/projects/:id/documents", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json((await store.listDocuments(p.id)).map(docView));
     });
 
     app.post("/api/projects/:id/documents", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, DocumentInput);
       let extracted: Awaited<ReturnType<typeof extractText>>;
       try {
@@ -227,14 +228,14 @@ export function discovery(ctx: ImplementationContext) {
     app.get("/api/documents/:id", async (c) => {
       const d = await store.getDocument(c.req.param("id"));
       if (!d) throw new HTTPException(404, { message: "資料が見つかりません" });
-      await ctx.loadProject(c, d.projectId, "viewer");
+      await ctx.loadProject(c, d.projectId, "project.view");
       return c.json({ ...docView(d), text: d.text });
     });
 
     app.delete("/api/documents/:id", async (c) => {
       const d = await store.getDocument(c.req.param("id"));
       if (!d) throw new HTTPException(404, { message: "資料が見つかりません" });
-      const p = await ctx.loadProject(c, d.projectId, "editor");
+      const p = await ctx.loadProject(c, d.projectId, "requirements.edit");
       await store.deleteDocument(d.id);
       await audit(store, { orgId: p.orgId, actor: ctx.actorOf(c), action: "document.delete", targetType: "document", targetId: d.id, detail: { projectId: p.id, name: d.name } });
       return c.body(null, 204);
@@ -242,14 +243,14 @@ export function discovery(ctx: ImplementationContext) {
 
     /* ---------- 分析 ---------- */
     app.get("/api/projects/:id/analyses", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json(
         (await store.listAnalyses(p.id)).map((a) => ({ id: a.id, status: a.status, createdAt: a.createdAt, documentIds: a.documentIds, candidates: a.candidates.length, adoption: a.adoption })),
       );
     });
 
     app.post("/api/projects/:id/analyses", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, AnalyzeInput);
       if (jobs.wantsAsync(c)) {
         if (!(await store.listDocuments(p.id)).length) throw new HTTPException(400, { message: "資料がありません。先に議事録や既存システムの資料を取り込んでください" });
@@ -260,13 +261,13 @@ export function discovery(ctx: ImplementationContext) {
     });
 
     app.get("/api/analyses/:id", async (c) => {
-      const { a, p } = await loadAnalysis(c, c.req.param("id"), "viewer");
+      const { a, p } = await loadAnalysis(c, c.req.param("id"), "project.view");
       return c.json(await analysisView(a, p.orgId));
     });
 
     /** 分析の案を1つ選び、採用する見直し案と要件案を要件にする */
     app.post("/api/analyses/:id/adopt", async (c) => {
-      const { a, p } = await loadAnalysis(c, c.req.param("id"), "editor");
+      const { a, p } = await loadAnalysis(c, c.req.param("id"), "requirements.edit");
       if (a.status === "adopted") throw new HTTPException(409, { message: "この分析は採用済みです" });
       const input = await ctx.body(c, AdoptInput);
       const cand = a.candidates.find((x) => x.label === input.label);

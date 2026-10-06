@@ -14,6 +14,6 @@
 
 ## 運用上の注意
 
-- `AUTH_MODE=dev`（ヘッダーで利用者を名乗る開発用認証）と `ALLOW_MOCK_PROVIDER=true` は開発専用です。`NODE_ENV=production` では起動時に拒否されます
+- `AUTH_MODE=dev`（ヘッダーで利用者を名乗る開発用認証。本番では `local` か `oidc`）と `ALLOW_MOCK_PROVIDER=true` は開発専用です。`NODE_ENV=production` では起動時に拒否されます
 - `MASTER_KEY` を紛失すると、登録済みのAPIキーは復号できなくなります。漏えいした場合は、新しいキーで起動し、各組織にAPIキーの再登録を依頼してください
 - AIのAPIキーは各組織の管理者が登録します。運営者が各社のキーを共有して配布しないでください（[ADR 0001](docs/adr/0001-org-api-keys.md)）

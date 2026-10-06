@@ -196,21 +196,21 @@ export function scope(ctx: ImplementationContext, deps: { testsOf: (p: Project) 
 
   function routes(app: Hono<any>) {
     app.get("/api/projects/:id/settings", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       return c.json({ approvalRequired: !!p.settings?.approvalRequired, requiredApprovals: p.settings?.requiredApprovals ?? 1 });
     });
     app.put("/api/projects/:id/settings", async (c) => {
       // 承認の要否は、編集者が自分で外せないよう管理者だけが変える
-      const p = await ctx.loadProject(c, c.req.param("id"), "admin");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.manage");
       const input = await ctx.body(c, SettingsInput);
       const u = await store.updateProjectSettings(p.id, input);
       await audit(store, { orgId: p.orgId, actor: ctx.actorOf(c), action: "settings.update", targetType: "project", targetId: p.id, detail: { before: p.settings ?? {}, after: input } });
       return c.json(u?.settings ?? input);
     });
 
-    app.get("/api/projects/:id/glossary", async (c) => c.json(await glossary(await ctx.loadProject(c, c.req.param("id"), "viewer"))));
+    app.get("/api/projects/:id/glossary", async (c) => c.json(await glossary(await ctx.loadProject(c, c.req.param("id"), "project.view"))));
     app.put("/api/projects/:id/glossary", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const { terms } = await ctx.body(c, GlossaryInput);
       const dup = terms.map((t) => t.term).filter((t, i, a) => a.indexOf(t) !== i);
       if (dup.length) throw new HTTPException(400, { message: `用語が重複しています: ${[...new Set(dup)].join("、")}` });
@@ -219,13 +219,13 @@ export function scope(ctx: ImplementationContext, deps: { testsOf: (p: Project) 
       return c.json(await glossary(p));
     });
     app.post("/api/projects/:id/glossary/generate", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       return c.json(await generate(p, ctx.actorOf(c)), 201);
     });
 
-    app.get("/api/projects/:id/acceptance", async (c) => c.json(await acceptance(await ctx.loadProject(c, c.req.param("id"), "viewer"))));
+    app.get("/api/projects/:id/acceptance", async (c) => c.json(await acceptance(await ctx.loadProject(c, c.req.param("id"), "project.view"))));
     app.put("/api/projects/:id/acceptance", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const { criteria } = await ctx.body(c, AcceptanceInput);
       const ids = criteria.custom.map((x) => x.id);
       if (new Set(ids).size !== ids.length) throw new HTTPException(400, { message: "受け入れ基準のIDが重複しています" });
@@ -241,7 +241,7 @@ export function scope(ctx: ImplementationContext, deps: { testsOf: (p: Project) 
     });
     /** 業務の担当者が確かめる条件に印を付ける（レビュー担当以上） */
     app.post("/api/projects/:id/acceptance/check", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "reviewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "review.approve");
       const input = await ctx.body(c, CheckInput);
       const sheet = await store.getProjectSheet<AcceptanceSheet>(p.id, "acceptance");
       if (!sheet) throw new HTTPException(400, { message: "受け入れ基準をまだ決めていません" });
@@ -254,13 +254,13 @@ export function scope(ctx: ImplementationContext, deps: { testsOf: (p: Project) 
     });
 
     app.get("/api/projects/:id/reviews", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       const fp = await currentFingerprint(p);
       const a = await approval(p);
       return c.json({ settings: { approvalRequired: a.required, requiredApprovals: p.settings?.requiredApprovals ?? 1 }, status: a.status, reviews: (await store.listReviews(p.id)).map((r) => reviewView(r, fp)) });
     });
     app.post("/api/projects/:id/reviews", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "editor");
+      const p = await ctx.loadProject(c, c.req.param("id"), "requirements.edit");
       const input = await ctx.body(c, ReviewInput);
       const reqs = await store.listRequirements(p.id);
       if (!reqs.length) throw new HTTPException(400, { message: "要件がまだありません" });
@@ -274,7 +274,7 @@ export function scope(ctx: ImplementationContext, deps: { testsOf: (p: Project) 
     app.post("/api/reviews/:id/decide", async (c) => {
       const r = await store.getReview(c.req.param("id"));
       if (!r) throw new HTTPException(404, { message: "レビューが見つかりません" });
-      const p = await ctx.loadProject(c, r.projectId, "reviewer");
+      const p = await ctx.loadProject(c, r.projectId, "review.approve");
       const input = await ctx.body(c, DecideInput);
       const actor = ctx.actorOf(c);
       if (r.status !== "open") throw new HTTPException(409, { message: "このレビューは終わっています" });
@@ -294,7 +294,7 @@ export function scope(ctx: ImplementationContext, deps: { testsOf: (p: Project) 
     app.post("/api/reviews/:id/withdraw", async (c) => {
       const r = await store.getReview(c.req.param("id"));
       if (!r) throw new HTTPException(404, { message: "レビューが見つかりません" });
-      const p = await ctx.loadProject(c, r.projectId, "editor");
+      const p = await ctx.loadProject(c, r.projectId, "requirements.edit");
       if (r.status !== "open") throw new HTTPException(409, { message: "このレビューは終わっています" });
       const u = await store.updateReview(r.id, { status: "withdrawn", closedAt: new Date().toISOString() });
       await audit(store, { orgId: p.orgId, actor: ctx.actorOf(c), action: "review.withdraw", targetType: "project", targetId: p.id, detail: { code: r.code } });
@@ -302,7 +302,7 @@ export function scope(ctx: ImplementationContext, deps: { testsOf: (p: Project) 
     });
 
     app.get("/api/projects/:id/baselines/diff", async (c) => {
-      const p = await ctx.loadProject(c, c.req.param("id"), "viewer");
+      const p = await ctx.loadProject(c, c.req.param("id"), "project.view");
       const num = (k: string) => {
         const v = c.req.query(k);
         if (!v || v === "current") return undefined;
