@@ -230,8 +230,10 @@ export function orgAdmin(ctx: ImplementationContext, opts: OrgAdminOptions) {
       const orgId = c.req.param("orgId");
       ctx.need(c, orgId, "org.settings");
       const input = await ctx.body(c, PermissionsInput);
-      const before = await store.getOrg(orgId);
-      if (!before) throw new HTTPException(404, { message: "見つかりません" });
+      // 変更前の値（記録用）。保存先によっては同じオブジェクトが書き換わるため、先に写しを取る
+      const found = await store.getOrg(orgId);
+      if (!found) throw new HTTPException(404, { message: "見つかりません" });
+      const before = structuredClone(found);
       const next = "reset" in input ? null : normalizeRolePermissions({ ...(before.rolePermissions ?? {}), ...input.roles } as Record<string, string[]>);
       const org = await store.updateOrg(orgId, { rolePermissions: next });
       const diff = CONFIGURABLE_ROLES.map((r) => {
