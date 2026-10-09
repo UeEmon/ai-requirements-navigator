@@ -93,6 +93,8 @@ scripts/         ライセンス検査、テンプレート初期化
 
 ## 開発
 
+開発の決まりは [CLAUDE.md](CLAUDE.md)、できていることと次の候補は [開発の状況](docs/development-status.md) にあります。Claude のプロジェクトで開発を管理する手順は [Claude のプロジェクトで開発を管理する](docs/claude-project.md) を参照してください。
+
 ```bash
 npm install
 npm run typecheck
