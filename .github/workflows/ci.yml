@@ -25,8 +25,8 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://arn:arn@localhost:5432/arn_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Install Japanese font for PDF tests
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image
         run: docker build -t arn:ci .
       - name: Smoke test (Postgres + app)
@@ -95,6 +95,15 @@ jobs:
           RQ=$(curl -fs localhost:8787/api/projects/$PJ/requirements "${H[@]}" | jq -r '.[0].id')
           curl -fs -X PATCH localhost:8787/api/requirements/$RQ "${H[@]}" -d '{"title":"編集した要件","reason":"CI"}' | jq -c '{code, version}'
           curl -fs "localhost:8787/api/orgs/$ORG/audit?limit=5" "${H[@]}" | jq -c '[.entries[].action]'
+          # 複製 → 要件の手入力・コメント → 書き出しと取り込み（PostgreSQL の保存先。元のプロジェクトは変えない）
+          DUP=$(curl -fs -X POST localhost:8787/api/projects/$PJ/duplicate "${H[@]}" -d '{"name":"ci-copy"}' | jq -r .project.id)
+          MR=$(curl -fs -X POST localhost:8787/api/projects/$DUP/requirements "${H[@]}" -d '{"type":"FR","ears":{"pattern":"event","trigger":"予約が確定した","system":"システム","response":"確認メールを送る"}}' | jq -r .id)
+          curl -fs -X POST localhost:8787/api/requirements/$MR/comments "${H[@]}" -d '{"body":"送る時間の目安は？"}' | jq -ce 'select(.status == "open") | {requirementCode}'
+          curl -fs localhost:8787/api/projects/$DUP/requirements "${H[@]}" | jq -e "[.[] | select(.id == \"$MR\")][0].comments.open == 1" > /dev/null
+          curl -fs localhost:8787/api/projects/$DUP/export.json "${H[@]}" -o project.json
+          IMP=$(curl -fs -X POST localhost:8787/api/orgs/$ORG/projects/import "${H[@]}" --data-binary "{\"data\": $(cat project.json)}" | jq -r .project.id)
+          test "$(curl -fs localhost:8787/api/projects/$IMP/requirements "${H[@]}" | jq length)" = "$(curl -fs localhost:8787/api/projects/$DUP/requirements "${H[@]}" | jq length)"
+          echo "::notice::複製・手入力・コメント・書き出しと取り込みOK"
           # 実装工程への連携: 機能要件を確定 → タスク分解（非同期）→ CSV → トレーサビリティ → 連携先の登録（外部へは接続しない）
           R2=$(curl -fs -X POST localhost:8787/api/projects/$PJ/rounds "${H[@]}" -d '{"answer":"ネットで予約したい","phaseKey":"functions"}' | jq -r .id)
           curl -fs -X POST localhost:8787/api/rounds/$R2/decision "${H[@]}" -d '{"pick":"merged","advancePhase":false}' | jq -c '[.added[].code]'
@@ -176,7 +185,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Start with docker compose (same steps as docs/docker-desktop.md)
         shell: bash
         run: |
@@ -219,8 +228,8 @@ jobs:
       run:
         working-directory: deploy/aws
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm install
@@ -250,22 +259,22 @@ jobs:
       contents: write
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Names
         shell: bash
         run: |
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
           echo "SHA_TAG=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "KIT_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; else echo "KIT_VERSION=main" >> "$GITHUB_ENV"; fi
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           tags: |
@@ -279,7 +288,7 @@ jobs:
             org.opencontainers.image.description=AI-assisted requirements definition (Japanese UI)
             org.opencontainers.image.licenses=Apache-2.0
       - name: Build and push (amd64 / arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -324,7 +333,7 @@ jobs:
           else
             echo "::warning::イメージが非公開です。GitHub の Packages → ai-requirements-navigator → Package settings で Public にしてください（docs/github-deploy.md）"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: arn-docker-${{ env.KIT_VERSION }}
           path: arn-docker-${{ env.KIT_VERSION }}.zip
