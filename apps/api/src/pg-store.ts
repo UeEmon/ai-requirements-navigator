@@ -48,6 +48,10 @@ import type {
   LocalUserPatch,
   LocalSession,
   AuthTicket,
+  ProjectAccess,
+  ImportedRequirement,
+  RequirementComment,
+  CommentPatch,
 } from "./store.js";
 
 const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
@@ -111,6 +115,21 @@ const toProject = (r: any): Project => ({
   createdAt: iso(r.created_at),
   settings: r.settings ?? {},
   archivedAt: r.archived_at ? iso(r.archived_at) : null,
+  access: r.access ?? null,
+});
+const toComment = (r: any): RequirementComment => ({
+  id: r.id,
+  projectId: r.project_id,
+  requirementId: r.requirement_id,
+  requirementCode: r.requirement_code,
+  body: r.body,
+  authorId: r.author_id,
+  authorName: r.author_name,
+  status: r.status,
+  resolvedBy: r.resolved_by ?? null,
+  resolvedAt: r.resolved_at ? iso(r.resolved_at) : null,
+  createdAt: iso(r.created_at),
+  updatedAt: r.updated_at ? iso(r.updated_at) : null,
 });
 const toMember = (r: any): OrgMember => ({
   id: r.id,
@@ -681,7 +700,8 @@ export class PgStore implements Store {
       const out: Requirement[] = [];
       for (const it of items) {
         const { rows: c } = await client.query(
-          "SELECT count(*)::int AS n FROM requirements WHERE project_id = $1 AND type = $2",
+          // 区分ごとの最大の番号の次（取り込んだ要件の番号と重ならないように）
+          "SELECT COALESCE(max(substring(code from '([0-9]+)$')::int), 0) AS n FROM requirements WHERE project_id = $1 AND type = $2",
           [projectId, it.type],
         );
         const code = `${it.type}-${String((c[0]?.n ?? 0) + 1).padStart(2, "0")}`;
@@ -701,9 +721,9 @@ export class PgStore implements Store {
       client.release();
     }
   }
-  async listRequirements(projectId: string) {
+  async listRequirements(projectId: string, opts?: { includeDeleted?: boolean }) {
     const { rows } = await this.pool.query(
-      "SELECT * FROM requirements WHERE project_id = $1 AND deleted_at IS NULL ORDER BY created_at, code",
+      `SELECT * FROM requirements WHERE project_id = $1 ${opts?.includeDeleted ? "" : "AND deleted_at IS NULL"} ORDER BY created_at, code`,
       [projectId],
     );
     return rows.map(toReq);
@@ -1203,6 +1223,63 @@ export class PgStore implements Store {
   async updateProjectSettings(id: string, settings: ProjectSettings) {
     const { rows } = await this.pool.query("UPDATE projects SET settings = $2 WHERE id = $1 RETURNING *", [id, JSON.stringify(settings)]);
     return rows[0] ? toProject(rows[0]) : null;
+  }
+  async updateProjectAccess(id: string, access: ProjectAccess | null) {
+    const { rows } = await this.pool.query("UPDATE projects SET access = $2 WHERE id = $1 RETURNING *", [id, access ? JSON.stringify(access) : null]);
+    return rows[0] ? toProject(rows[0]) : null;
+  }
+  async importRequirements(projectId: string, items: ImportedRequirement[]) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [projectId]);
+      const out: Requirement[] = [];
+      for (const it of items) {
+        const { rows } = await client.query(
+          `INSERT INTO requirements(project_id, code, type, title, description, priority, source, phase_key, ears, rule, version, updated_at, deleted_at, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $11 > 1 THEN now() END, $12, clock_timestamp()) RETURNING *`,
+          [projectId, it.code, it.type, it.title, it.description, it.priority, it.source, it.phaseKey ?? null, it.ears ? JSON.stringify(it.ears) : null, it.rule ? JSON.stringify(it.rule) : null, it.version, it.deletedAt],
+        );
+        out.push(toReq(rows[0]));
+      }
+      await client.query("COMMIT");
+      return out.filter((r) => !r.deletedAt);
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+  async addComment(c: Omit<RequirementComment, "id" | "createdAt" | "updatedAt">) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO requirement_comments(project_id, requirement_id, requirement_code, body, author_id, author_name, status, resolved_by, resolved_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [c.projectId, c.requirementId, c.requirementCode, c.body, c.authorId, c.authorName, c.status, c.resolvedBy, c.resolvedAt],
+    );
+    return toComment(rows[0]);
+  }
+  async getComment(id: string) {
+    const { rows } = await this.pool.query("SELECT * FROM requirement_comments WHERE id = $1", [id]);
+    return rows[0] ? toComment(rows[0]) : null;
+  }
+  async listComments(projectId: string) {
+    const { rows } = await this.pool.query("SELECT * FROM requirement_comments WHERE project_id = $1 ORDER BY created_at, id", [projectId]);
+    return rows.map(toComment);
+  }
+  async updateComment(id: string, patch: CommentPatch) {
+    const { rows } = await this.pool.query(
+      `UPDATE requirement_comments SET body = COALESCE($2, body), status = COALESCE($3, status),
+         resolved_by = CASE WHEN $4::boolean THEN $5 ELSE resolved_by END,
+         resolved_at = CASE WHEN $6::boolean THEN $7::timestamptz ELSE resolved_at END,
+         updated_at = now() WHERE id = $1 RETURNING *`,
+      [id, patch.body ?? null, patch.status ?? null, patch.resolvedBy !== undefined, patch.resolvedBy ?? null, patch.resolvedAt !== undefined, patch.resolvedAt ?? null],
+    );
+    return rows[0] ? toComment(rows[0]) : null;
+  }
+  async deleteComment(id: string) {
+    const r = await this.pool.query("DELETE FROM requirement_comments WHERE id = $1", [id]);
+    return (r.rowCount ?? 0) > 0;
   }
   async getProjectSheet<T>(projectId: string, kind: ProjectSheetKind): Promise<ProjectSheet<T> | null> {
     const { rows } = await this.pool.query("SELECT * FROM project_sheets WHERE project_id = $1 AND kind = $2", [projectId, kind]);

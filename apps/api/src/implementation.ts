@@ -46,6 +46,8 @@ export interface ImplementationContext {
   timeoutMs?: number;
   need: (c: AnyContext, orgId: string, perm: Permission) => void;
   loadProject: (c: AnyContext, id: string, perm: Permission) => Promise<Project>;
+  /** ログインしている人がそのプロジェクトを見られるか（メンバーを限ったプロジェクトの判定） */
+  canView?: (c: AnyContext, p: Project) => Promise<boolean>;
   actorOf: (c: AnyContext) => string;
   body: <T extends z.ZodTypeAny>(c: Context, schema: T) => Promise<z.infer<T>>;
   parseOrThrow: <T extends z.ZodTypeAny>(schema: T, json: unknown) => z.infer<T>;

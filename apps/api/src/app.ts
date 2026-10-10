@@ -7,6 +7,7 @@ import {
   vendorName,
   BusinessRule,
   Ears,
+  RequirementType,
   EARS_TYPES,
   lintEars,
   lintRule,
@@ -43,7 +44,8 @@ import { keySetup, type GoogleOAuthConfig } from "./key-setup.js";
 import { repoSetup } from "./repo-setup.js";
 import { checkAiConfig, orgAdmin, resolveMember, seedAdmin } from "./org-admin.js";
 import type { LocalAuth } from "./local-auth.js";
-import { permissionLabel, permissionsOf, type Permission } from "./permissions.js";
+import { permissionGroup, permissionLabel, permissionsOf, type Permission } from "./permissions.js";
+import { collaboration } from "./collab.js";
 import { handoff } from "./handoff.js";
 import { scope } from "./scope.js";
 import { nfrSheet } from "./nfr-sheet.js";
@@ -161,6 +163,20 @@ const RequirementPatchInput = z
     ears: Ears.nullable().optional(),
     /** 業務ルール（RL）の種類と具体例 */
     rule: BusinessRule.nullable().optional(),
+    reason: z.string().max(500).default(""),
+  })
+  .strict();
+/** 要件の手入力。機能要件・非機能要件は EARS の構造（ears）か文（title）で書く */
+const RequirementCreateInput = z
+  .object({
+    type: RequirementType,
+    title: z.string().max(500).optional(),
+    description: z.string().max(2000).default(""),
+    priority: z.enum(["must", "should", "could"]).default("should"),
+    ears: Ears.optional(),
+    rule: BusinessRule.optional(),
+    /** どのフェーズの要件か（省略時は区分から決める） */
+    phaseKey: z.string().optional(),
     reason: z.string().max(500).default(""),
   })
   .strict();
@@ -386,10 +402,38 @@ export function createApp(deps: AppDeps) {
       throw new HTTPException(403, { message: `この操作には「${permissionLabel(perm)}」の権限が必要です（あなたの役割: ${ROLE_NAME[p.role] ?? p.role}）。組織の管理者に相談してください` });
     }
   };
+  /** ログインしている人の、組織のメンバーとしての記録（開発用ログインでは x-user-id をメールアドレスとしても照合する） */
+  const memberOfPrincipal = async (pr: Principal, orgId: string) =>
+    (await store.listMembers(orgId)).find((m) => m.status !== "removed" && (m.userSub === pr.userId || (deps.devAuth && m.email === pr.userId.toLowerCase()))) ?? null;
+  /**
+   * プロジェクトで持つ役割と権限。見られなければ null。
+   * メンバーを限ったプロジェクト（access.restricted）は、組織の管理者とメンバーだけが見られ、
+   * プロジェクトの操作の権限は「このプロジェクトでの役割」で決まる（組織の操作の権限は組織の役割のまま）
+   */
+  const projectAccessOf = async (pr: Principal, p: Project): Promise<{ role: Role; permissions: Permission[]; restricted: boolean } | null> => {
+    const orgPerms = (pr.permissions ?? permissionsOf(null, pr.role)) as Permission[];
+    const restricted = Boolean(p.access?.restricted);
+    if (pr.orgId !== p.orgId) return null;
+    if (!restricted || pr.role === "admin") return { role: pr.role, permissions: orgPerms, restricted };
+    const m = await memberOfPrincipal(pr, p.orgId);
+    const entry = m ? p.access!.members.find((x) => x.memberId === m.id) : undefined;
+    if (!entry) return null;
+    const org = await store.getOrg(p.orgId);
+    const inProject = permissionsOf(org?.rolePermissions, entry.role);
+    return { role: entry.role, permissions: [...orgPerms.filter((k) => permissionGroup(k) === "org"), ...inProject.filter((k) => permissionGroup(k) === "project")], restricted };
+  };
   const loadProject = async (c: Context<Env>, id: string, role: Permission): Promise<Project> => {
     const p = await store.getProject(id);
     if (!p) throw new HTTPException(404, { message: "プロジェクトが見つかりません" });
-    need(c, p.orgId, role);
+    const pr = c.get("principal");
+    if (pr.orgId !== p.orgId) throw new HTTPException(404, { message: "見つかりません" });
+    const a = await projectAccessOf(pr, p);
+    // メンバーを限ったプロジェクトに入っていない人には、あることも知らせない
+    if (!a) throw new HTTPException(404, { message: "プロジェクトが見つかりません" });
+    if (!a.permissions.includes(role)) {
+      const who = a.restricted && pr.role !== "admin" ? `このプロジェクトでのあなたの役割: ${ROLE_NAME[a.role] ?? a.role}` : `あなたの役割: ${ROLE_NAME[pr.role] ?? pr.role}`;
+      throw new HTTPException(403, { message: `この操作には「${permissionLabel(role)}」の権限が必要です（${who}）。${a.restricted ? "プロジェクトの管理者" : "組織の管理者"}に相談してください` });
+    }
     return p;
   };
   const loadRequirement = async (c: Context<Env>, id: string, role: Permission) => {
@@ -614,9 +658,15 @@ export function createApp(deps: AppDeps) {
     need(c, orgId, "project.view");
     const archived = c.req.query("archived"); // 省略: 使用中だけ / 1: アーカイブだけ / all: すべて
     const list = (await store.listProjects(orgId)).filter((p) => (archived === "all" ? true : archived === "1" ? Boolean(p.archivedAt) : !p.archivedAt));
-    return c.json(
-      list.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, phaseKey: p.phaseKey, phaseName: PHASES.find((x) => x.key === p.phaseKey)?.name ?? (p.phaseKey === "done" ? "完了" : p.phaseKey), confidential: p.confidential, createdAt: p.createdAt, archivedAt: p.archivedAt ?? null, aiConfig: p.aiConfig })),
-    );
+    // メンバーを限ったプロジェクトは、入っている人（と組織の管理者）にだけ出す
+    const pr = c.get("principal");
+    const rows = [];
+    for (const p of list) {
+      const a = await projectAccessOf(pr, p);
+      if (!a) continue;
+      rows.push({ id: p.id, name: p.name, purpose: p.purpose, phaseKey: p.phaseKey, phaseName: PHASES.find((x) => x.key === p.phaseKey)?.name ?? (p.phaseKey === "done" ? "完了" : p.phaseKey), confidential: p.confidential, createdAt: p.createdAt, archivedAt: p.archivedAt ?? null, aiConfig: p.aiConfig, restricted: a.restricted, myRole: a.role, permissions: a.permissions });
+    }
+    return c.json(rows);
   });
 
   app.post("/api/orgs/:orgId/projects", async (c) => {
@@ -661,9 +711,14 @@ export function createApp(deps: AppDeps) {
     return c.json({ ...r, project: r.project }, 201);
   });
 
+  /** 画面に返すプロジェクト。myRole・permissions: このプロジェクトでの役割と権限（ボタンの出し分けに使う）。メンバーの一覧は /members で */
+  const projectView = async (c: Context<Env>, p: Project) => {
+    const a = (await projectAccessOf(c.get("principal"), p))!;
+    return { ...p, access: undefined, restricted: a.restricted, myRole: a.role, permissions: a.permissions, phase: PHASES.find((x) => x.key === p.phaseKey) ?? null };
+  };
   app.get("/api/projects/:id", async (c) => {
     const p = await loadProject(c, c.req.param("id"), "project.view");
-    return c.json({ ...p, phase: PHASES.find((x) => x.key === p.phaseKey) ?? null });
+    return c.json(await projectView(c, p));
   });
 
   /** フェーズを移動する（次へ進む・前に戻る・完了にする） */
@@ -673,7 +728,7 @@ export function createApp(deps: AppDeps) {
     if (phaseKey !== "done") phaseOrThrow(phaseKey);
     await store.setProjectPhase(p.id, phaseKey);
     await audit(store, { orgId: p.orgId, actor: actorOf(c), action: "project.phase", targetType: "project", targetId: p.id, detail: { from: p.phaseKey, to: phaseKey } });
-    return c.json({ ...p, phaseKey, phase: PHASES.find((x) => x.key === phaseKey) ?? null });
+    return c.json(await projectView(c, { ...p, phaseKey }));
   });
 
   app.post("/api/projects/:id/ambiguity", async (c) => {
@@ -1013,6 +1068,7 @@ export function createApp(deps: AppDeps) {
     timeoutMs: deps.timeoutMs,
     need,
     loadProject,
+    canView: async (c, p) => Boolean(await projectAccessOf(c.get("principal") as Principal, p)),
     actorOf,
     body,
     parseOrThrow,
@@ -1122,6 +1178,8 @@ export function createApp(deps: AppDeps) {
       return { month: r.month, used: r.org.used, limit: r.org.limit };
     },
   }).routes(app);
+
+  collaboration(moduleCtx, { accessOf: projectAccessOf, memberOf: memberOfPrincipal, allowMock: deps.allowMock }).routes(app);
 
   /** EARS の構造から文を組み立て、検査結果を返す（画面の入力中の確認用） */
   app.post("/api/ears/preview", async (c) => {
@@ -1309,8 +1367,43 @@ export function createApp(deps: AppDeps) {
 
   app.get("/api/projects/:id/requirements", async (c) => {
     const p = await loadProject(c, c.req.param("id"), "project.view");
+    // コメントの数（未解決・すべて）
+    const counts = new Map<string, { open: number; total: number }>();
+    for (const m of await store.listComments(p.id)) {
+      const x = counts.get(m.requirementId) ?? { open: 0, total: 0 };
+      x.total += 1;
+      if (m.status === "open") x.open += 1;
+      counts.set(m.requirementId, x);
+    }
     // 機能要件・非機能要件は EARS の文型と表現を検査した結果を付ける
-    return c.json((await store.listRequirements(p.id)).map((r) => ({ ...r, lint: lintOf(r) })));
+    return c.json((await store.listRequirements(p.id)).map((r) => ({ ...r, lint: lintOf(r), comments: counts.get(r.id) ?? { open: 0, total: 0 } })));
+  });
+
+  /** 要件を手で追加する（AIを使わない）。番号は区分ごとの連番。確定後は変更要求（追加）から */
+  app.post("/api/projects/:id/requirements", async (c) => {
+    const p = await loadProject(c, c.req.param("id"), "requirements.edit");
+    await assertNotBaselined(p);
+    const input = await body(c, RequirementCreateInput);
+    let title = input.title?.trim() ?? "";
+    let ears: Ears | null = null;
+    if (input.ears && EARS_TYPES.includes(input.type)) {
+      ears = input.ears;
+      title = renderEars(input.ears);
+    }
+    if (!title) throw new HTTPException(400, { message: "要件の内容を入れてください" });
+    const phaseKey = input.phaseKey ? phaseOrThrow(input.phaseKey).key : (TYPE_PHASE[input.type] ?? null);
+    const [r] = await store.addRequirements(p.id, [
+      { type: input.type, title, description: input.description, priority: input.priority, ears: ears ?? undefined, rule: input.type === "RL" ? (input.rule ?? undefined) : undefined, roundId: null, source: "手入力", phaseKey },
+    ]);
+    await audit(store, {
+      orgId: p.orgId,
+      actor: actorOf(c),
+      action: "requirement.create",
+      targetType: "requirement",
+      targetId: r!.id,
+      detail: { code: r!.code, type: r!.type, title: r!.title, priority: r!.priority, reason: input.reason },
+    });
+    return c.json({ ...r!, lint: lintOf(r!), comments: { open: 0, total: 0 } }, 201);
   });
 
   /** 要件の手直し。変更前の内容は版として残る */

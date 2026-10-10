@@ -278,9 +278,11 @@ function toast(t){const el=$("#toast");el.textContent=t;el.hidden=false;clearTim
 const isOidc = () => S.meta?.auth === "oidc" || S.meta?.auth === "local";
 const isLocal = () => S.meta?.auth === "local";
 /* 役割ごとの権限（組織の管理者が「組織」タブで変えられる。/api/me の permissions）。読み込む前は既定で判断する */
-const PERM_MIN={"project.view":"viewer","export":"viewer","project.create":"editor","requirements.edit":"editor","review.approve":"reviewer","tasks.publish":"editor","project.settings":"editor","project.manage":"admin","ai.manage":"admin","integration.manage":"admin","agent.manage":"admin","usage.view":"admin","audit.view":"admin","org.settings":"admin","member.manage":"admin"};
+const PERM_MIN={"project.view":"viewer","export":"viewer","project.create":"editor","requirements.edit":"editor","review.approve":"reviewer","comment.write":"reviewer","tasks.publish":"editor","project.settings":"editor","project.manage":"admin","ai.manage":"admin","integration.manage":"admin","agent.manage":"admin","usage.view":"admin","audit.view":"admin","org.settings":"admin","member.manage":"admin"};
 const ROLE_RANK={viewer:0,reviewer:1,editor:2,admin:3};
-const can = p => S.perms ? S.perms.includes(p) : ROLE_RANK[S.role] >= ROLE_RANK[PERM_MIN[p]||"admin"];
+/* プロジェクトの操作の権限は、開いているプロジェクトでの役割で決まる（メンバーを限ったプロジェクト。/api/projects/:id の permissions） */
+const PROJECT_PERMS=new Set(["project.view","export","requirements.edit","review.approve","comment.write","tasks.publish","project.settings","project.manage"]);
+const can = p => (S.project?.permissions && PROJECT_PERMS.has(p)) ? S.project.permissions.includes(p) : S.perms ? S.perms.includes(p) : ROLE_RANK[S.role] >= ROLE_RANK[PERM_MIN[p]||"admin"];
 const canEdit = () => can("requirements.edit");
 
 function authHeaders(){
@@ -1013,14 +1015,18 @@ async function loadProjectList(){
     const showArch=S.showArchived;
     const list=await api(`/api/orgs/${S.orgId}/projects${showArch?"?archived=all":""}`);
     box.innerHTML = list.length ? `<table class="t"><thead><tr><th>プロジェクト</th><th>進み具合</th><th>AI</th><th>作成日</th><th>ID</th><th></th></tr></thead><tbody>
-      ${list.map(p=>`<tr class="${S.project?.id===p.id?"cur":""}"><td><b>${esc(p.name)}</b>${p.confidential?' <span class="tag">機密</span>':""}${p.purpose?`<br><span class="hint">${esc(p.purpose.slice(0,60))}</span>`:""}</td>
+      ${list.map(p=>{ const pc=k=>p.permissions?p.permissions.includes(k):can(k); return `<tr class="${S.project?.id===p.id?"cur":""}"><td><b>${esc(p.name)}</b>${p.confidential?' <span class="tag">機密</span>':""}${p.restricted?' <span class="tag" title="メンバーに入っている人と組織の管理者だけが見られます">メンバー限定</span>':""}${p.restricted&&p.myRole!==S.role&&ROLE_JA[p.myRole]?`<br><span class="hint">このプロジェクトでの役割：${esc(ROLE_JA[p.myRole])}</span>`:""}${p.purpose?`<br><span class="hint">${esc(p.purpose.slice(0,60))}</span>`:""}</td>
         <td>${esc(p.phaseName||"")}</td><td class="hint" style="min-width:12em">${esc(aiSummary(p.aiConfig))}</td><td class="mono">${esc((p.createdAt||"").slice(0,10))}</td>
         <td><button class="btn sm ghost mono" data-jcopy="${esc(p.id)}" title="ID をコピー（共有用）">${esc(p.id.slice(0,8))}…</button></td>
-        <td style="white-space:nowrap">${S.project?.id===p.id?'<span class="hint">開いています</span>':`<button class="btn sm" data-jopen="${esc(p.id)}">開く</button>`}
-          ${can("project.settings")?`<button class="btn sm ghost" data-jren="${esc(p.id)}">名前を変える</button>`:""}
-          ${can("project.manage")?`<button class="btn sm ghost" data-jarch="${esc(p.id)}" data-arch="${p.archivedAt?"0":"1"}">${p.archivedAt?"元に戻す":"アーカイブ"}</button> <button class="btn sm danger" data-jdel="${esc(p.id)}">削除</button>`:""}</td></tr>
+        <td style="min-width:200px;max-width:340px;line-height:2.1">${S.project?.id===p.id?'<span class="hint">開いています</span>':`<button class="btn sm" data-jopen="${esc(p.id)}">開く</button>`}
+          ${pc("project.settings")?`<button class="btn sm ghost" data-jren="${esc(p.id)}">名前を変える</button>`:""}
+          ${can("project.create")?`<button class="btn sm ghost" data-jdup="${esc(p.id)}" title="要件・資料・用語集・非機能要件・コメントなどを写した、新しいプロジェクトを作ります">複製</button>`:""}
+          ${pc("export")?`<button class="btn sm ghost" data-jexp="${esc(p.id)}" title="バックアップや、別の環境・組織への移行に使うファイル（JSON）">書き出し</button>`:""}
+          ${pc("project.manage")?`<button class="btn sm ghost" data-jmem="${esc(p.id)}">メンバー</button>`:""}
+          ${pc("project.manage")?`<button class="btn sm ghost" data-jarch="${esc(p.id)}" data-arch="${p.archivedAt?"0":"1"}">${p.archivedAt?"元に戻す":"アーカイブ"}</button> <button class="btn sm danger" data-jdel="${esc(p.id)}">削除</button>`:""}</td></tr>
+        <tr id="jm-${esc(p.id)}" hidden><td colspan="6"><div id="jmb-${esc(p.id)}"></div></td></tr>
         <tr id="jr-${esc(p.id)}" hidden><td colspan="6"><div class="row"><label class="f" style="min-width:220px">名前<input id="jrn-${esc(p.id)}" value="${esc(p.name)}"></label><label class="f" style="flex:1;min-width:240px">目的<input id="jrp-${esc(p.id)}" value="${esc(p.purpose||"")}"></label><button class="btn sm" data-jrsave="${esc(p.id)}">保存</button></div></td></tr>
-        ${p.archivedAt?`<tr><td colspan="6" class="hint" style="padding-top:0">アーカイブ：${esc(fmtDate(p.archivedAt))}（一覧には出しません。開けば見られます）</td></tr>`:""}`).join("")}</tbody></table>`
+        ${p.archivedAt?`<tr><td colspan="6" class="hint" style="padding-top:0">アーカイブ：${esc(fmtDate(p.archivedAt))}（一覧には出しません。開けば見られます）</td></tr>`:""}`}).join("")}</tbody></table>`
       : `<p class="hint">${showArch?"この組織にはプロジェクトがありません。":"この組織にはまだプロジェクトがありません。下の「新規作成」か「サンプル事例を読み込む」で作ってください。"}</p>`;
     box.insertAdjacentHTML("beforeend", `<label class="hint" style="display:block;margin-top:6px"><input type="checkbox" id="jArch" ${showArch?"checked":""}> アーカイブしたプロジェクトも表示する</label>`);
     $("#jArch").onchange=()=>{ S.showArchived=$("#jArch").checked; loadProjectList(); };
@@ -1034,8 +1040,41 @@ async function loadProjectList(){
       if(name==null) return;
       try{ await api(`/api/projects/${p.id}`,{method:"DELETE",body:{confirmName:name}}); if(S.project?.id===p.id){ S.project=null; store.set("projectId",null); renderCtx(); renderHear(); } toast(`プロジェクト「${p.name}」を削除しました`); loadProjectList(); }catch(e){ toast(e.message) } });
     box.querySelectorAll("[data-jopen]").forEach(b=>b.onclick=()=>openProject(b.dataset.jopen));
+    box.querySelectorAll("[data-jdup]").forEach(b=>b.onclick=async()=>{ const p=list.find(x=>x.id===b.dataset.jdup);
+      const name=prompt(`「${p.name}」を複製します。要件（番号はそのまま）・資料・用語集・受け入れ基準・非機能要件・コメント・UML・画面・タスク分解を写します。\nヒアリングの履歴・確定版・レビュー・変更要求は写しません。\n新しいプロジェクトの名前：`, `${p.name}（コピー）`);
+      if(name==null||!name.trim()) return;
+      try{ const r=await api(`/api/projects/${p.id}/duplicate`,{method:"POST",body:{name:name.trim()}}); toast(`「${r.project.name}」を作りました（要件 ${r.counts.requirements}件）`); loadProjectList(); }catch(e){ toast(e.message) } });
+    box.querySelectorAll("[data-jexp]").forEach(b=>b.onclick=async()=>{ const p=list.find(x=>x.id===b.dataset.jexp);
+      try{ const res=await fetch(`/api/projects/${p.id}/export.json`,{headers:authHeaders()});
+        if(!res.ok){ const e=await res.json().catch(()=>({})); throw new Error(e.error||`HTTP ${res.status}`) }
+        saveBlob(await res.blob(), `${fileSafe(p.name)}_要件ナビ.json`); toast("書き出しました（API キーや利用者の情報は入っていません）"); }catch(e){ toast(e.message) } });
+    box.querySelectorAll("[data-jmem]").forEach(b=>b.onclick=()=>{ const id=b.dataset.jmem, r=$("#jm-"+id); r.hidden=!r.hidden; if(!r.hidden) renderProjectMembers(id, $("#jmb-"+id)); });
     box.querySelectorAll("[data-jcopy]").forEach(b=>b.onclick=()=>{ copyText(b.dataset.jcopy); });
   }catch(e){ box.innerHTML=`<p class="note err">${esc(e.message)}</p>`; }
+}
+/** プロジェクトのメンバー（入っている人だけが見られる。プロジェクトでの役割） */
+async function renderProjectMembers(pid, box){
+  box.innerHTML='<p class="hint">読み込み中…</p>';
+  try{
+    const v=await api(`/api/projects/${pid}/members`);
+    const cur=new Map(v.members.map(m=>[m.memberId,m.role]));
+    box.innerHTML=`<div style="display:flex;flex-direction:column;gap:8px;padding:6px 0">
+      <label><input type="checkbox" id="pmR-${pid}" ${v.restricted?"checked":""}> <b>メンバーに限る</b> — チェックすると、下で役割を選んだ人と組織の管理者だけが、このプロジェクトを見られます。役割は組織での役割の代わりに使います（例：組織では編集者でも、このプロジェクトでは閲覧者）</label>
+      ${v.candidates.length?`<div class="scroll"><table class="t"><thead><tr><th>名前</th><th>メールアドレス</th><th>組織での役割</th><th>このプロジェクトでの役割</th></tr></thead><tbody>
+        ${v.candidates.map(m=>`<tr><td>${esc(m.name||"―")}${m.status==="invited"?' <span class="tag">招待中</span>':""}</td><td class="mono">${esc(m.email)}</td><td>${esc(ROLE_JA[m.orgRole]||m.orgRole)}</td>
+          <td><select data-pm="${esc(m.memberId)}"><option value="">入れない</option>${["editor","reviewer","viewer"].map(r=>`<option value="${r}" ${cur.get(m.memberId)===r?"selected":""}>${ROLE_JA[r]}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>`
+        :`<p class="hint">組織に、管理者のほかのメンバーがいません。「組織」タブで招待してください。</p>`}
+      <p class="hint" style="margin:0">組織の管理者（${v.admins.map(a=>esc(a.name||a.email)).join("、")||"―"}）は、メンバーに入れなくてもいつでも見られます。${S.meta?.auth==="dev"?"開発用ログインでは利用者をメールアドレスで照合できないため、管理者以外はメンバーに限ったプロジェクトを開けません。":""}</p>
+      <div><button class="btn sm" id="pmS-${pid}">保存</button></div><div id="pmM-${pid}"></div></div>`;
+    $("#pmS-"+pid).onclick=async()=>{
+      const members=[...box.querySelectorAll("[data-pm]")].filter(s=>s.value).map(s=>({memberId:s.dataset.pm, role:s.value}));
+      const restricted=$("#pmR-"+pid).checked;
+      if(restricted && !members.length && !confirm("メンバーを1人も選んでいません。組織の管理者だけが見られるようになります。よろしいですか？")) return;
+      try{ await api(`/api/projects/${pid}/members`,{method:"PUT",body:{restricted, members}}); toast(restricted?"メンバーを保存しました（メンバーに限ります）":"保存しました（組織の全員が見られます）");
+        if(S.project?.id===pid) S.project=await api(`/api/projects/${pid}`); loadProjectList(); }
+      catch(e){ $("#pmM-"+pid).innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+    };
+  }catch(e){ box.innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
 /* ---------- プロジェクト設定タブ ---------- */
 function renderProject(){
@@ -1048,7 +1087,11 @@ function renderProject(){
     <details class="hint" style="margin-top:6px"><summary>ID で開く（ほかの人から共有された場合など）</summary>
       <div class="row" style="margin-top:6px"><label class="f" style="flex:1">プロジェクトID<input id="jOpen" placeholder="例：3f2a…（「プロジェクト設定」の一覧の ID）" spellcheck="false"></label><button class="btn ghost" id="jOpenGo">開く</button></div>
       <p>プロジェクトは組織の中にあるため、別の組織のプロジェクトは開けません（右上で組織を切り替えてください）。</p></details>
-    ${can("project.create")?`<div class="note" style="background:var(--accent-soft)">使い方を見るには、本システム自身の要求事項を題材にした<b>サンプル事例</b>を読み込めます（資料・分析・EARSの要件・非機能要件シート入り。AIは呼び出しません）。<button class="btn sm ghost" id="jSample" style="margin-left:6px">サンプル事例を読み込む</button></div>`:""}
+    ${can("project.create")?`<div class="note" style="background:var(--accent-soft)">使い方を見るには、本システム自身の要求事項を題材にした<b>サンプル事例</b>を読み込めます（資料・分析・EARSの要件・非機能要件シート入り。AIは呼び出しません）。<button class="btn sm ghost" id="jSample" style="margin-left:6px">サンプル事例を読み込む</button></div>
+    <details class="hint" style="margin-top:6px"><summary>書き出したファイルから取り込む（バックアップから戻す・別の環境や組織へ移す）</summary>
+      <div class="row" style="margin-top:6px"><label class="f" style="flex:1">ファイル（各プロジェクトの「書き出し」で作った .json）<input type="file" id="jImp" accept=".json,application/json"></label>
+        <label class="f" style="min-width:200px">名前（省略すると元の名前）<input id="jImpN"></label><button class="btn ghost" id="jImpGo">取り込む</button></div>
+      <p>要件（番号はそのまま）・資料・用語集・受け入れ基準・非機能要件・コメント・UML を取り込みます。AI はこの組織に登録済みのものを使い、メンバーの設定は取り込みません。</p><div id="jImpM"></div></details>`:""}
     <h3 style="margin-top:16px">新規作成</h3>
     <div style="display:flex;flex-direction:column;gap:10px">
       <label class="f">名称<input id="jN" placeholder="例：美容室のWeb予約システム"></label>
@@ -1071,6 +1114,14 @@ function renderProject(){
   if($("#jToAi")) $("#jToAi").onclick=()=>switchTab("admin");
   renderProjectAi();
   if($("#jRepo")) $("#jRepo").onclick=()=>{ const k=$("#iKind"); if(!k) return; k.value="github"; k.dispatchEvent(new Event("change")); $("#integPanel").scrollIntoView({block:"start"}); $("#n-token").focus(); toast("GitHub のトークンを貼り付けて、リポジトリの「＋ 新しいリポジトリを作る」を選んでください"); };
+  if($("#jImpGo")) $("#jImpGo").onclick=async()=>{
+    const f=$("#jImp").files[0]; if(!f){ $("#jImpM").innerHTML='<div class="note err">ファイルを選んでください</div>'; return }
+    let data; try{ data=JSON.parse(await f.text()) }catch(e){ $("#jImpM").innerHTML='<div class="note err">JSON のファイルではありません</div>'; return }
+    try{ const r=await api(`/api/orgs/${S.orgId}/projects/import`,{method:"POST",body:{data, ...($("#jImpN").value.trim()?{name:$("#jImpN").value.trim()}:{})}});
+      $("#jImpM").innerHTML=`<div class="note" style="background:var(--accent-soft)">「${esc(r.project.name)}」を取り込みました（要件 ${r.counts.requirements}件・資料 ${r.counts.documents}件・コメント ${r.counts.comments}件）。${r.notes.map(esc).join(" ")}</div>`;
+      loadProjectList(); }
+    catch(e){ $("#jImpM").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  };
   if($("#jSample")) $("#jSample").onclick=async()=>{
     try{ const r=await api(`/api/orgs/${S.orgId}/samples`,{method:"POST",body:{}}); await openProject(r.project.id); toast(`サンプル事例を読み込みました（要件 ${r.requirements}件）`); switchTab("reqs") }
     catch(e){ $("#jMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
@@ -1472,9 +1523,18 @@ async function loadReqs(){
   if(!S.project){$("#reqs").innerHTML='<p class="hint">プロジェクトを開いてください</p>';$("#decs").innerHTML="";return}
   const [reqs,decs]=await Promise.all([api(`/api/projects/${S.project.id}/requirements`),api(`/api/projects/${S.project.id}/decisions`)]);
   const ed=canEdit(), locked=!!S.baseline;
-  $("#reqs").innerHTML=(locked?`<div class="note warn" style="margin:0 0 10px">要件定義は確定済みです（確定版 v${S.baseline.version}）。変更・削除は「変更要求」から行い、後の工程への影響を確認してから決めます。</div>`:"")+`<table class="t"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>優先度</th><th>根拠</th>${ed?"<th></th>":""}</tr></thead><tbody>
+  const addForm = ed && !locked ? `<details id="raW" style="margin:0 0 12px" ${S.reqAddOpen?"open":""}><summary style="cursor:pointer;color:var(--accent);font-weight:500">＋ 要件を手で追加する（AIを使わない）</summary>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;border:1px solid var(--rule);border-radius:var(--r);padding:10px 12px">
+      <div class="row"><label class="f">区分<select id="raType">${Object.entries(TYPE).map(([k,v])=>`<option value="${k}" ${k===(S.reqAddType||"FR")?"selected":""}>${v}（${k}）</option>`).join("")}</select></label>
+        <label class="f">優先度<select id="raP">${Object.entries(PRI).map(([k,v])=>`<option value="${k}" ${k==="should"?"selected":""}>${v}</option>`).join("")}</select></label></div>
+      <div id="raBody"></div>
+      <label class="f">補足（任意）<textarea id="raD" rows="2"></textarea></label>
+      <label class="f">追加する理由（任意。操作の記録に残ります）<input id="raR" placeholder="例：打ち合わせで追加"></label>
+      <div><button class="btn sm" id="raGo">追加する</button></div><div id="raM"></div></div></details>` : "";
+  $("#reqs").innerHTML=(locked?`<div class="note warn" style="margin:0 0 10px">要件定義は確定済みです（確定版 v${S.baseline.version}）。変更・削除・追加は「変更要求」から行い、後の工程への影響を確認してから決めます。</div>`:"")+addForm+`<table class="t"><thead><tr><th>ID</th><th>区分</th><th>内容</th><th>優先度</th><th>根拠</th>${ed?"<th></th>":""}</tr></thead><tbody>
     ${reqs.map(r=>`<tr id="rq-${r.id}"><td class="mono">${r.code}${r.version>1?`<br><span class="tag">v${r.version}</span>`:""}</td><td>${TYPE[r.type]}${EARS_TYPES.includes(r.type)&&(r.ears||r.lint?.pattern)?`<br><span class="tag">EARS:${EARS_SHORT[(r.ears||{}).pattern||r.lint.pattern]}</span>`:""}</td>
-      <td>${esc(r.title)}${r.type==="RL"?ruleHtml(r.rule):""}${r.lint&&!r.lint.ok?`<div class="cmt" style="color:var(--warn)">⚠ ${r.lint.issues.map(esc).join("／")}</div>`:""}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}<div id="rh-${r.id}"></div></td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td>
+      <td>${esc(r.title)}${r.type==="RL"?ruleHtml(r.rule):""}${r.lint&&!r.lint.ok?`<div class="cmt" style="color:var(--warn)">⚠ ${r.lint.issues.map(esc).join("／")}</div>`:""}${r.description?`<br><span class="cmt">${esc(r.description)}</span>`:""}<div id="rh-${r.id}"></div>
+      <div><button class="btn sm ghost" data-rcm="${r.id}" style="margin-top:4px;padding:1px 8px">${commentLabel(r.comments)}</button></div><div id="rc-${r.id}"></div></td><td>${PRI[r.priority]||r.priority}</td><td class="mono">${esc(r.source)}</td>
       ${ed?`<td style="white-space:nowrap">${locked?`<button class="btn sm ghost" data-rcr="${r.id}">変更要求</button>`:`<button class="btn sm ghost" data-redit="${r.id}">編集</button>`} <button class="btn sm ghost" data-rhist="${r.id}">履歴</button> ${locked?"":`<button class="btn sm danger" data-rdel="${r.id}">削除</button>`}</td>`:""}</tr>
       ${ed?`<tr id="re-${r.id}" hidden><td colspan="6"><div style="display:flex;flex-direction:column;gap:8px">
         ${EARS_TYPES.includes(r.type)?`${earsEditor("ee-"+r.id, r.ears||{pattern:r.lint?.pattern||"ubiquitous",trigger:"",state:"",feature:"",system:"システム",response:r.title.replace(/。$/,"")})}
@@ -1503,6 +1563,25 @@ async function loadReqs(){
     if(!b.dataset.sure){ b.dataset.sure="1"; b.textContent="本当に削除"; setTimeout(()=>{delete b.dataset.sure; b.textContent="削除"},4000); return; }
     try{ await api(`/api/requirements/${b.dataset.rdel}`,{method:"DELETE"}); toast("削除しました（番号は再利用しません）"); loadReqs() }catch(e){ toast(e.message) }
   });
+  document.querySelectorAll("[data-rcm]").forEach(b=>b.onclick=()=>{ const box=q("rc-"+b.dataset.rcm); if(box.innerHTML){ box.innerHTML=""; return } loadComments(b.dataset.rcm, box, b) });
+  if(q("raW")){
+    const body=()=>{ const t=$("#raType").value; S.reqAddType=t;
+      $("#raBody").innerHTML = EARS_TYPES.includes(t)
+        ? `${earsEditor("ra-ee")}<details id="raTW"><summary class="hint">EARS の構造を使わず、文で直接書く</summary><label class="f">内容<textarea id="raT" rows="2"></textarea></label></details>`
+        : `<label class="f">内容<textarea id="raT" rows="2" placeholder="${t==="RL"?"例：前日までの取り消しは無料とする":t==="BR"?"例：電話での予約受付を減らす":t==="AC"?"例：店長（予約の状況を確認する）":"例：既存の会員データを使う"}"></textarea></label>${t==="RL"?ruleEditor("ra-rr"):""}`;
+      if(EARS_TYPES.includes(t)) bindEars("ra-ee", t); };
+    $("#raType").onchange=body; body();
+    q("raW").ontoggle=()=>{ S.reqAddOpen=q("raW").open };
+    $("#raGo").onclick=async()=>{
+      const t=$("#raType").value, useEars=EARS_TYPES.includes(t) && !q("raTW").open;
+      const b={type:t, priority:$("#raP").value, description:$("#raD").value.trim(), reason:$("#raR").value.trim()};
+      if(useEars) b.ears=readEars("ra-ee"); else b.title=$("#raT").value.trim();
+      if(t==="RL") b.rule=readRule("ra-rr");
+      if(useEars ? !b.ears.response : !b.title){ $("#raM").innerHTML=`<div class="note err">${useEars?"応答（〜しなければならない）":"内容"}を入れてください</div>`; return }
+      try{ const r=await api(`/api/projects/${S.project.id}/requirements`,{method:"POST",body:b}); toast(`${r.code} を追加しました`); await loadReqs(); q("rq-"+r.id)?.scrollIntoView({block:"center"}) }
+      catch(e){ $("#raM").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+    };
+  }
   document.querySelectorAll("[data-rhist]").forEach(b=>b.onclick=async()=>{
     const box=q("rh-"+b.dataset.rhist); if(box.innerHTML){box.innerHTML="";return}
     try{ const v=await api(`/api/requirements/${b.dataset.rhist}/versions`);
@@ -1511,6 +1590,29 @@ async function loadReqs(){
   });
   loadGlossary();
   $("#decs").innerHTML=decs.map(d=>`<div class="hint">${d.createdAt.slice(0,16).replace("T"," ")}　${esc(d.pick)}を採用 — ${esc(d.reason||"（理由未入力）")}　<span class="mono">${Object.entries(d.mapping).map(([l,n])=>esc(l+"="+n)).join(" / ")}</span></div>`).join("")||'<p class="hint">まだありません</p>';
+}
+/* ---------- 要件へのコメント ---------- */
+const commentLabel = c => c && c.total ? `コメント ${c.total}${c.open?`（未解決 ${c.open}）`:"（すべて解決済み）"}` : "コメント";
+async function loadComments(rid, box, btn){
+  try{
+    const list=await api(`/api/projects/${S.project.id}/comments?requirementId=${encodeURIComponent(rid)}`);
+    if(btn) btn.textContent=commentLabel({total:list.length, open:list.filter(m=>m.status==="open").length});
+    const cw=can("comment.write"), mg=can("project.manage");
+    box.innerHTML=`<div style="margin-top:6px;border-left:2px solid var(--accent);padding-left:10px;display:flex;flex-direction:column;gap:8px">
+      ${list.map(m=>`<div class="cmt" style="${m.status==="resolved"?"opacity:.65":""}"><b style="color:var(--ink)">${esc(m.authorName)}</b> <span class="mono">${esc(fmtDate(m.createdAt))}</span>${m.status==="resolved"?' <span class="st good">解決済み</span>':""}${m.updatedAt&&m.status==="open"?' <span class="tag">更新あり</span>':""}
+        <div style="white-space:pre-wrap;color:var(--ink);font-size:13.5px">${esc(m.body)}</div>
+        <div class="row" style="gap:4px;margin-top:2px">${cw?`<button class="btn sm ghost" data-cres="${m.id}" data-v="${m.status==="open"?"1":"0"}">${m.status==="open"?"解決済みにする":"未解決に戻す"}</button>`:""}${cw&&m.mine?`<button class="btn sm ghost" data-cedit="${m.id}">直す</button>`:""}${(cw&&m.mine)||mg?`<button class="btn sm danger" data-cdel="${m.id}">削除</button>`:""}</div></div>`).join("")||'<div class="hint">まだコメントはありません</div>'}
+      ${cw?`<div class="row"><label class="f" style="flex:1;min-width:220px">コメントを書く<textarea id="cmN-${rid}" rows="2" placeholder="例：この数値の根拠を確認したい"></textarea></label><button class="btn sm" data-cpost="${rid}">書き込む</button></div>`
+        :`<div class="hint">コメントを書くには「要件へのコメント」の権限が必要です</div>`}</div>`;
+    const again=()=>loadComments(rid, box, btn);
+    box.querySelectorAll("[data-cpost]").forEach(b=>b.onclick=async()=>{ const t=document.getElementById("cmN-"+rid).value.trim(); if(!t) return;
+      try{ await api(`/api/requirements/${rid}/comments`,{method:"POST",body:{body:t}}); again() }catch(e){ toast(e.message) } });
+    box.querySelectorAll("[data-cres]").forEach(b=>b.onclick=async()=>{ try{ await api(`/api/comments/${b.dataset.cres}`,{method:"PATCH",body:{resolved:b.dataset.v==="1"}}); again() }catch(e){ toast(e.message) } });
+    box.querySelectorAll("[data-cedit]").forEach(b=>b.onclick=async()=>{ const m=list.find(x=>x.id===b.dataset.cedit); const t=prompt("コメントを直す", m.body); if(t==null||!t.trim()) return;
+      try{ await api(`/api/comments/${m.id}`,{method:"PATCH",body:{body:t.trim()}}); again() }catch(e){ toast(e.message) } });
+    box.querySelectorAll("[data-cdel]").forEach(b=>b.onclick=async()=>{ if(!confirm("このコメントを削除します。元に戻せません。")) return;
+      try{ await api(`/api/comments/${b.dataset.cdel}`,{method:"DELETE"}); again() }catch(e){ toast(e.message) } });
+  }catch(e){ box.innerHTML=`<div class="note err">${esc(e.message)}</div>` }
 }
 /* ---------- UML ---------- */
 let mmReady=false, umlCache=null;

@@ -231,7 +231,11 @@ export function connect(ctx: ImplementationContext, ho: Handoff, opts: ConnectOp
     const pr = c.get("principal") as Principal;
     const t = tokenOf(c);
     const all = await store.listProjects(pr.orgId);
-    return t?.projectIds ? all.filter((p) => t.projectIds!.includes(p.id)) : all;
+    if (t) return t.projectIds ? all.filter((p) => t.projectIds!.includes(p.id)) : all;
+    // ログインして使うときは、メンバーを限ったプロジェクトのうち入っていないものを除く
+    const out: Project[] = [];
+    for (const p of all) if (!ctx.canView || (await ctx.canView(c, p))) out.push(p);
+    return out;
   }
 
   /* ---------- 読む ---------- */

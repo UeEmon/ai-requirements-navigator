@@ -45,6 +45,8 @@
 | F1-1 | プロジェクト作成 | 必須 | 済 | `POST /api/orgs/:orgId/projects` |
 | F1-2 | メンバー権限（admin / editor / reviewer / viewer） | 推奨 | 済（認可） | `apps/api/src/auth.ts` |
 | F1-3 | テンプレート選択 | 推奨 | 未 | ― |
+| F1-4 | プロジェクト単位のメンバー（メンバーに限ると、選んだ人と組織の管理者だけが見られる。プロジェクトでの役割は組織での役割の代わりに使う） | 推奨 | 済 | `apps/api/src/collab.ts`、`GET/PUT /api/projects/:id/members`、[ADR 0012](./adr/0012-team-collaboration.md) |
+| F1-5 | プロジェクトの複製・書き出し（JSON）・書き出したファイルからの取り込み（要件の番号・欠番を保つ。履歴は写さない） | 推奨 | 済 | `POST /api/projects/:id/duplicate`、`GET /api/projects/:id/export.json`、`POST /api/orgs/:orgId/projects/import` |
 | F2-1 | フェーズ別ガイド（6フェーズ） | 必須 | 済 | `packages/ai-core/src/phases.ts` |
 | F2-2 | 選択肢つき質問（AIが回答候補を作成） | 必須 | 済 | `ai-core/src/guide.ts`、`POST /api/projects/:id/guide` |
 | F2-3 | 用語解説（標準の用語集＋AIの解説） | 必須 | 済 | `ai-core/src/glossary.ts` |
@@ -63,6 +65,8 @@
 | F4-5 | 決定記録 | 必須 | 済 | `decisions` テーブル |
 | F5-1 | 要件リポジトリ（ID採番） | 必須 | 済 | `requirements` テーブル |
 | F5-2 | 要件の編集・削除と版の履歴、確定版どうしの差分 | 必須 | 済 | `PATCH/DELETE /api/requirements/:id`、`GET .../versions` |
+| F5-10 | 要件の手入力（AIを使わない。EARS の構造か文で書く。確定後は変更要求から） | 必須 | 済 | `POST /api/projects/:id/requirements` |
+| F5-11 | 要件へのコメント（相談・指摘。解決済みにできる。本文は本人だけが直せる） | 推奨 | 済 | `POST /api/requirements/:id/comments`、`/api/comments/:id` |
 | F5-3 | トレーサビリティ（要件 → 案・決定 → ストーリー → 課題） | 推奨 | 済 | `requirements.round_id`、`GET /api/projects/:id/trace` |
 | F5-4 | レビュー・承認（依頼・承認・差し戻し、承認後の要件変更の検出、確定に承認を必須にする設定） | 推奨 | 済 | `apps/api/src/scope.ts`、`/api/projects/:id/reviews` |
 | F5-7 | EARS 記法による要件文（機能要件・非機能要件。構造で保存し、文型と表現を検査） | 推奨 | 済 | `ai-core/src/ears.ts`、`POST /api/ears/preview` |

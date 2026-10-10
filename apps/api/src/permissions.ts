@@ -15,6 +15,7 @@ export const PERMISSION_KEYS = [
   "project.create",
   "requirements.edit",
   "review.approve",
+  "comment.write",
   "tasks.publish",
   "project.settings",
   "project.manage",
@@ -42,12 +43,13 @@ export interface PermissionInfo {
 export const PERMISSIONS: PermissionInfo[] = [
   { key: "project.view", label: "プロジェクトの閲覧", desc: "要件・設計・レビューの状況などを見る", min: "viewer", locked: "all", group: "project" },
   { key: "export", label: "出力・ダウンロード", desc: "仕様書・テストシナリオ・開発用パッケージ・課題のファイルを取り出す", min: "viewer", group: "project" },
-  { key: "project.create", label: "プロジェクトの作成", desc: "新しいプロジェクトを作る・サンプルを読み込む", min: "editor", group: "project" },
+  { key: "project.create", label: "プロジェクトの作成", desc: "新しいプロジェクトを作る・サンプルを読み込む・複製する・書き出したファイルから取り込む", min: "editor", group: "project" },
   { key: "requirements.edit", label: "要件・設計の作成と編集", desc: "ヒアリング・AIでの案の作成と採用・要件の手直し・UML・画面・非機能要求・変更管理・レビューの依頼", min: "editor", group: "project" },
   { key: "review.approve", label: "レビュー・承認", desc: "レビューの承認・差し戻し、受け入れ条件の確認", min: "reviewer", group: "project" },
+  { key: "comment.write", label: "要件へのコメント", desc: "要件ごとにコメント（相談・指摘）を書く・解決にする", min: "reviewer", group: "project" },
   { key: "tasks.publish", label: "課題管理ツールへの登録", desc: "実装タスクを GitHub・Jira・Backlog に登録する", min: "editor", group: "project" },
   { key: "project.settings", label: "プロジェクトの名前・AIの構成の変更", desc: "名前・目的・使う AI（モード・生成AI・評価AI）を変える", min: "editor", group: "project" },
-  { key: "project.manage", label: "プロジェクトの管理", desc: "アーカイブ・削除・承認の決まり（確定に承認を必須にするなど）", min: "admin", group: "project" },
+  { key: "project.manage", label: "プロジェクトの管理", desc: "アーカイブ・削除・承認の決まり（確定に承認を必須にするなど）・プロジェクトのメンバー", min: "admin", group: "project" },
   { key: "ai.manage", label: "AI設定", desc: "AI の登録・API キーの登録と変更・自動発行", min: "admin", group: "org" },
   { key: "integration.manage", label: "課題管理ツールとの連携", desc: "連携先の登録・変更・リポジトリの自動作成", min: "admin", group: "org" },
   { key: "agent.manage", label: "開発ツールとの連携", desc: "AIコーディングツール・CI 用のトークンと Webhook の管理", min: "admin", group: "org" },
@@ -66,6 +68,7 @@ export type RolePermissions = Partial<Record<ConfigurableRole, Permission[]>>;
 
 const info = new Map(PERMISSIONS.map((p) => [p.key, p]));
 export const permissionLabel = (k: Permission) => info.get(k)?.label ?? k;
+export const permissionGroup = (k: Permission) => info.get(k)?.group ?? "org";
 export const isPermission = (k: string): k is Permission => info.has(k as Permission);
 
 export function defaultPermissions(role: Role): Permission[] {

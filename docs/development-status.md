@@ -1,6 +1,6 @@
 # 開発の状況
 
-要件ナビの開発で、何ができていて、何が残っているかの一覧です。作業を終えるたびに更新します（最終更新: 2026-10-09）。
+要件ナビの開発で、何ができていて、何が残っているかの一覧です。作業を終えるたびに更新します（最終更新: 2026-10-10）。
 開発の決まりは [CLAUDE.md](../CLAUDE.md)、Claude のプロジェクトでの管理のしかたは [claude-project.md](claude-project.md) を参照してください。
 
 ## できていること
@@ -12,7 +12,8 @@
 | 資料分析・EARS | 議事録・既存資料の取り込み（テキスト・Word・PDF）、現状の課題と業務の見直し、EARS 記法と検査 | [discovery-and-ears.md](discovery-and-ears.md) |
 | 非機能要件 | 26項目のシート、推奨水準・矛盾の検出・似た事例との比較（過大の検出） | [nfr.md](nfr.md) |
 | 設計・出力 | UML 5種（複数AIで比較）、画面イメージ、要件定義書（Word・PDF・Markdown） | [screens-and-changes.md](screens-and-changes.md) |
-| 確定と変更 | 要件定義の確定、変更要求と影響分析、レビューと承認、業務ルール・用語集・受け入れ基準 | [phase-boundaries.md](phase-boundaries.md) |
+| 確定と変更 | 要件定義の確定、変更要求と影響分析、レビューと承認、業務ルール・用語集・受け入れ基準、要件の手入力 | [phase-boundaries.md](phase-boundaries.md) |
+| チームでの利用 | プロジェクト単位のメンバー（メンバーに限る・プロジェクトでの役割）、要件へのコメント、プロジェクトの複製・書き出し・取り込み | [auth.md](auth.md)・[ADR 0012](adr/0012-team-collaboration.md) |
 | 実装・テストへの引き継ぎ | タスク分解と GitHub Issues・Jira・Backlog への登録、テスト仕様、引き継ぎパッケージ、AIコーディングツール連携（API トークン・MCP・Webhook） | [integrations.md](integrations.md)・[handoff.md](handoff.md)・[connect.md](connect.md) |
 | AI設定 | Claude・ChatGPT・Gemini ごとの登録、キーの自動発行（ChatGPT: 管理用キー、Gemini: Google でログイン）、モデル一覧の自動取得、月間トークン上限 | [ai-keys.md](ai-keys.md) |
 | 連携の自動化 | 課題管理ツールの設定の自動読み込み、GitHub リポジトリの自動作成 | [integrations.md](integrations.md) |
@@ -28,10 +29,11 @@
 | # | 内容 | 優先度 | メモ |
 | --- | --- | --- | --- |
 | 1 | 本物の外部サービスでの動作確認（下の「確かめていないこと」） | 高 | 公開前に、少なくとも Claude・ChatGPT・Gemini のキー登録と、GitHub の課題登録を確かめる |
-| 2 | プロジェクトごとのメンバーと役割（参加していないプロジェクトは見えないなど） | 中 | 組織単位の役割・権限はできている。必要かどうか未決定 |
-| 3 | システム名の変更（候補: KANAME） | 中 | 候補の調査は済み。採用するかは未決定 |
-| 4 | 要件ナビのログインでのメール送信（招待・パスワード再設定のリンク） | 低 | 今は画面に出た文を管理者が送る。SMTP などの設定が必要になる |
-| 5 | CI の更新: actions の Node.js 20 終了、ubuntu-latest の Ubuntu 26 への移行（2026-10-19 から） | 中 | CI の注釈に予告が出ている。`actions/checkout`・`actions/setup-node` の更新を確認する |
+| 2 | システム名の変更（候補: KANAME） | 中 | 候補の調査は済み。採用するかは未決定 |
+| 3 | 要件ナビのログインでのメール送信（招待・パスワード再設定のリンク） | 低 | 今は画面に出た文を管理者が送る。SMTP などの設定が必要になる |
+| 4 | CI の Ubuntu 26 への移行（2026-10-19 から ubuntu-latest が変わる） | 中 | actions は Node.js 24 対応の版に更新済み（2026-10-10）。移行後に CI がすべて通るかを確かめる |
+| 5 | コメントの通知（メール・Webhook）とコメントへの返信 | 低 | コメントはできた。今は要件一覧で開いて確かめる |
+| 6 | テンプレート選択（F1-3） | 中 | 要件定義書で唯一「未」の機能。複製で代わりにできる部分もある |
 
 ## 作業中
 
@@ -45,11 +47,14 @@
 - GitHub のリポジトリの自動作成、Jira・Backlog への課題の登録
 - Amazon Cognito・Keycloak でのログインと招待の照合
 - 要件ナビのログイン（AUTH_MODE=local）を、本物の画面と API を通して使うこと（画面は模擬 API で、API はテストで確かめた）
+- メンバーに限ったプロジェクトを、管理者以外の利用者として画面から使うこと（API はテストで確かめた。画面は開発用ログインの管理者で、メンバーの設定・コメント・手入力・複製・書き出し・取り込みを確かめた）
+- 更新した GitHub Actions（checkout・setup-node・upload-artifact・docker の各 action・configure-aws-credentials）での CI と AWS への展開
 
 ## 記録
 
 | 日付 | 内容 |
 | --- | --- |
+| 2026-10-10 | 要件の手入力、要件へのコメント、プロジェクト単位のメンバー、プロジェクトの複製・書き出し・取り込み、CI の actions の更新（Node.js 24） |
 | 2026-10-09 | Claude のプロジェクトで開発を管理するための資料（CLAUDE.md・この一覧・claude-project.md）を追加 |
 | 2026-10-07 | 組織設定の編集・役割ごとの権限・要件ナビのログイン（ユーザー管理） |
 | 2026-10-04 | 組織の管理（メンバーと役割）、プロジェクトの整理、作成後の AI の変更、単独AI＋評価AI |

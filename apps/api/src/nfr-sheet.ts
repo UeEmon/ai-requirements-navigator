@@ -57,8 +57,10 @@ export function nfrSheet(ctx: ImplementationContext) {
 
   /** 比べる事例: 参考類型と、同じ組織の他のプロジェクトのシート */
   const casesFor = async (p: Project): Promise<NfrCase[]> => {
+    // メンバーを限ったプロジェクトは、ほかのプロジェクトの事例に使わない（名前や内容が見えてしまうため）
+    const restricted = new Set((await store.listProjects(p.orgId)).filter((x) => x.access?.restricted).map((x) => x.id));
     const org = (await store.listNfrSheets(p.orgId))
-      .filter((x) => x.projectId !== p.id)
+      .filter((x) => x.projectId !== p.id && !restricted.has(x.projectId))
       .map((x) => orgCaseFrom(x.projectId, x.projectName, x.projectPurpose, x.profile, x.decisions))
       .filter((x): x is NfrCase => x !== null);
     return [...org, ...BUILTIN_CASES];

@@ -365,7 +365,7 @@ export function orgAdmin(ctx: ImplementationContext, opts: OrgAdminOptions) {
       if (input.archived !== undefined) perms.push("project.manage");
       if (input.name !== undefined || input.purpose !== undefined || input.aiConfig) perms.push("project.settings");
       const p0 = await ctx.loadProject(c, c.req.param("id"), perms[0] ?? "project.settings");
-      for (const k of perms.slice(1)) ctx.need(c, p0.orgId, k);
+      for (const k of perms.slice(1)) await ctx.loadProject(c, p0.id, k);
       // 変更前の値（記録用）。保存先によっては同じオブジェクトが書き換わるため、先に写しを取る
       const p = JSON.parse(JSON.stringify(p0)) as typeof p0;
       const aiConfig = input.aiConfig ? await checkAiConfig(store, p.orgId, input.aiConfig, p.confidential) : undefined;

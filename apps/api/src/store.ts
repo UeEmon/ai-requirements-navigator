@@ -113,6 +113,17 @@ export interface Project {
   settings?: ProjectSettings;
   /** アーカイブした日時（一覧に出さない）。null は使用中 */
   archivedAt?: string | null;
+  /** プロジェクトのメンバー（restricted のとき、組織の管理者と、ここに入っている人だけが見られる） */
+  access?: ProjectAccess | null;
+}
+
+/** プロジェクトでの役割（管理者は組織の管理者だけ。プロジェクトの中で管理者にはしない） */
+export type ProjectRole = Exclude<Role, "admin">;
+export interface ProjectAccess {
+  /** true: メンバーに入っている人だけが見られる / false: 組織の全員が見られる（メンバーの役割は使わない） */
+  restricted: boolean;
+  /** 組織のメンバー（OrgMember.id）と、このプロジェクトでの役割 */
+  members: Array<{ memberId: string; role: ProjectRole }>;
 }
 
 export type MemberStatus = "invited" | "active" | "removed";
@@ -193,6 +204,27 @@ export interface RequirementVersion {
   changeReason: string;
   createdAt: string;
 }
+
+/** 書き出し・複製から取り込む要件（番号・版を保つ。deletedAt があれば欠番として残し、番号を再利用しない） */
+export type ImportedRequirement = Pick<Requirement, "code" | "type" | "title" | "description" | "priority" | "phaseKey" | "source" | "version" | "ears" | "rule" | "deletedAt">;
+
+/** 要件へのコメント（相談・指摘。open: 未解決 / resolved: 解決済み） */
+export interface RequirementComment {
+  id: string;
+  projectId: string;
+  requirementId: string;
+  /** 書いたときの要件の番号（FR-01 など） */
+  requirementCode: string;
+  body: string;
+  authorId: string;
+  authorName: string;
+  status: "open" | "resolved";
+  resolvedBy: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+export type CommentPatch = Partial<Pick<RequirementComment, "body" | "status" | "resolvedBy" | "resolvedAt">>;
 
 export type RequirementPatch = Partial<Pick<Requirement, "title" | "description" | "priority" | "ears" | "rule">>;
 
@@ -611,8 +643,8 @@ export interface Store {
     projectId: string,
     items: Array<RequirementItem & { roundId: string | null; source: string; phaseKey?: string | null }>,
   ): Promise<Requirement[]>;
-  /** 削除済みを含まない */
-  listRequirements(projectId: string): Promise<Requirement[]>;
+  /** 削除済みを含まない（includeDeleted: 含める。書き出しで欠番を残すため） */
+  listRequirements(projectId: string, opts?: { includeDeleted?: boolean }): Promise<Requirement[]>;
   getRequirement(id: string): Promise<Requirement | null>;
   /** 変更前の内容を版として残し、version を1つ上げる */
   updateRequirement(id: string, patch: RequirementPatch, actor: string, reason: string): Promise<Requirement | null>;
@@ -724,6 +756,18 @@ export interface Store {
   recordWebhookDelivery(id: string, status: string): Promise<void>;
 
   updateProjectSettings(id: string, settings: ProjectSettings): Promise<Project | null>;
+  /** プロジェクトのメンバー（null で外す） */
+  updateProjectAccess(id: string, access: ProjectAccess | null): Promise<Project | null>;
+  /** 書き出し・複製の取り込み。番号・版・欠番を保ったまま入れる */
+  importRequirements(projectId: string, items: ImportedRequirement[]): Promise<Requirement[]>;
+
+  /* 要件へのコメント */
+  addComment(c: Omit<RequirementComment, "id" | "createdAt" | "updatedAt">): Promise<RequirementComment>;
+  getComment(id: string): Promise<RequirementComment | null>;
+  /** 古い順 */
+  listComments(projectId: string): Promise<RequirementComment[]>;
+  updateComment(id: string, patch: CommentPatch): Promise<RequirementComment | null>;
+  deleteComment(id: string): Promise<boolean>;
   getProjectSheet<T>(projectId: string, kind: ProjectSheetKind): Promise<ProjectSheet<T> | null>;
   saveProjectSheet<T>(projectId: string, kind: ProjectSheetKind, data: T, updatedBy: string): Promise<ProjectSheet<T>>;
   addReview(r: Omit<Review, "id" | "code" | "status" | "decisions" | "createdAt" | "closedAt">): Promise<Review>;
@@ -771,6 +815,7 @@ export class MemoryStore implements Store {
   private webhooks: Webhook[] = [];
   private sheets = new Map<string, ProjectSheet>();
   private reviews: Review[] = [];
+  private comments: RequirementComment[] = [];
   private seq = 0;
 
   async createOrg(name: string) {
@@ -962,7 +1007,8 @@ export class MemoryStore implements Store {
   async addRequirements(projectId: string, items: Array<RequirementItem & { roundId: string | null; source: string; phaseKey?: string | null }>) {
     const out: Requirement[] = [];
     for (const it of items) {
-      const n = this.reqs.filter((r) => r.projectId === projectId && r.type === it.type).length + 1;
+      // 区分ごとの最大の番号の次（取り込んだ要件の番号と重ならないように）
+      const n = Math.max(0, ...this.reqs.filter((r) => r.projectId === projectId && r.type === it.type).map((r) => Number(/(\d+)$/.exec(r.code)?.[1] ?? 0))) + 1;
       const r: Requirement = {
         id: randomUUID(),
         projectId,
@@ -986,8 +1032,8 @@ export class MemoryStore implements Store {
     }
     return out;
   }
-  async listRequirements(projectId: string) {
-    return this.reqs.filter((r) => r.projectId === projectId && !r.deletedAt);
+  async listRequirements(projectId: string, opts?: { includeDeleted?: boolean }) {
+    return this.reqs.filter((r) => r.projectId === projectId && (opts?.includeDeleted || !r.deletedAt));
   }
   async getRequirement(id: string) {
     return this.reqs.find((r) => r.id === id) ?? null;
@@ -1354,6 +1400,46 @@ export class MemoryStore implements Store {
     if (!p) return null;
     p.settings = { ...settings };
     return { ...p, settings: { ...settings } };
+  }
+  async updateProjectAccess(id: string, access: ProjectAccess | null) {
+    const p = this.projects.get(id);
+    if (!p) return null;
+    p.access = access ? JSON.parse(JSON.stringify(access)) : null;
+    return { ...p, access: p.access ? JSON.parse(JSON.stringify(p.access)) : null };
+  }
+  async importRequirements(projectId: string, items: ImportedRequirement[]) {
+    const out: Requirement[] = [];
+    for (const it of items) {
+      if (this.reqs.some((r) => r.projectId === projectId && r.code === it.code)) throw new Error(`duplicate requirement code: ${it.code}`);
+      const t = now();
+      const r: Requirement = { ...JSON.parse(JSON.stringify(it)), id: randomUUID(), projectId, roundId: null, createdAt: t, updatedAt: it.version > 1 ? t : null };
+      this.reqs.push(r);
+      out.push(r);
+    }
+    return out.filter((r) => !r.deletedAt);
+  }
+  async addComment(c: Omit<RequirementComment, "id" | "createdAt" | "updatedAt">) {
+    const x: RequirementComment = { ...c, id: randomUUID(), createdAt: now(), updatedAt: null };
+    this.comments.push(x);
+    return { ...x };
+  }
+  async getComment(id: string) {
+    const x = this.comments.find((m) => m.id === id);
+    return x ? { ...x } : null;
+  }
+  async listComments(projectId: string) {
+    return this.comments.filter((m) => m.projectId === projectId).map((m) => ({ ...m }));
+  }
+  async updateComment(id: string, patch: CommentPatch) {
+    const x = this.comments.find((m) => m.id === id);
+    if (!x) return null;
+    Object.assign(x, Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)), { updatedAt: now() });
+    return { ...x };
+  }
+  async deleteComment(id: string) {
+    const n = this.comments.length;
+    this.comments = this.comments.filter((m) => m.id !== id);
+    return this.comments.length < n;
   }
   async getProjectSheet<T>(projectId: string, kind: ProjectSheetKind) {
     const x = this.sheets.get(`${projectId}:${kind}`);

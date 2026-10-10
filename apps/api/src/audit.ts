@@ -17,6 +17,7 @@ export type AuditAction =
   | "ai.uml"
   | "decision.create"
   | "uml.adopt"
+  | "requirement.create"
   | "requirement.update"
   | "requirement.delete"
   | "spec.export"
@@ -70,7 +71,16 @@ export type AuditAction =
   | "acceptance.update"
   | "review.request"
   | "review.decide"
-  | "review.withdraw";
+  | "review.withdraw"
+  | "comment.create"
+  | "comment.update"
+  | "comment.resolve"
+  | "comment.reopen"
+  | "comment.delete"
+  | "project.members"
+  | "project.duplicate"
+  | "project.export"
+  | "project.import";
 
 export interface AuditInput {
   orgId: string;
