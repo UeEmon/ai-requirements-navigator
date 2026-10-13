@@ -210,6 +210,7 @@ docker compose start app
 | --- | --- |
 | `Bind for 127.0.0.1:8787 failed: port is already allocated` | ほかのアプリが使っています。`.env` の `ARN_PORT`（DB は `DB_PORT`）を変えて `docker compose up -d` |
 | app がすぐ止まり、ログに「MASTER_KEY …」 | `.env` の `MASTER_KEY` が空か、鍵ではない文字列（`Digest: sha256:…` の行、説明文、途中で切れた文字列など）になっています。メッセージに文字数とバイト数が出ます。[3](#暗号化の鍵master_keyを作る) のコマンドで書き込み直し、`docker compose up -d` で起動し直す。まだ API キーを登録していなければ、鍵を作り直しても影響はありません |
+| app が止まり、ログに `getaddrinfo EAI_AGAIN db`（または「データベース（db）に … 接続できません」） | db コンテナが動いていません。Docker Desktop の画面で app だけを ▶ で起動した、または db が止まっているときに起きます。このフォルダで `docker compose up -d` を実行して app と db をいっしょに起動し、`docker compose ps` で db が `healthy` になっているかを確かめます。app は起動時に db を最大60秒（`DB_WAIT_SECONDS`）待ちます |
 | ビルドが `npm ci` や証明書の取得で失敗する | ネットワーク・プロキシの設定を確認（Settings → Resources → Proxies）。社内の証明書で通信を検査している場合は、ネットワークの管理者に相談してください |
 | 画面は出るが AI の呼び出しが失敗する | 「AI設定」タブの「登録済みのAI」で、キーの末尾4桁とモデルIDを確認（[確かめ方](ai-keys.md#登録したキーを確かめる)）。API の支払い設定と、会社のネットワークから AI の提供元に接続できるかも確認 |
 | 「組織の作成には初期セットアップ用トークンが必要です」 | `AUTH_MODE=oidc` のときは、`.env` の `BOOTSTRAP_TOKEN` を画面の入力欄に入れて組織を作ります |
