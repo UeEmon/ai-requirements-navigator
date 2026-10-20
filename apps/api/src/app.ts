@@ -4,6 +4,8 @@ import {
   compareUmlModels,
   keyGuides,
   VENDOR_INFO,
+  recommendModelCombos,
+  ADVICE_GOALS,
   vendorName,
   BusinessRule,
   Ears,
@@ -529,6 +531,23 @@ export function createApp(deps: AppDeps) {
     const orgId = c.req.param("orgId");
     need(c, orgId, "project.view");
     return c.json((await store.listCredentials(orgId)).map(publicCredential));
+  });
+
+  /**
+   * 登録済みの AI から、単一AI・単独AI＋評価AI のおすすめの組み合わせを作る（AI は呼び出さない）。
+   * 応答性・思考の深さ・トークン消費の目安を返し、どれを使うかは利用者が選ぶ。confidential=1: 機密プロジェクト（ローカルLLMだけ）
+   */
+  app.get("/api/orgs/:orgId/ai-advice", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "project.view");
+    const creds = (await store.listCredentials(orgId)).filter((x) => x.vendor !== "mock" || deps.allowMock);
+    const confidential = ["1", "true"].includes(c.req.query("confidential") ?? "");
+    const advice = recommendModelCombos(
+      creds.map((x) => ({ id: x.id, vendor: x.vendor, model: x.model, label: x.label, isLocal: x.isLocal })),
+      { confidential },
+    );
+    const goals = Object.fromEntries(Object.entries(ADVICE_GOALS).map(([k, g]) => [k, { title: g.title, description: g.description }]));
+    return c.json({ ...advice, goals });
   });
 
   /**
