@@ -67,6 +67,27 @@ describe("おすすめの組み合わせ", () => {
     expect(r.notes.at(-1)).toContain("あなたが決めて");
   });
 
+  it("複数AI＋評価AI: 生成AIは2つで提供元を分け、評価AIはどちらとも別にする", () => {
+    const r = recommendModelCombos(providers);
+    expect(r.multi.flatMap((c) => c.goals).sort()).toEqual(["balanced", "fast", "quality"]);
+    for (const c of r.multi) {
+      expect(c.mode).toBe("multi");
+      expect(c.generatorIds).toHaveLength(2);
+      expect(c.generatorIds).not.toContain(c.evaluatorId);
+      const [a, b] = c.generatorIds.map((id) => providers.find((x) => x.id === id)!.vendor);
+      expect(a).not.toBe(b);
+    }
+    const quality = r.multi.find((c) => c.goals.includes("quality"))!;
+    const fast = r.multi.find((c) => c.goals.includes("fast"))!;
+    expect(quality.axes.depth.level).toBeGreaterThanOrEqual(fast.axes.depth.level);
+    expect(fast.axes.cost.level).toBeLessThanOrEqual(quality.axes.cost.level);
+    expect(quality.cautions.join("")).toContain("トークンの消費が多く");
+    // AI が2つなら、評価AI を別にできないため提案しない
+    const two = recommendModelCombos(providers.slice(0, 2));
+    expect(two.multi).toEqual([]);
+    expect(two.notes.join("")).toContain("3つの AI が必要");
+  });
+
   it("AI が1つだけなら、単独AI＋評価AI は提案せず理由を伝える", () => {
     const r = recommendModelCombos([ai("only", "anthropic", "claude-sonnet-5-5")]);
     expect(r.review).toEqual([]);
