@@ -543,10 +543,24 @@ export function createApp(deps: AppDeps) {
    * confidential=1: 機密プロジェクト（ローカルLLMだけ）
    * catalog=1: 登録済みのキーで提供元のモデル一覧を取り、未登録のモデルも候補にする（系統ごとに代表を1つ。トークンは消費しない）
    */
+  /** 提供元のモデル一覧（おすすめの組み合わせ用）。何度も開いても問い合わせが増えないよう、AI ごとに10分だけ覚えておく */
+  const catalogCache = new Map<string, { at: number; ids: string[] }>();
+  const catalogOf = async (orgId: string, src: ProviderCredential) => {
+    const key = `${src.id}|${src.updatedAt}`;
+    const hit = catalogCache.get(key);
+    if (hit && nowFn().getTime() - hit.at < 10 * 60_000) return hit.ids;
+    const apiKey = src.encryptedKey ? await deps.encryptor.decrypt(src.encryptedKey, { orgId }) : null;
+    const models = await listModels(src.vendor, { apiKey, endpoint: src.endpoint ?? VENDOR_INFO[src.vendor].endpointDefault }, deps.fetchImpl ?? fetch, AbortSignal.timeout(15_000));
+    const ids = models.map((m) => m.id);
+    catalogCache.set(key, { at: nowFn().getTime(), ids });
+    return ids;
+  };
   app.get("/api/orgs/:orgId/ai-advice", async (c) => {
     const orgId = c.req.param("orgId");
     need(c, orgId, "project.view");
-    const creds = (await store.listCredentials(orgId)).filter((x) => x.vendor !== "mock" || deps.allowMock);
+    // 候補は、API キーを設定した標準の AI（Claude・ChatGPT・Gemini）とローカルLLM だけ（模擬AIは使わない）
+    const all = await store.listCredentials(orgId);
+    const creds = all.filter((x) => (VENDOR_INFO[x.vendor]?.standard && x.encryptedKey) || x.vendor === "ollama");
     const confidential = ["1", "true"].includes(c.req.query("confidential") ?? "");
     const candidates: AdviceProvider[] = creds.map((x) => ({ id: x.id, vendor: x.vendor, model: x.model, label: x.label, isLocal: x.isLocal }));
     const catalogNotes: string[] = [];
@@ -554,7 +568,7 @@ export function createApp(deps: AppDeps) {
       // 同じキー・接続先の AI は、一覧を1回だけ取る
       const sources = new Map<string, ProviderCredential>();
       for (const x of creds) {
-        if (x.vendor === "mock" || (confidential && !x.isLocal)) continue;
+        if (confidential && !x.isLocal) continue;
         const k = `${x.vendor}|${x.endpoint ?? ""}|${x.keyLast4 ?? ""}`;
         if (!sources.has(k)) sources.set(k, x);
       }
@@ -562,9 +576,8 @@ export function createApp(deps: AppDeps) {
       await Promise.all(
         [...sources.values()].map(async (src) => {
           try {
-            const apiKey = src.encryptedKey ? await deps.encryptor.decrypt(src.encryptedKey, { orgId }) : null;
-            const models = await listModels(src.vendor, { apiKey, endpoint: src.endpoint ?? VENDOR_INFO[src.vendor].endpointDefault }, deps.fetchImpl ?? fetch, AbortSignal.timeout(15_000));
-            for (const model of pickCatalogModels(src.vendor, models.map((m) => m.id))) {
+            const ids = await catalogOf(orgId, src);
+            for (const model of pickCatalogModels(src.vendor, ids)) {
               if (seen.has(`${src.vendor}|${model}`)) continue;
               seen.add(`${src.vendor}|${model}`);
               candidates.push({ id: `catalog:${src.id}:${model}`, vendor: src.vendor, model, label: `${vendorName(src.vendor)} (${model})`, isLocal: src.isLocal, unregistered: true, sourceId: src.id });
@@ -576,6 +589,7 @@ export function createApp(deps: AppDeps) {
         }),
       );
     }
+    if (all.length > creds.length) catalogNotes.push("模擬AI（開発用）など、API キーを設定した標準の AI とローカルLLM 以外は候補にしていません");
     const advice = recommendModelCombos(candidates, { confidential });
     const goals = Object.fromEntries(Object.entries(ADVICE_GOALS).map(([k, g]) => [k, { title: g.title, description: g.description }]));
     return c.json({ ...advice, notes: [...catalogNotes, ...advice.notes], goals });

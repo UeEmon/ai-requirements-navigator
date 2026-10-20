@@ -102,5 +102,8 @@ describe("各AIのモデル一覧から候補を選ぶ", () => {
       "gemini-2.5-flash",
       "gemini-3-pro-preview",
     ]);
+    // ローカルLLM は取り込んだものすべて（埋め込み用は除く）。模擬AI は候補にしない
+    expect(pickCatalogModels("ollama", ["llama3.1:70b", "gemma3:12b", "nomic-embed-text"])).toEqual(["llama3.1:70b", "gemma3:12b"]);
+    expect(pickCatalogModels("mock", ["mock"])).toEqual([]);
   });
 });

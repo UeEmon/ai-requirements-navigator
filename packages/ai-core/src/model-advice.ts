@@ -293,8 +293,12 @@ const stability = (id: string) => (/preview/.test(id) ? 2 : 0) + (/\d{4,}/.test(
 /**
  * 提供元のモデル一覧から、系統（Haiku・Sonnet・Opus、mini・nano、Flash・Pro など）ごとに代表を1つ選ぶ。
  * 代表は、版が新しく、正式版（preview・日付つきでない）のもの。系統が分からないモデルは候補にしない。
+ * ローカルLLM は、取り込んだモデルをすべて候補にする。
  */
 export function pickCatalogModels(vendor: Vendor, ids: string[]): string[] {
+  // ローカルLLM は取り込んだモデルをすべて候補にする（埋め込み用は除く）
+  if (vendor === "ollama") return ids.filter((id) => !/embed/.test(id.toLowerCase()));
+  if (vendor === "mock") return [];
   const best = new Map<string, string>();
   for (const id of ids) {
     if (NON_TEXT.test(id.toLowerCase())) continue;
