@@ -962,16 +962,28 @@ const aiSummary = a => a ? (a.mode==="single" ? `単一AI：${aiLabel(a.generato
 /** おすすめの組み合わせ（単一AI・単独AI＋評価AI）。応答性・思考の深さ・トークン消費の目安を見せ、選ぶのは利用者 */
 const ADVICE_AXES=[["speed","応答性（速さ）"],["depth","思考の深さ（推論力・品質）"],["cost","トークン消費（費用・負荷）"]];
 const adviceMeter=n=>"●".repeat(n)+"○".repeat(5-n);
-async function renderAiAdvice(box, {mode, confidential, apply}){
+async function renderAiAdvice(box, opts){
   if(!box) return;
+  const {mode, confidential, apply}=opts;
   if(mode==="multi"){ box.innerHTML=""; return; }
+  const catalog=!!S.adviceCatalog;
   const seq=(box.dataset.seq=(+box.dataset.seq||0)+1);
-  let a; try{ a=await api(`/api/orgs/${S.orgId}/ai-advice${confidential?"?confidential=1":""}`) }catch(e){ box.innerHTML=`<div class="note err">${esc(e.message)}</div>`; return }
+  if(catalog) box.innerHTML=`<p class="hint">各AIのモデル一覧を取得しています…</p>`;
+  const q=[confidential?"confidential=1":"", catalog?"catalog=1":""].filter(Boolean).join("&");
+  let a; try{ a=await api(`/api/orgs/${S.orgId}/ai-advice${q?"?"+q:""}`) }catch(e){ box.innerHTML=`<div class="note err">${esc(e.message)}</div>`; return }
   if(String(seq)!==box.dataset.seq) return; // 新しい表示が始まっていれば捨てる
   const list = mode==="review" ? a.review : a.single;
-  const nm=id=>{ const p=a.profiles.find(x=>x.id===id); return p?`${esc(p.label)}${p.label.includes(p.model)?"":` <span class="hint">${esc(p.model)}</span>`}`:"（不明）"; };
+  const prof=id=>a.profiles.find(x=>x.id===id);
+  const nm=id=>{ const p=prof(id); return p?`${esc(p.label)}${p.label.includes(p.model)?"":` <span class="hint">${esc(p.model)}</span>`}${p.unregistered?' <span class="tag">未登録</span>':""}`:"（不明）"; };
+  const hasUn=c=>[c.generatorId,c.evaluatorId].some(id=>id&&prof(id)?.unregistered);
+  const canReg=can("ai.manage");
   const lvl=(k,ax)=>`<td>${ADVICE_AXES.find(x=>x[0]===k)[1]}</td><td class="mono" aria-label="5段階の${ax.level}">${adviceMeter(ax.level)}</td><td>${esc(ax.word)}</td>`;
+  const btn=(c,i)=>!apply?"":hasUn(c)&&!canReg?`<p class="hint">未登録のモデルを含みます。使うには、管理者に「AI設定」での登録を頼んでください</p>`
+    :`<div><button class="btn sm ghost" type="button" data-advice="${i}">${hasUn(c)?"モデルを登録して選ぶ":"この組み合わせを選ぶ"}</button></div>`;
   box.innerHTML=`<details class="addbox" style="margin-top:8px" open><summary><b>おすすめの組み合わせ</b> <span class="hint">${mode==="review"?"生成AI と評価AI":"生成AI"}を、目的ごとに提案します（目安です。どれを使うかはあなたが決めてください）</span></summary>
+    <div class="row" style="margin-top:6px;align-items:center;gap:8px"><span class="hint">候補：<b>${catalog?"各AIのモデル一覧（未登録のモデルを含む）":"登録済みの AI"}</b></span>
+      <button class="btn sm ghost" type="button" data-advice-catalog>${catalog?"登録済みの AI だけで考える":"各AIのモデル一覧からも探す"}</button></div>
+    ${catalog?"":`<p class="hint">「各AIのモデル一覧からも探す」は、登録済みのキーで Claude・ChatGPT・Gemini のモデル一覧を取得し、系統（Haiku・Sonnet・Opus、mini・pro、Flash・Pro など）ごとの最新のモデルも候補にします（トークンは消費しません）。</p>`}
     ${list.length?`<div class="cands">${list.map((c,i)=>`<div class="cand ${c.goals.includes("balanced")?"rec":""}">
       <header><b>${c.goals.map(g=>esc(a.goals[g]?.title||g)).join("／")}</b>${c.goals.includes("balanced")?'<span class="pill">推奨</span>':""}</header>
       <div class="hint">${c.goals.map(g=>esc(a.goals[g]?.description||"")).join("。")}</div>
@@ -979,13 +991,25 @@ async function renderAiAdvice(box, {mode, confidential, apply}){
       <table class="advice-axes"><tbody>${ADVICE_AXES.map(([k])=>`<tr>${lvl(k,c.axes[k])}</tr>`).join("")}</tbody></table>
       <ul class="hint" style="margin:0;padding-left:18px">${c.reasons.map(r=>`<li>${esc(r)}</li>`).join("")}</ul>
       ${c.cautions.length?`<div class="note warn">${c.cautions.map(esc).join("<br>")}</div>`:""}
-      ${apply?`<div><button class="btn sm ghost" type="button" data-advice="${i}">この組み合わせを選ぶ</button></div>`:""}</div>`).join("")}</div>`:""}
+      ${btn(c,i)}</div>`).join("")}</div>`:""}
     ${a.notes.map(n=>`<p class="hint">${esc(n)}</p>`).join("")}
-    ${a.profiles.length?`<details class="hint"><summary>登録済みの AI ごとの目安</summary><div class="scroll"><table><thead><tr><th>AI</th><th>系統</th>${ADVICE_AXES.map(x=>`<th>${x[1]}</th>`).join("")}<th>補足</th></tr></thead><tbody>
-      ${a.profiles.map(p=>`<tr><td>${esc(p.label)}<br><span class="mono">${esc(p.model)}</span></td><td>${esc(p.profile.family||"（推定できません）")}</td>${["speed","depth","cost"].map(k=>`<td class="mono">${adviceMeter(p.profile[k])}</td>`).join("")}<td>${p.profile.notes.map(esc).join("<br>")}</td></tr>`).join("")}</tbody></table></div>
+    ${a.profiles.length?`<details class="hint"><summary>${catalog?"候補にしたモデル":"登録済みの AI"}ごとの目安</summary><div class="scroll"><table><thead><tr><th>AI</th><th>系統</th>${ADVICE_AXES.map(x=>`<th>${x[1]}</th>`).join("")}<th>補足</th></tr></thead><tbody>
+      ${a.profiles.map(p=>`<tr><td>${esc(p.label)}${p.unregistered?' <span class="tag">未登録</span>':""}<br><span class="mono">${esc(p.model)}</span></td><td>${esc(p.profile.family||"（推定できません）")}</td>${["speed","depth","cost"].map(k=>`<td class="mono">${adviceMeter(p.profile[k])}</td>`).join("")}<td>${p.profile.notes.map(esc).join("<br>")}</td></tr>`).join("")}</tbody></table></div>
       <p>●が多いほど、応答性は速く、思考の深さは深く、トークン消費は多い（費用が高い）ことを表します。</p></details>`:""}
   </details>`;
-  box.querySelectorAll("[data-advice]").forEach(b=>b.onclick=()=>{ apply(list[+b.dataset.advice]); toast("組み合わせを選びました。保存するまでは変わりません"); });
+  const t=box.querySelector("[data-advice-catalog]"); if(t) t.onclick=()=>{ S.adviceCatalog=!catalog; renderAiAdvice(box, opts); };
+  box.querySelectorAll("[data-advice]").forEach(b=>b.onclick=async()=>{
+    const c={...list[+b.dataset.advice]};
+    try{
+      // 未登録のモデルは、同じキーの登録済みの AI から写して登録する
+      let added=false;
+      for(const k of ["generatorId","evaluatorId"]){ const p=c[k]&&prof(c[k]); if(!p?.unregistered) continue;
+        const r=await api(`/api/orgs/${S.orgId}/providers/${p.sourceId}/copy`,{method:"POST",body:{model:p.model}}); c[k]=r.id; added=true; }
+      if(added) await loadProviders();
+      apply(c, added);
+      toast(added?"モデルを登録し、組み合わせを選びました。プロジェクトは保存するまで変わりません":"組み合わせを選びました。保存するまでは変わりません");
+    }catch(e){ toast(e.message) }
+  });
 }
 /** 開いているプロジェクトの AI（モード・生成AI・評価AI）を見る・変える */
 function renderProjectAi(){
@@ -1027,10 +1051,13 @@ function renderProjectAi(){
     const gens=[...form.querySelectorAll('input[name=jaGen]:checked')].map(i=>i.value), ev=$("#jaEv").value;
     $("#jaWarn").textContent = mode!=="single" && ev && gens.includes(ev) ? (mode==="review" ? "評価AIが生成AIと同じです。自分の案を審査することになり、見落としに気づきにくいため、別の AI にしてください。" : "評価AIが生成AIにも入っています。自分の案を評価することになるため、別の AI にするのがおすすめです。") : "";
   };
-  const advise=()=>renderAiAdvice($("#jaAdvice"), {mode:$("#jaMode").value, confidential:conf, apply:c=>{
-    form.querySelectorAll('input[name=jaGen]').forEach(i=>{ i.checked = i.value===c.generatorId; });
+  const advise=()=>renderAiAdvice($("#jaAdvice"), {mode:$("#jaMode").value, confidential:conf, apply:(c,added)=>{
+    if(added){ const mode=$("#jaMode").value; renderProjectAi(); $("#jaEdit").click(); $("#jaMode").value=mode; $("#jaMode").onchange(); return renderProjectAi.pick(c); }
+    renderProjectAi.pick(c); }});
+  renderProjectAi.pick=c=>{ const f=$("#jaForm");
+    f.querySelectorAll('input[name=jaGen]').forEach(i=>{ i.checked = i.value===c.generatorId; });
     if(c.evaluatorId) $("#jaEv").value=c.evaluatorId;
-    sync(); }});
+    sync(); };
   $("#jaEdit").onclick=()=>{ form.hidden=!form.hidden; sync(); if(!form.hidden) advise(); };
   $("#jaCancel").onclick=()=>{ form.hidden=true; };
   $("#jaMode").onchange=()=>{ sync(); advise(); }; form.querySelectorAll('input[name=jaGen]').forEach(i=>i.onchange=sync); $("#jaEv").onchange=sync;
@@ -1146,7 +1173,10 @@ function renderProject(){
     ins.forEach((i,k)=>{ const was=i.checked; i.type=one?"radio":"checkbox"; i.checked= one ? k===Math.max(first,0) && (was||first<0) : was; });
     if(m==="review" && !$("#jEv").value){ const o=[...$("#jEv").options].find(o=>o.value && !ins.some(i=>i.checked&&i.value===o.value)); if(o) $("#jEv").value=o.value; }
     adviseNew(); };
-  const adviseNew=()=>{ if(!S.providers.length) return; renderAiAdvice($("#jAdvice"), {mode:$("#jMode").value, confidential:$("#jC").checked, apply:c=>{
+  const adviseNew=()=>{ if(!S.providers.length) return; renderAiAdvice($("#jAdvice"), {mode:$("#jMode").value, confidential:$("#jC").checked, apply:(c,added)=>{
+    if(added){ // AI が増えたので、入力を残したまま作り直す
+      const keep={n:$("#jN").value, p:$("#jP").value, c:$("#jC").checked, m:$("#jMode").value};
+      renderProject(); $("#jN").value=keep.n; $("#jP").value=keep.p; $("#jC").checked=keep.c; $("#jMode").value=keep.m; $("#jMode").onchange(); }
     document.querySelectorAll('input[name=g]').forEach(i=>{ i.checked = i.value===c.generatorId; });
     if(c.evaluatorId) $("#jEv").value=c.evaluatorId; }}); };
   $("#jC").onchange=adviseNew;

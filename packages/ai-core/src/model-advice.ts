@@ -33,6 +33,10 @@ export interface AdviceProvider {
   model: string;
   label: string;
   isLocal: boolean;
+  /** 未登録のモデル（提供元のモデル一覧から見つけたもの）。登録すると使える */
+  unregistered?: boolean;
+  /** 未登録のモデルを登録するときに、キーを借りる登録済みの AI */
+  sourceId?: string;
 }
 
 export type AdviceGoal = "balanced" | "fast" | "quality";
@@ -201,6 +205,8 @@ function reviewReasons(g: AdviceProvider & { profile: ModelProfile }, e: AdviceP
   if (gp.speed + ep.speed <= 4) cautions.push("2つの AI を順に呼ぶため、1回の案が出るまで時間がかかります");
   for (const x of [g, e]) if (!x.profile.family) cautions.push(`${name(x)} はモデル名から性格を推定できなかったため、目安は普通として計算しています`);
   if (g.vendor === "mock" || e.vendor === "mock") cautions.push("模擬AI（開発用）を含みます。品質の確認には本物の AI を使ってください");
+  const un = [g, e].filter((x) => x.unregistered);
+  if (un.length) cautions.push(`${un.map((x) => x.model).join("・")} はまだ登録していないモデルです（登録済みのキーで使えます。選ぶと登録します）`);
   return { reasons, cautions };
 }
 
@@ -215,6 +221,7 @@ function singleReasons(g: AdviceProvider & { profile: ModelProfile }) {
   cautions.push("評価する AI がいないため、案の確認は人が行います");
   if (!gp.family) cautions.push("モデル名から性格を推定できなかったため、目安は普通として計算しています");
   if (g.vendor === "mock") cautions.push("模擬AI（開発用）です。品質の確認には本物の AI を使ってください");
+  if (g.unregistered) cautions.push(`${g.model} はまだ登録していないモデルです（登録済みのキーで使えます。選ぶと登録します）`);
   return { reasons, cautions };
 }
 
@@ -268,4 +275,38 @@ export function recommendModelCombos(providers: AdviceProvider[], opts: { confid
   }
   notes.push("目安はモデル名の系統から推定したものです。実際の速さ・料金は、提供元の最新の案内と「使用量」で確かめてください。どれを使うかは、あなたが決めてください");
   return { profiles, single, review, notes };
+}
+
+/** 文章の生成に使わないモデル（音声・画像・埋め込み・実験用など）。提供元の一覧から候補を選ぶときに除く */
+const NON_TEXT = /(audio|tts|image|imagen|veo|live|embedding|embed|vision|computer-use|robotics|learnlm|gemma|aqa|codex|search|transcribe|realtime|moderation|native|nano-banana|deep-research|-exp\b|exp-|experimental)/;
+
+/** モデル名の版（例: claude-opus-5-5 → [5, 5]、gemini-2.5-pro → [2, 5]）。日付と preview 以降は版に入れない */
+const versionOf = (id: string) =>
+  (id.replace(/-(preview|exp).*$/, "").replace(/-\d{4,}.*$/, "").replace(/(-\d{2}){2}$/, "").match(/\d+/g) ?? []).map(Number);
+const newer = (a: number[], b: number[]) => {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] ?? -1) !== (b[i] ?? -1)) return (a[i] ?? -1) - (b[i] ?? -1);
+  return 0;
+};
+/** 正式版を先に（preview・日付つきの版は後に） */
+const stability = (id: string) => (/preview/.test(id) ? 2 : 0) + (/\d{4,}/.test(id) ? 1 : 0);
+
+/**
+ * 提供元のモデル一覧から、系統（Haiku・Sonnet・Opus、mini・nano、Flash・Pro など）ごとに代表を1つ選ぶ。
+ * 代表は、版が新しく、正式版（preview・日付つきでない）のもの。系統が分からないモデルは候補にしない。
+ */
+export function pickCatalogModels(vendor: Vendor, ids: string[]): string[] {
+  const best = new Map<string, string>();
+  for (const id of ids) {
+    if (NON_TEXT.test(id.toLowerCase())) continue;
+    const family = modelProfile(vendor, id).family;
+    if (!family) continue;
+    const cur = best.get(family);
+    if (
+      !cur ||
+      newer(versionOf(id), versionOf(cur)) > 0 ||
+      (newer(versionOf(id), versionOf(cur)) === 0 && (stability(id) < stability(cur) || (stability(id) === stability(cur) && id.length < cur.length)))
+    )
+      best.set(family, id);
+  }
+  return [...best.values()];
 }

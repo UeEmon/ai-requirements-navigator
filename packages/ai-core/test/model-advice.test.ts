@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { comboAxes, modelProfile, recommendModelCombos, type AdviceProvider } from "../src/index.js";
+import { comboAxes, modelProfile, pickCatalogModels, recommendModelCombos, type AdviceProvider } from "../src/index.js";
 
 const ai = (id: string, vendor: AdviceProvider["vendor"], model: string): AdviceProvider => ({ id, vendor, model, label: id, isLocal: vendor === "ollama" });
 
@@ -87,5 +87,20 @@ describe("おすすめの組み合わせ", () => {
     expect(r.profiles.map((x) => x.id)).toEqual(["llama"]);
     expect(r.single[0]!.generatorId).toBe("llama");
     expect(recommendModelCombos(providers, { confidential: true }).notes[0]).toContain("ローカルLLM");
+  });
+});
+
+describe("各AIのモデル一覧から候補を選ぶ", () => {
+  it("系統ごとに、新しい正式版を1つ選ぶ。音声・画像・実験用・系統の分からないものは除く", () => {
+    expect(pickCatalogModels("anthropic", ["claude-opus-4-1-20250805", "claude-opus-5-5", "claude-3-5-haiku-20241022", "claude-haiku-5-5", "claude-sonnet-5-5"]).sort()).toEqual([
+      "claude-haiku-5-5",
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+    ]);
+    expect(pickCatalogModels("openai", ["gpt-5", "gpt-5-chat-latest", "gpt-4o-mini-2024-07-18", "gpt-5-mini", "gpt-realtime", "gpt-5-codex", "chatgpt-4o-latest"]).sort()).toEqual(["gpt-5", "gpt-5-mini"]);
+    expect(pickCatalogModels("gemini", ["gemini-2.5-flash", "gemini-2.5-flash-preview-05-20", "gemini-2.5-flash-image", "gemini-2.0-flash-exp", "gemini-3-pro-preview", "gemini-2.5-pro"]).sort()).toEqual([
+      "gemini-2.5-flash",
+      "gemini-3-pro-preview",
+    ]);
   });
 });
