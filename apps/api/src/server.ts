@@ -6,7 +6,7 @@ import { scheduleAuditPurge } from "./audit.js";
 import { devAuthenticator, discoveryUrlOf, OidcClient, OidcDiscoveryCache, oidcAuthenticator, type Authenticator } from "./auth.js";
 import { localAuth, type LocalAuth } from "./local-auth.js";
 import { KmsKeyEncryptor, LocalKeyEncryptor, type KeyEncryptor } from "./crypto.js";
-import { migrate } from "./migrate.js";
+import { migrate, waitForDb } from "./migrate.js";
 import { PgStore } from "./pg-store.js";
 import { LocalFsStorage, S3Storage, type ArtifactStorage } from "./storage.js";
 import { MemoryStore, type Store } from "./store.js";
@@ -39,6 +39,12 @@ async function main() {
   let store: Store;
   if ((env.STORE ?? (env.DATABASE_URL ? "postgres" : "memory")) === "postgres") {
     const pgStore = PgStore.fromUrl(required("DATABASE_URL"), bool(env.DATABASE_SSL, false), env.DATABASE_SSL_CA);
+    // db コンテナがまだ動いていない・再起動中でも、すぐには終了しない（DB_WAIT_SECONDS 秒まで待つ）
+    let dbHost: string | undefined;
+    try {
+      dbHost = new URL(env.DATABASE_URL!).hostname || undefined;
+    } catch {}
+    await waitForDb(pgStore.pool, { host: dbHost, timeoutMs: Number(env.DB_WAIT_SECONDS ?? 60) * 1000 });
     if (bool(env.MIGRATE_ON_START, true)) {
       await migrate(pgStore.pool, resolve(env.MIGRATIONS_DIR ?? "../../db/migrations"));
     }

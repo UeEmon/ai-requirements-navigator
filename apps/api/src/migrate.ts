@@ -38,3 +38,40 @@ export async function migrate(pool: pg.Pool, dir: string, log: (m: string) => vo
     client.release();
   }
 }
+
+/** 接続先が見つからない・まだ受け付けていないときのエラー（待てば直る見込みがあるもの） */
+const RETRYABLE = new Set(["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "57P03"]);
+
+/**
+ * データベースにつながるまで待つ。
+ * docker compose で db より先に app が動き出したときや、db コンテナが再起動中のときに、すぐ終了しないようにする。
+ * ログには接続先のホスト名だけを出す（パスワードを含む DATABASE_URL は出さない）
+ */
+export async function waitForDb(
+  pool: Pick<pg.Pool, "query">,
+  opts: { host?: string; timeoutMs?: number; intervalMs?: number; log?: (m: string) => void; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<void> {
+  const { host = "データベース", timeoutMs = 60_000, intervalMs = 2_000, log = console.warn } = opts;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let waited = 0;
+  for (;;) {
+    try {
+      await pool.query("SELECT 1");
+      if (waited > 0) log(`データベース（${host}）に接続しました`);
+      return;
+    } catch (e) {
+      const code = (e as { code?: string }).code ?? "";
+      if (!RETRYABLE.has(code)) throw e;
+      if (waited >= timeoutMs) {
+        throw new Error(
+          `データベース（${host}）に ${Math.round(timeoutMs / 1000)} 秒たっても接続できません（${code}）。` +
+            "docker compose を使っているときは、app だけでなく db も動いているかを `docker compose ps` で確かめ、" +
+            "`docker compose up -d` で両方を起動してください",
+        );
+      }
+      if (waited === 0) log(`データベース（${host}）の起動を待っています（${code}）`);
+      await sleep(intervalMs);
+      waited += intervalMs;
+    }
+  }
+}
