@@ -88,6 +88,17 @@ td.mono,.mono{font-family:var(--f-mono);font-size:12.5px;white-space:nowrap}
 pre.code{font-family:var(--f-mono);font-size:12px;line-height:1.55;background:var(--tint);padding:12px;border-radius:4px;overflow-x:auto;white-space:pre;margin:8px 0 0}
 .canvas{overflow-x:auto;text-align:center}
 .canvas svg{max-width:none;height:auto}
+/* AIが考えている間の表示（どのタブにいても見えるよう、画面の上に固定する） */
+.think{position:sticky;top:0;z-index:15;display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-top:8px;padding:8px 12px;border:1px solid var(--accent);border-radius:var(--r);background:var(--accent-soft);font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.think[hidden]{display:none}
+.think ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;flex:1;min-width:14em}
+.think li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}
+.think .el{font-family:var(--f-mono);color:var(--ink-2)}
+.spin{flex:none;width:14px;height:14px;border:2px solid var(--accent);border-right-color:transparent;border-radius:50%;animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.spin{animation:none;border-right-color:var(--accent);opacity:.7}}
+[data-ai-locked]{cursor:not-allowed}
+[data-ai-locked]:not(.btn){opacity:.5}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:8px 16px;border-radius:var(--r);font-size:13px;z-index:20}
 .meter{width:120px;height:6px;background:var(--tint);border-radius:3px;overflow:hidden;flex:none}
 .meter i{display:block;height:100%;background:var(--accent)}
@@ -137,6 +148,7 @@ tr.sub td{border-bottom:none;padding-top:0}
   </header>
   <div class="ctx" id="ctx" aria-live="polite"></div>
   <div class="note" id="ctxHelp" hidden></div>
+  <div class="think" id="think" role="status" aria-live="polite" hidden></div>
 
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="hear" aria-selected="true" id="t-hear">ヒアリング</button>
@@ -308,6 +320,10 @@ async function api(path, opts={}, retried=false){
 }
 /** 非同期ジョブを受け付けて、終わるまで進み具合を表示しながら待つ */
 async function runJob(path, body, onProgress){
+  const [, text, tab, ai] = JOB_LABEL.find(([re])=>re.test(path)) || [null, "処理しています", null, true];
+  return thinking(text, tab, () => pollJob(path, body, onProgress), ai);
+}
+async function pollJob(path, body, onProgress){
   const r = await api(path + "?async=1", {method:"POST", body});
   const until = Date.now() + 10*60*1000;
   while (Date.now() < until) {
@@ -319,6 +335,58 @@ async function runJob(path, body, onProgress){
   }
   throw new Error("時間内に終わりませんでした。しばらくしてから画面を開き直してください");
 }
+/* ---------- AIが考えている間 ----------
+   どのタブにいても上に「AIが考えています」と経過時間を出し、結果を取り違えるおそれのある操作だけを止める。
+   止めるのは、組織・プロジェクトの切り替えとログアウト、プロジェクトのAIの変更・削除、ほかのAIの呼び出し、
+   ヒアリングのフェーズの移動、要件の確定、AIの結果を採用する操作。タブの移動・閲覧・入力・要件の編集・コメント・書き出しはそのまま使える */
+const JOB_LABEL = [
+  [/\/rounds$/, "ヒアリングの回答から案を作っています", "hear", true],
+  [/\/uml\/generate$/, "UMLを作っています", "uml", true],
+  [/\/tasks\/generate$/, "実装タスクを作っています", "impl", true],
+  [/\/tasks\/register$/, "課題管理ツールに登録しています", "impl", false],
+  [/\/nfr\/review$/, "非機能要件の過大な水準を探しています", "nfr", true],
+  [/\/nfr\/suggest$/, "非機能要件の水準を検討しています", "nfr", true],
+  [/\/analyses$/, "資料を分析しています", "discover", true],
+  [/\/screens\/generate$/, "画面案を作っています", "screens", true],
+  [/\/changes\/[^/]+\/analyze$/, "変更の影響を分析しています", "change", true],
+];
+const AI_LOCK = [
+  "#cOrg","#cRole","#cMyOrg","#cOut","[data-jopen]","#jOpenGo","#jGo","#jSample","[data-jarch]","[data-jdel]","#jaEdit","#jaSave","[data-del]",
+  "#send","#regen","#nextPhase","[data-phase]","[data-pick]","#umlGen","#uAdopt","#implGen","#regGo","#gGen","#nfrReview","#nfrSuggest","#nfrApply","#nfrReq",
+  "#anGo","#anAdopt","#scrGen","#crAdd","#crAnalyze","[data-opt]","#bGo",
+].join(",");
+const LOCK_TITLE = "AIが考えている間は使えません。終わると使えるようになります";
+const thinkingJobs = new Map(); let thinkSeq = 0;
+/** fn を実行している間、思考中の表示と操作の制限をかける（複数が重なってもよい） */
+async function thinking(text, tab, fn, ai=true){
+  const id = ++thinkSeq; thinkingJobs.set(id, {text, tab, ai, at:Date.now()}); renderThinking();
+  try{ return await fn(); }
+  finally{ thinkingJobs.delete(id); renderThinking(); }
+}
+const TAB_JA = {hear:"ヒアリング", discover:"資料分析", nfr:"非機能要件", uml:"UML", screens:"画面", impl:"実装連携", change:"変更管理", handoff:"テスト・引き継ぎ", spec:"仕様書"};
+const elapsed = at => { const s=Math.floor((Date.now()-at)/1000); return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`; };
+function renderThinking(){
+  const el = $("#think"); if(!el) return;
+  const jobs = [...thinkingJobs.entries()];
+  applyAiLock();
+  if(!jobs.length){ el.hidden=true; el.innerHTML=""; clearInterval(renderThinking.h); renderThinking.h=null; return; }
+  const ai = jobs.some(([,j])=>j.ai);
+  el.innerHTML = `<span class="spin" aria-hidden="true"></span><ul>${jobs.map(([id,j])=>`<li><b>${j.ai?"AIが考えています":"処理しています"}</b><span>${esc(j.text)}</span><span class="el" data-at="${j.at}" title="経過時間">${elapsed(j.at)}</span>${j.tab?`<button class="btn sm ghost" type="button" data-thinktab="${j.tab}">${esc(TAB_JA[j.tab]||j.tab)}を表示</button>`:""}</li>`).join("")}</ul>
+    <span class="hint">${ai?"数分かかることがあります。":""}終わるまで、プロジェクトの切り替えやほかのAIの呼び出しなど一部の操作を止めています。ほかのタブを見たり入力したりはできます。</span>`;
+  el.querySelectorAll("[data-thinktab]").forEach(b=>b.onclick=()=>switchTab(b.dataset.thinktab));
+  el.hidden = false;
+  if(!renderThinking.h) renderThinking.h = setInterval(()=>$("#think")?.querySelectorAll("[data-at]").forEach(s=>s.textContent=elapsed(+s.dataset.at)), 1000);
+}
+/** 誤操作のおそれがある部品を止める（画面を描き直しても止まるよう、変化を見張ってかけ直す）。元から止まっていた部品には触らない */
+function applyAiLock(){
+  if(thinkingJobs.size){
+    document.querySelectorAll(AI_LOCK).forEach(e=>{ if(e.disabled) return; e.disabled=true; e.dataset.aiLocked="1"; e.dataset.aiTitle=e.getAttribute("title")??""; e.title=LOCK_TITLE; });
+  } else {
+    document.querySelectorAll("[data-ai-locked]").forEach(e=>{ e.disabled=false; delete e.dataset.aiLocked; if(e.dataset.aiTitle) e.title=e.dataset.aiTitle; else e.removeAttribute("title"); delete e.dataset.aiTitle; });
+  }
+}
+new MutationObserver(()=>{ if(thinkingJobs.size) applyAiLock(); }).observe(document.documentElement, {childList:true, subtree:true, attributes:true, attributeFilter:["disabled"]});
+window.addEventListener("beforeunload", e=>{ if(thinkingJobs.size){ e.preventDefault(); e.returnValue=""; } });
 const ST = {waiting:"待機中", running:"作成中…", done:"完了", failed:"失敗"};
 function stepsHtml(p){
   return `<ul class="steps">${(p.steps||[]).map(s=>`<li><span class="st ${s.status}">${ST[s.status]||s.status}</span><span>${esc(s.label)}${s.reason?`<span class="hint">（${esc(s.reason)}）</span>`:""}</span></li>`).join("")}</ul>`;
@@ -1523,7 +1591,7 @@ async function refreshGuide(user){
   if(!S.project) return;
   const msg=$("#guideMsg"); if(msg) msg.innerHTML='<p class="hint">AIが観点の確認と次の質問を準備しています…</p>';
   try{
-    const g = await api(`/api/projects/${S.project.id}/guide`,{method:"POST",body:{}});
+    const g = await thinking("観点の確認と次の質問を準備しています", "hear", () => api(`/api/projects/${S.project.id}/guide`,{method:"POST",body:{}}));
     if(S.project.phaseKey!==g.phaseKey) return;
     const ans = $("#ans")?.value || "";
     S.guide=g; renderHear(); if($("#ans")) $("#ans").value=ans;
@@ -2053,7 +2121,7 @@ function renderGlossary(g){
 $("#gGen").onclick=async()=>{
   if(!S.project) return;
   const b=$("#gGen"); b.disabled=true; $("#gMsg").innerHTML='<p class="hint">AIが要件と設計から用語集を作っています…（手入力した用語は変えません）</p>';
-  try{ const g=await api(`/api/projects/${S.project.id}/glossary/generate`,{method:"POST",body:{}}); gState.terms=g.terms.map(t=>({...t})); renderGlossary(g); toast("用語集を作りました") }
+  try{ const g=await thinking("要件と設計から用語集を作っています", "spec", () => api(`/api/projects/${S.project.id}/glossary/generate`,{method:"POST",body:{}})); gState.terms=g.terms.map(t=>({...t})); renderGlossary(g); toast("用語集を作りました") }
   catch(e){ $("#gMsg").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
   finally{ b.disabled=false }
 };
