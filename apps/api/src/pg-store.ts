@@ -1117,17 +1117,25 @@ export class PgStore implements Store {
 
   async addUsage(u: Omit<UsageRecord, "at">) {
     await this.pool.query(
-      "INSERT INTO usage_records(org_id, provider_id, project_id, input_tokens, output_tokens) VALUES ($1,$2,$3,$4,$5)",
-      [u.orgId, u.providerId, u.projectId, u.inputTokens, u.outputTokens],
+      "INSERT INTO usage_records(org_id, provider_id, project_id, input_tokens, output_tokens, cached_input_tokens) VALUES ($1,$2,$3,$4,$5,$6)",
+      [u.orgId, u.providerId, u.projectId, u.inputTokens, u.outputTokens, u.cachedInputTokens ?? 0],
     );
   }
   async usageSummary(orgId: string, since?: Date) {
     const { rows } = await this.pool.query(
-      `SELECT provider_id, sum(input_tokens)::int AS i, sum(output_tokens)::int AS o, count(*)::int AS n
+      `SELECT provider_id, sum(input_tokens)::int AS i, sum(output_tokens)::int AS o, sum(cached_input_tokens)::int AS c, count(*)::int AS n
        FROM usage_records WHERE org_id = $1 AND at >= $2 GROUP BY provider_id ORDER BY provider_id`,
       [orgId, since ?? new Date(0)],
     );
-    return rows.map((r: any) => ({ providerId: r.provider_id, inputTokens: r.i, outputTokens: r.o, calls: r.n }));
+    return rows.map((r: any) => ({ providerId: r.provider_id, inputTokens: r.i, outputTokens: r.o, cachedInputTokens: r.c, calls: r.n }));
+  }
+  async usageByProject(orgId: string, since?: Date) {
+    const { rows } = await this.pool.query(
+      `SELECT project_id, provider_id, sum(input_tokens)::int AS i, sum(output_tokens)::int AS o, sum(cached_input_tokens)::int AS c, count(*)::int AS n
+       FROM usage_records WHERE org_id = $1 AND at >= $2 GROUP BY project_id, provider_id ORDER BY project_id, provider_id`,
+      [orgId, since ?? new Date(0)],
+    );
+    return rows.map((r: any) => ({ projectId: r.project_id ?? "", providerId: r.provider_id, inputTokens: r.i, outputTokens: r.o, cachedInputTokens: r.c, calls: r.n }));
   }
 
   async createApiToken(t: Omit<ApiToken, "id" | "createdAt" | "lastUsedAt" | "revokedAt">) {

@@ -1,5 +1,5 @@
 import { extractJson } from "./json.js";
-import { buildEvaluatorPrompt, buildGeneratorPrompt, EVALUATOR_SYSTEM, GENERATOR_SYSTEM, type PromptContext } from "./prompts.js";
+import { buildEvaluatorTask, buildGeneratorTask, buildProjectContext, EVALUATOR_SYSTEM, GENERATOR_SYSTEM, type PromptContext } from "./prompts.js";
 import { CandidateContent, EvaluationContent, type Criterion, type CriterionScores } from "./schema.js";
 import type { AIProvider, Usage } from "./types.js";
 
@@ -129,13 +129,15 @@ export async function runRound(ctx: PromptContext, opts: RoundOptions): Promise<
       /* 通知の失敗で処理を止めない */
     }
   };
-  const userPrompt = buildGeneratorPrompt(ctx);
+  // 前提（プロジェクト・確定済みの要件）は context に分け、続けて呼ぶときにキャッシュで使い回す
+  const context = buildProjectContext(ctx);
+  const userPrompt = buildGeneratorTask(ctx);
   const settled = await Promise.all(
     generators.map(async (p) => {
       emit({ type: "generator", providerId: p.id, status: "running" });
       try {
         const res = await withTimeout(timeoutMs, (signal) =>
-          p.complete({ system: GENERATOR_SYSTEM, messages: [{ role: "user", content: userPrompt }], json: true, signal }),
+          p.complete({ system: GENERATOR_SYSTEM, context, messages: [{ role: "user", content: userPrompt }], json: true, signal }),
         );
         const content = CandidateContent.parse(extractJson(res.text));
         emit({ type: "generator", providerId: p.id, status: "done" });
@@ -164,9 +166,9 @@ export async function runRound(ctx: PromptContext, opts: RoundOptions): Promise<
   if (evaluator && candidates.length >= 1) {
     emit({ type: "evaluator", providerId: evaluator.id, status: "running" });
     try {
-      const prompt = buildEvaluatorPrompt(ctx, candidates.map((c) => ({ label: c.label, content: c.content })));
+      const prompt = buildEvaluatorTask(ctx, candidates.map((c) => ({ label: c.label, content: c.content })));
       const res = await withTimeout(timeoutMs, (signal) =>
-        evaluator.complete({ system: EVALUATOR_SYSTEM, messages: [{ role: "user", content: prompt }], json: true, signal }),
+        evaluator.complete({ system: EVALUATOR_SYSTEM, context, messages: [{ role: "user", content: prompt }], json: true, signal }),
       );
       const ev = EvaluationContent.parse(extractJson(res.text));
       const totals: Record<string, number> = {};

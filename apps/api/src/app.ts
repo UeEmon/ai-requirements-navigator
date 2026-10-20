@@ -29,6 +29,7 @@ import {
   runRound,
   type AIProvider,
   type AdviceProvider,
+  type CacheTtl,
   type FetchLike,
   type Guide,
   type GuideContext,
@@ -73,7 +74,7 @@ import {
   evaluatorIdOf,
   generatorIdsOf,
 } from "./store.js";
-import { checkBudget, usageReport } from "./usage.js";
+import { buildProjectUsage, checkBudget, monthLabel, monthStart, usageReport, type ProjectUsageReport } from "./usage.js";
 
 export interface AppDeps {
   store: Store;
@@ -90,6 +91,8 @@ export interface AppDeps {
   random?: () => number;
   /** 月間上限の「月」を数えるタイムゾーン（既定: Asia/Tokyo） */
   usageTimezone?: string;
+  /** プロンプトのキャッシュを保つ時間（Claude のみ。AI_CACHE_TTL。既定 5m） */
+  aiCacheTtl?: CacheTtl;
   /** 現在時刻（テスト用） */
   now?: () => Date;
   /** Gemini の API キーを Google でログインして自動発行する（GOOGLE_OAUTH_CLIENT_ID / SECRET） */
@@ -458,7 +461,7 @@ export function createApp(deps: AppDeps) {
         if (!cr) throw new HTTPException(400, { message: `AIの登録が削除されています: ${id}` });
         const apiKey = cr.encryptedKey ? await deps.encryptor.decrypt(cr.encryptedKey, { orgId }) : undefined;
         return createProvider(
-          { id: cr.id, vendor: cr.vendor, model: cr.model, label: cr.label, apiKey, endpoint: cr.endpoint ?? undefined },
+          { id: cr.id, vendor: cr.vendor, model: cr.model, label: cr.label, apiKey, endpoint: cr.endpoint ?? undefined, cacheTtl: deps.aiCacheTtl },
           { fetchImpl: deps.fetchImpl, allowMock: deps.allowMock },
         );
       }),
@@ -730,6 +733,33 @@ export function createApp(deps: AppDeps) {
     need(c, orgId, "usage.view");
     const org = await store.getOrg(orgId);
     return c.json(await usageReport(store, orgId, org?.monthlyTokenLimit ?? null, await store.listCredentials(orgId), tz, nowFn()));
+  });
+
+  /** プロジェクトごと・AIごとの利用量（period=month: 今月〔既定〕/ all: 全期間） */
+  app.get("/api/orgs/:orgId/usage/projects", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "usage.view");
+    const period = c.req.query("period") === "all" ? "all" : "month";
+    const now = nowFn();
+    const since = period === "all" ? undefined : monthStart(now, tz);
+    const rows = await store.usageByProject(orgId, since);
+    // メンバーを限ったプロジェクトで、見る権限のないものは名前を出さない
+    const pr = c.get("principal");
+    const info = new Map<string, { name: string; kind: ProjectUsageReport["projects"][number]["kind"] }>();
+    for (const id of new Set(rows.map((r) => r.projectId).filter(Boolean))) {
+      const p = await store.getProject(id);
+      if (!p || p.orgId !== orgId) info.set(id, { name: "（削除済みのプロジェクト）", kind: "deleted" });
+      else if (!(await projectAccessOf(pr, p))) info.set(id, { name: "（見る権限のないプロジェクト）", kind: "hidden" });
+      else info.set(id, { name: p.name, kind: p.archivedAt ? "archived" : "project" });
+    }
+    const report: ProjectUsageReport = {
+      period,
+      month: monthLabel(now, tz),
+      since: since?.toISOString() ?? null,
+      timezone: tz,
+      projects: buildProjectUsage(rows, await store.listCredentials(orgId), (id) => info.get(id)!),
+    };
+    return c.json(report);
   });
 
   /** 監査ログ（新しい順。before に前回の最後の id を渡すと続きを返す） */

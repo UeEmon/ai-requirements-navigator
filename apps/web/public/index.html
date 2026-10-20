@@ -1408,15 +1408,35 @@ async function loadUsage(){
         <b>組織全体</b><span class="mono">${n(u.org.used)}${u.org.limit!=null?" / "+n(u.org.limit):""} トークン</span>${meter(u.org.used,u.org.limit)}</div>
       <div class="row"><label class="f">組織の月間上限（トークン）<input id="oLim" type="number" min="1" step="10000" value="${org.monthlyTokenLimit??""}" placeholder="空欄なら上限なし"></label>
         <button class="btn sm" id="oLimSave">保存</button><span class="hint" id="oLimMsg"></span></div>
-      <div class="scroll" style="margin-top:14px"><table class="t"><thead><tr><th>AI</th><th>呼出回数</th><th>入力</th><th>出力</th><th>合計 / 上限</th><th>上限に対する割合</th></tr></thead><tbody>
-      ${u.providers.map(r=>`<tr><td>${esc(r.label)}</td><td class="mono">${r.calls}</td><td class="mono">${n(r.inputTokens)}</td><td class="mono">${n(r.outputTokens)}</td>
-        <td class="mono">${n(r.used)}${r.limit!=null?" / "+n(r.limit):""}</td><td><div class="row" style="align-items:center;gap:6px;flex-wrap:nowrap">${meter(r.used,r.limit)}</div></td></tr>`).join("")||'<tr><td colspan="6" class="hint">まだ利用がありません</td></tr>'}</tbody></table></div>`;
+      <div class="scroll" style="margin-top:14px"><table class="t"><thead><tr><th>AI</th><th>呼出回数</th><th>入力</th><th>うちキャッシュ</th><th>出力</th><th>合計 / 上限</th><th>上限に対する割合</th></tr></thead><tbody>
+      ${u.providers.map(r=>`<tr><td>${esc(r.label)}</td><td class="mono">${r.calls}</td><td class="mono">${n(r.inputTokens)}</td><td class="mono" title="前回と同じ部分をAIが使い回した入力。料金は通常の入力より安い">${n(r.cachedInputTokens??0)}${r.inputTokens?` <span class="hint">(${Math.round((r.cachedInputTokens??0)/r.inputTokens*100)}%)</span>`:""}</td><td class="mono">${n(r.outputTokens)}</td>
+        <td class="mono">${n(r.used)}${r.limit!=null?" / "+n(r.limit):""}</td><td><div class="row" style="align-items:center;gap:6px;flex-wrap:nowrap">${meter(r.used,r.limit)}</div></td></tr>`).join("")||'<tr><td colspan="7" class="hint">まだ利用がありません</td></tr>'}</tbody></table></div>
+      <p class="hint">「うちキャッシュ」は、指示やプロジェクトの前提など前回と同じ部分をAIが使い回した入力です（料金は通常の入力の1〜5割程度）。上限は、キャッシュの分も含めた合計で数えます。</p>
+      <h3 style="margin-top:18px">プロジェクトごとの利用量</h3>
+      <div class="row" style="align-items:center"><label class="f">期間<select id="puPeriod"><option value="month"${S.usagePeriod==="all"?"":" selected"}>今月</option><option value="all"${S.usagePeriod==="all"?" selected":""}>全期間</option></select></label></div>
+      <div id="projUsage"><p class="hint">読み込み中…</p></div>`;
+    $("#puPeriod").onchange=e=>{S.usagePeriod=e.target.value; loadProjectUsage()};
+    loadProjectUsage();
     $("#oLimSave").onclick=async()=>{
       const v=$("#oLim").value.trim();
       try{ await api(`/api/orgs/${S.orgId}/limits`,{method:"PUT",body:{monthlyTokenLimit: v===""?null:Math.floor(Number(v))}}); toast("上限を保存しました"); loadUsage() }
       catch(e){ $("#oLimMsg").textContent=e.message }
     };
   }catch(e){ $("#usagePanel").hidden=true }
+}
+async function loadProjectUsage(){
+  const box=$("#projUsage"); if(!box) return;
+  try{
+    const r=await api(`/api/orgs/${S.orgId}/usage/projects?period=${S.usagePeriod==="all"?"all":"month"}`);
+    const n=v=>Number(v).toLocaleString();
+    const pctOf=(c,i)=>i?` <span class="hint">(${Math.round(c/i*100)}%)</span>`:"";
+    const tag={archived:' <span class="hint">（アーカイブ済み）</span>',deleted:"",hidden:"",none:"",project:""};
+    box.innerHTML=r.projects.length?`<div class="scroll"><table class="t"><thead><tr><th>プロジェクト / AI</th><th>呼出回数</th><th>入力</th><th>うちキャッシュ</th><th>出力</th><th>合計</th></tr></thead><tbody>
+      ${r.projects.map(p=>`<tr><td><b>${esc(p.name)}</b>${tag[p.kind]??""}</td><td class="mono">${p.calls}</td><td class="mono">${n(p.inputTokens)}</td><td class="mono">${n(p.cachedInputTokens)}${pctOf(p.cachedInputTokens,p.inputTokens)}</td><td class="mono">${n(p.outputTokens)}</td><td class="mono"><b>${n(p.used)}</b></td></tr>
+        ${p.providers.map(a=>`<tr><td style="padding-left:24px">${esc(a.label)}</td><td class="mono">${a.calls}</td><td class="mono">${n(a.inputTokens)}</td><td class="mono">${n(a.cachedInputTokens)}${pctOf(a.cachedInputTokens,a.inputTokens)}</td><td class="mono">${n(a.outputTokens)}</td><td class="mono">${n(a.used)}</td></tr>`).join("")}`).join("")}
+      </tbody></table></div><p class="hint">${r.period==="all"?"全期間":`今月（${esc(r.month)}）`}の、プロジェクトごと・AIごとのトークン数です。多い順に並べています。メンバーを限ったプロジェクトのうち、あなたが見られないものは名前を出さずにまとめています。</p>`
+      :`<p class="hint">${r.period==="all"?"":"今月は"}まだ利用がありません</p>`;
+  }catch(e){ box.innerHTML=`<p class="hint">${esc(e.message)}</p>` }
 }
 async function openProject(id){
   if(!id) return;

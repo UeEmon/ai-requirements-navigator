@@ -1,4 +1,4 @@
-import type { ProviderCredential, Store, UsageRow } from "./store.js";
+import type { ProjectUsageRow, ProviderCredential, Store, UsageRow } from "./store.js";
 
 /**
  * 月間トークン上限の判定。
@@ -62,7 +62,7 @@ export async function usageReport(
   const rows = await store.usageSummary(orgId, since);
   const byId = new Map(rows.map((r) => [r.providerId, r]));
   const providers: UsageReport["providers"] = creds.map((c) => {
-    const r = byId.get(c.id) ?? { providerId: c.id, inputTokens: 0, outputTokens: 0, calls: 0 };
+    const r = byId.get(c.id) ?? { providerId: c.id, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, calls: 0 };
     return { ...r, label: c.label, limit: c.monthlyTokenLimit, used: r.inputTokens + r.outputTokens, deleted: false };
   });
   // 削除済みのAIの利用量も合計に含める
@@ -116,4 +116,67 @@ export function checkBudget(report: UsageReport, ids: string[]): BudgetCheck {
     }
   }
   return { blocked: null, excluded, warnings };
+}
+
+/** プロジェクトごと・AIごとの利用量 */
+export interface ProjectUsageReport {
+  /** month: 今月（USAGE_TIMEZONE の暦）/ all: 全期間 */
+  period: "month" | "all";
+  month: string;
+  since: string | null;
+  timezone: string;
+  projects: Array<{
+    /** 見る権限のないプロジェクトは null（まとめて1行にする） */
+    projectId: string | null;
+    name: string;
+    /** hidden: 見る権限がない / deleted: 削除済み / none: プロジェクトに結び付かない呼び出し */
+    kind: "project" | "archived" | "hidden" | "deleted" | "none";
+    used: number;
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+    calls: number;
+    providers: Array<Omit<UsageRow, "providerId"> & { providerId: string; label: string; used: number }>;
+  }>;
+}
+
+/**
+ * 利用量をプロジェクトとAIの組ごとにまとめる。
+ * describe はプロジェクトの名前と、利用者が見られるかを返す（見られないものは名前を出さずに1行へまとめる）
+ */
+export function buildProjectUsage(
+  rows: ProjectUsageRow[],
+  creds: ProviderCredential[],
+  describe: (projectId: string) => { name: string; kind: ProjectUsageReport["projects"][number]["kind"] },
+): ProjectUsageReport["projects"] {
+  const labels = new Map(creds.map((c) => [c.id, c.label]));
+  const groups = new Map<string, ProjectUsageReport["projects"][number]>();
+  for (const r of rows) {
+    const d = r.projectId ? describe(r.projectId) : { name: "（プロジェクトに結び付かない呼び出し）", kind: "none" as const };
+    const key = d.kind === "hidden" ? "\0hidden" : r.projectId;
+    const g =
+      groups.get(key) ??
+      { projectId: d.kind === "hidden" ? null : r.projectId || null, name: d.name, kind: d.kind, used: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0, providers: [] };
+    const used = r.inputTokens + r.outputTokens;
+    g.used += used;
+    g.inputTokens += r.inputTokens;
+    g.cachedInputTokens += r.cachedInputTokens;
+    g.outputTokens += r.outputTokens;
+    g.calls += r.calls;
+    const prov = g.providers.find((x) => x.providerId === r.providerId);
+    if (prov) {
+      prov.inputTokens += r.inputTokens;
+      prov.cachedInputTokens += r.cachedInputTokens;
+      prov.outputTokens += r.outputTokens;
+      prov.calls += r.calls;
+      prov.used += used;
+    } else {
+      const { projectId: _, ...row } = r;
+      g.providers.push({ ...row, label: labels.get(r.providerId) ?? "（削除済みのAI）", used });
+    }
+    groups.set(key, g);
+  }
+  const list = [...groups.values()];
+  for (const g of list) g.providers.sort((a, b) => b.used - a.used);
+  return list.sort((a, b) => b.used - a.used);
 }

@@ -1,4 +1,5 @@
 import type { AIProvider, CompletionRequest, CompletionResult } from "../types.js";
+import { withContext } from "./cache.js";
 
 export type MockHandler = (req: CompletionRequest) => string | Promise<string>;
 
@@ -22,7 +23,8 @@ export class MockProvider implements AIProvider {
 
   async complete(req: CompletionRequest): Promise<CompletionResult> {
     const t0 = Date.now();
-    const text = await this.handler(req);
+    // 前提（context）は本物のAIと同じく、最初の利用者メッセージの先頭に入れて渡す
+    const text = await this.handler({ ...req, context: undefined, messages: withContext(req) });
     return { text, usage: { inputTokens: req.system.length, outputTokens: text.length }, latencyMs: Date.now() - t0 };
   }
 }

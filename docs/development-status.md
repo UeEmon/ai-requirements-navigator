@@ -8,7 +8,7 @@
 | 分野 | 内容 | 説明 |
 | --- | --- | --- |
 | ヒアリング | フェーズごとの質問ガイド（観点の抜け漏れ確認・回答の候補・用語の説明）、あいまいな表現の検出 | [requirements.md](requirements.md) |
-| 複数AI | 複数AI＋評価AI（匿名化して評価）／単独AI＋評価AI（審査して改善案）／単一AI。作成後も変更できる。単独AI＋評価AI・単一AI のおすすめの組み合わせ（応答性・思考の深さ・トークン消費の目安） | [ADR 0002](adr/0002-anonymized-evaluation.md)・[ADR 0013](adr/0013-model-combo-advice.md) |
+| 複数AI | 複数AI＋評価AI（匿名化して評価）／単独AI＋評価AI（審査して改善案）／単一AI。作成後も変更できる。単独AI＋評価AI・単一AI のおすすめの組み合わせ（応答性・思考の深さ・トークン消費の目安） | [ADR 0002](adr/0002-anonymized-evaluation.md)・[ADR 0014](adr/0014-model-combo-advice.md) |
 | 資料分析・EARS | 議事録・既存資料の取り込み（テキスト・Word・PDF）、現状の課題と業務の見直し、EARS 記法と検査 | [discovery-and-ears.md](discovery-and-ears.md) |
 | 非機能要件 | 26項目のシート、推奨水準・矛盾の検出・似た事例との比較（過大の検出） | [nfr.md](nfr.md) |
 | 設計・出力 | UML 5種（複数AIで比較）、画面イメージ、要件定義書（Word・PDF・Markdown） | [screens-and-changes.md](screens-and-changes.md) |
@@ -16,6 +16,7 @@
 | チームでの利用 | プロジェクト単位のメンバー（メンバーに限る・プロジェクトでの役割）、要件へのコメント、プロジェクトの複製・書き出し・取り込み | [auth.md](auth.md)・[ADR 0012](adr/0012-team-collaboration.md) |
 | 実装・テストへの引き継ぎ | タスク分解と GitHub Issues・Jira・Backlog への登録、テスト仕様、引き継ぎパッケージ、AIコーディングツール連携（API トークン・MCP・Webhook） | [integrations.md](integrations.md)・[handoff.md](handoff.md)・[connect.md](connect.md) |
 | AI設定 | Claude・ChatGPT・Gemini ごとの登録、キーの自動発行（ChatGPT: 管理用キー、Gemini: Google でログイン）、モデル一覧の自動取得、月間トークン上限 | [ai-keys.md](ai-keys.md) |
+| トークンの節約 | プロンプトのキャッシュ（変わらない部分を先に並べる、Claude の印と `AI_CACHE_TTL`、ChatGPT の prompt_cache_key、Ollama の keep_alive）、利用量の「うちキャッシュ」、プロジェクトごと・AIごとの利用量 | [ai-keys.md](ai-keys.md#プロンプトのキャッシュトークンの節約)・[ADR 0013](adr/0013-prompt-caching.md) |
 | 連携の自動化 | 課題管理ツールの設定の自動読み込み、GitHub リポジトリの自動作成 | [integrations.md](integrations.md) |
 | 組織とユーザー | 組織設定の編集（名前・説明・問い合わせ先・招待できるドメイン・月間上限）、ユーザーの招待と役割、役割ごとの権限の変更、管理者は1人以上 | [auth.md](auth.md) |
 | ログイン | 開発用（dev）／要件ナビのログイン（local: メールアドレスとパスワード、招待・再設定のリンク）／Cognito・Keycloak（oidc） | [auth.md](auth.md) |
@@ -49,6 +50,7 @@
 - 要件ナビのログイン（AUTH_MODE=local）を、本物の画面と API を通して使うこと（画面は模擬 API で、API はテストで確かめた）
 - メンバーに限ったプロジェクトを、管理者以外の利用者として画面から使うこと（API はテストで確かめた。画面は開発用ログインの管理者で、メンバーの設定・コメント・手入力・複製・書き出し・取り込みを確かめた）
 - おすすめの組み合わせの目安（モデル名の系統からの推定）が、本物のモデルの速さ・料金とどれだけ合うか。各社の本物のモデル一覧から、系統ごとの代表が期待どおりに選ばれるか（画面は開発用ログインと模擬の一覧で、作成とAIの変更から選び・登録し・保存できることを確かめた）
+- プロンプトのキャッシュが本物の AI で当たること（Claude の `cache_read_input_tokens`、ChatGPT の `cached_tokens`、Gemini の `cachedContentTokenCount` が2回目以降に増えるか）。テストは送る形と応答の読み取りだけを偽の応答で確かめた
 - 更新した GitHub Actions（checkout・setup-node・upload-artifact・docker の各 action・configure-aws-credentials）での CI と AWS への展開
 
 ## 記録
@@ -56,6 +58,7 @@
 | 日付 | 内容 |
 | --- | --- |
 | 2026-10-20 | 単独AI＋評価AI・単一AI のおすすめの組み合わせ（目的ごとに3つ。応答性・思考の深さ・トークン消費の目安と理由。各AIのモデル一覧からも探せ、未登録のモデルは選ぶときに登録。選ぶのは利用者） |
+| 2026-10-20 | プロンプトのキャッシュでトークンの消費を抑える（ヒアリングと資料の分析の並びを変更、利用量に「うちキャッシュ」）、プロジェクトごと・AIごとの利用量の表示 |
 | 2026-10-13 | 起動時に DB を待つ（`DB_WAIT_SECONDS`、既定60秒。db が動いていないと `EAI_AGAIN db` で即終了していた）、ソースから起動する docker-compose.yml にも `restart: unless-stopped` |
 | 2026-10-10 | 要件の手入力、要件へのコメント、プロジェクト単位のメンバー、プロジェクトの複製・書き出し・取り込み、CI の actions の更新（Node.js 24） |
 | 2026-10-09 | Claude のプロジェクトで開発を管理するための資料（CLAUDE.md・この一覧・claude-project.md）を追加 |
