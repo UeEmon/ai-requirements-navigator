@@ -62,7 +62,7 @@ export async function usageReport(
   const rows = await store.usageSummary(orgId, since);
   const byId = new Map(rows.map((r) => [r.providerId, r]));
   const providers: UsageReport["providers"] = creds.map((c) => {
-    const r = byId.get(c.id) ?? { providerId: c.id, inputTokens: 0, outputTokens: 0, calls: 0 };
+    const r = byId.get(c.id) ?? { providerId: c.id, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, calls: 0 };
     return { ...r, label: c.label, limit: c.monthlyTokenLimit, used: r.inputTokens + r.outputTokens, deleted: false };
   });
   // 削除済みのAIの利用量も合計に含める

@@ -1,6 +1,6 @@
 # 開発の状況
 
-要件ナビの開発で、何ができていて、何が残っているかの一覧です。作業を終えるたびに更新します（最終更新: 2026-10-10）。
+要件ナビの開発で、何ができていて、何が残っているかの一覧です。作業を終えるたびに更新します（最終更新: 2026-10-20）。
 開発の決まりは [CLAUDE.md](../CLAUDE.md)、Claude のプロジェクトでの管理のしかたは [claude-project.md](claude-project.md) を参照してください。
 
 ## できていること
@@ -16,6 +16,7 @@
 | チームでの利用 | プロジェクト単位のメンバー（メンバーに限る・プロジェクトでの役割）、要件へのコメント、プロジェクトの複製・書き出し・取り込み | [auth.md](auth.md)・[ADR 0012](adr/0012-team-collaboration.md) |
 | 実装・テストへの引き継ぎ | タスク分解と GitHub Issues・Jira・Backlog への登録、テスト仕様、引き継ぎパッケージ、AIコーディングツール連携（API トークン・MCP・Webhook） | [integrations.md](integrations.md)・[handoff.md](handoff.md)・[connect.md](connect.md) |
 | AI設定 | Claude・ChatGPT・Gemini ごとの登録、キーの自動発行（ChatGPT: 管理用キー、Gemini: Google でログイン）、モデル一覧の自動取得、月間トークン上限 | [ai-keys.md](ai-keys.md) |
+| トークンの節約 | プロンプトのキャッシュ（変わらない部分を先に並べる、Claude の印と `AI_CACHE_TTL`、ChatGPT の prompt_cache_key、Ollama の keep_alive）、利用量の「うちキャッシュ」 | [ai-keys.md](ai-keys.md#プロンプトのキャッシュトークンの節約)・[ADR 0013](adr/0013-prompt-caching.md) |
 | 連携の自動化 | 課題管理ツールの設定の自動読み込み、GitHub リポジトリの自動作成 | [integrations.md](integrations.md) |
 | 組織とユーザー | 組織設定の編集（名前・説明・問い合わせ先・招待できるドメイン・月間上限）、ユーザーの招待と役割、役割ごとの権限の変更、管理者は1人以上 | [auth.md](auth.md) |
 | ログイン | 開発用（dev）／要件ナビのログイン（local: メールアドレスとパスワード、招待・再設定のリンク）／Cognito・Keycloak（oidc） | [auth.md](auth.md) |
@@ -48,12 +49,14 @@
 - Amazon Cognito・Keycloak でのログインと招待の照合
 - 要件ナビのログイン（AUTH_MODE=local）を、本物の画面と API を通して使うこと（画面は模擬 API で、API はテストで確かめた）
 - メンバーに限ったプロジェクトを、管理者以外の利用者として画面から使うこと（API はテストで確かめた。画面は開発用ログインの管理者で、メンバーの設定・コメント・手入力・複製・書き出し・取り込みを確かめた）
+- プロンプトのキャッシュが本物の AI で当たること（Claude の `cache_read_input_tokens`、ChatGPT の `cached_tokens`、Gemini の `cachedContentTokenCount` が2回目以降に増えるか）。テストは送る形と応答の読み取りだけを偽の応答で確かめた
 - 更新した GitHub Actions（checkout・setup-node・upload-artifact・docker の各 action・configure-aws-credentials）での CI と AWS への展開
 
 ## 記録
 
 | 日付 | 内容 |
 | --- | --- |
+| 2026-10-20 | プロンプトのキャッシュでトークンの消費を抑える（ヒアリングと資料の分析の並びを変更、利用量に「うちキャッシュ」） |
 | 2026-10-10 | 要件の手入力、要件へのコメント、プロジェクト単位のメンバー、プロジェクトの複製・書き出し・取り込み、CI の actions の更新（Node.js 24） |
 | 2026-10-09 | Claude のプロジェクトで開発を管理するための資料（CLAUDE.md・この一覧・claude-project.md）を追加 |
 | 2026-10-07 | 組織設定の編集・役割ごとの権限・要件ナビのログイン（ユーザー管理） |

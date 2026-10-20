@@ -1,5 +1,6 @@
 import type { AIProvider, CompletionRequest, CompletionResult, FetchLike, ProviderConfig } from "../types.js";
 import { ProviderError } from "../types.js";
+import { withContext } from "./cache.js";
 import { postJson, trimSlash } from "./http.js";
 
 /** Google Gemini API (generateContent) */
@@ -29,7 +30,8 @@ export class GeminiProvider implements AIProvider {
       { "x-goog-api-key": this.cfg.apiKey! },
       {
         systemInstruction: { parts: [{ text: req.system }] },
-        contents: req.messages.map((m) => ({
+        // Gemini 2.5 以降は先頭が同じ部分を自動でキャッシュする（暗黙のキャッシュ）。変わらない部分を先に並べる
+        contents: withContext(req).map((m) => ({
           role: m.role === "assistant" ? "model" : "user",
           parts: [{ text: m.content }],
         })),
@@ -46,6 +48,7 @@ export class GeminiProvider implements AIProvider {
       usage: {
         inputTokens: data.usageMetadata?.promptTokenCount,
         outputTokens: data.usageMetadata?.candidatesTokenCount,
+        cachedInputTokens: data.usageMetadata?.cachedContentTokenCount ?? 0,
       },
       latencyMs: Date.now() - t0,
     };

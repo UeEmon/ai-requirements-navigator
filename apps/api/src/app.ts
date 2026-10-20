@@ -23,6 +23,7 @@ import {
   RoundError,
   runRound,
   type AIProvider,
+  type CacheTtl,
   type FetchLike,
   type Guide,
   type GuideContext,
@@ -84,6 +85,8 @@ export interface AppDeps {
   random?: () => number;
   /** 月間上限の「月」を数えるタイムゾーン（既定: Asia/Tokyo） */
   usageTimezone?: string;
+  /** プロンプトのキャッシュを保つ時間（Claude のみ。AI_CACHE_TTL。既定 5m） */
+  aiCacheTtl?: CacheTtl;
   /** 現在時刻（テスト用） */
   now?: () => Date;
   /** Gemini の API キーを Google でログインして自動発行する（GOOGLE_OAUTH_CLIENT_ID / SECRET） */
@@ -452,7 +455,7 @@ export function createApp(deps: AppDeps) {
         if (!cr) throw new HTTPException(400, { message: `AIの登録が削除されています: ${id}` });
         const apiKey = cr.encryptedKey ? await deps.encryptor.decrypt(cr.encryptedKey, { orgId }) : undefined;
         return createProvider(
-          { id: cr.id, vendor: cr.vendor, model: cr.model, label: cr.label, apiKey, endpoint: cr.endpoint ?? undefined },
+          { id: cr.id, vendor: cr.vendor, model: cr.model, label: cr.label, apiKey, endpoint: cr.endpoint ?? undefined, cacheTtl: deps.aiCacheTtl },
           { fetchImpl: deps.fetchImpl, allowMock: deps.allowMock },
         );
       }),

@@ -13,7 +13,14 @@ export interface ProviderConfig {
   endpoint?: string;
   /** 画面表示名 */
   label?: string;
+  /**
+   * プロンプトのキャッシュを保つ時間（Claude のみ。既定 5m）。
+   * 1h は書き込みの料金が上がるかわりに、利用者が考えている間（5分を超える間隔）もキャッシュが残る
+   */
+  cacheTtl?: CacheTtl;
 }
+
+export type CacheTtl = "5m" | "1h";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -21,7 +28,14 @@ export interface ChatMessage {
 }
 
 export interface CompletionRequest {
+  /** 指示（呼び出しの種類ごとに固定の文。キャッシュの対象） */
   system: string;
+  /**
+   * 呼び出しをまたいで変わらない前提（プロジェクト・確定済みの要件・資料など）。
+   * 最初の利用者メッセージの先頭に置き、キャッシュの対象にする。
+   * 変わる部分（回答・評価する案など）は messages に入れる
+   */
+  context?: string;
   messages: ChatMessage[];
   /** JSONのみを返すようモデルに要求する */
   json?: boolean;
@@ -30,8 +44,13 @@ export interface CompletionRequest {
 }
 
 export interface Usage {
+  /** 入力トークンの合計（キャッシュから読んだ分・キャッシュに書いた分を含む） */
   inputTokens?: number;
   outputTokens?: number;
+  /** 入力のうち、キャッシュから読んだトークン（料金が安い） */
+  cachedInputTokens?: number;
+  /** 入力のうち、キャッシュに書き込んだトークン（Claude のみ） */
+  cacheWriteTokens?: number;
 }
 
 export interface CompletionResult {

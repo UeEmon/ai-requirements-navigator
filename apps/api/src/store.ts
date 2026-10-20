@@ -78,8 +78,11 @@ export type CredentialPatch = Partial<Pick<ProviderCredential, "model" | "label"
 
 export interface UsageRow {
   providerId: string;
+  /** 入力の合計（キャッシュから読んだ分を含む） */
   inputTokens: number;
   outputTokens: number;
+  /** 入力のうち、キャッシュから読んだ分 */
+  cachedInputTokens: number;
   calls: number;
 }
 
@@ -289,6 +292,8 @@ export interface UsageRecord {
   projectId: string;
   inputTokens: number;
   outputTokens: number;
+  /** 入力のうち、キャッシュから読んだ分 */
+  cachedInputTokens?: number;
   at: string;
 }
 
@@ -777,8 +782,8 @@ export interface Store {
   updateReview(id: string, patch: Partial<Pick<Review, "status" | "decisions" | "closedAt">>): Promise<Review | null>;
 }
 
-export function usageOf(u: Usage): { inputTokens: number; outputTokens: number } {
-  return { inputTokens: u.inputTokens ?? 0, outputTokens: u.outputTokens ?? 0 };
+export function usageOf(u: Usage): { inputTokens: number; outputTokens: number; cachedInputTokens: number } {
+  return { inputTokens: u.inputTokens ?? 0, outputTokens: u.outputTokens ?? 0, cachedInputTokens: u.cachedInputTokens ?? 0 };
 }
 
 const now = () => new Date().toISOString();
@@ -1305,9 +1310,10 @@ export class MemoryStore implements Store {
     const m = new Map<string, UsageRow>();
     const from = since?.toISOString() ?? "";
     for (const u of this.usage.filter((x) => x.orgId === orgId && x.at >= from)) {
-      const s = m.get(u.providerId) ?? { providerId: u.providerId, inputTokens: 0, outputTokens: 0, calls: 0 };
+      const s = m.get(u.providerId) ?? { providerId: u.providerId, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, calls: 0 };
       s.inputTokens += u.inputTokens;
       s.outputTokens += u.outputTokens;
+      s.cachedInputTokens += u.cachedInputTokens ?? 0;
       s.calls += 1;
       m.set(u.providerId, s);
     }

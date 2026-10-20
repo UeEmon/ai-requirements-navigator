@@ -1337,9 +1337,10 @@ async function loadUsage(){
         <b>組織全体</b><span class="mono">${n(u.org.used)}${u.org.limit!=null?" / "+n(u.org.limit):""} トークン</span>${meter(u.org.used,u.org.limit)}</div>
       <div class="row"><label class="f">組織の月間上限（トークン）<input id="oLim" type="number" min="1" step="10000" value="${org.monthlyTokenLimit??""}" placeholder="空欄なら上限なし"></label>
         <button class="btn sm" id="oLimSave">保存</button><span class="hint" id="oLimMsg"></span></div>
-      <div class="scroll" style="margin-top:14px"><table class="t"><thead><tr><th>AI</th><th>呼出回数</th><th>入力</th><th>出力</th><th>合計 / 上限</th><th>上限に対する割合</th></tr></thead><tbody>
-      ${u.providers.map(r=>`<tr><td>${esc(r.label)}</td><td class="mono">${r.calls}</td><td class="mono">${n(r.inputTokens)}</td><td class="mono">${n(r.outputTokens)}</td>
-        <td class="mono">${n(r.used)}${r.limit!=null?" / "+n(r.limit):""}</td><td><div class="row" style="align-items:center;gap:6px;flex-wrap:nowrap">${meter(r.used,r.limit)}</div></td></tr>`).join("")||'<tr><td colspan="6" class="hint">まだ利用がありません</td></tr>'}</tbody></table></div>`;
+      <div class="scroll" style="margin-top:14px"><table class="t"><thead><tr><th>AI</th><th>呼出回数</th><th>入力</th><th>うちキャッシュ</th><th>出力</th><th>合計 / 上限</th><th>上限に対する割合</th></tr></thead><tbody>
+      ${u.providers.map(r=>`<tr><td>${esc(r.label)}</td><td class="mono">${r.calls}</td><td class="mono">${n(r.inputTokens)}</td><td class="mono" title="前回と同じ部分をAIが使い回した入力。料金は通常の入力より安い">${n(r.cachedInputTokens??0)}${r.inputTokens?` <span class="hint">(${Math.round((r.cachedInputTokens??0)/r.inputTokens*100)}%)</span>`:""}</td><td class="mono">${n(r.outputTokens)}</td>
+        <td class="mono">${n(r.used)}${r.limit!=null?" / "+n(r.limit):""}</td><td><div class="row" style="align-items:center;gap:6px;flex-wrap:nowrap">${meter(r.used,r.limit)}</div></td></tr>`).join("")||'<tr><td colspan="7" class="hint">まだ利用がありません</td></tr>'}</tbody></table></div>
+      <p class="hint">「うちキャッシュ」は、指示やプロジェクトの前提など前回と同じ部分をAIが使い回した入力です（料金は通常の入力の1〜5割程度）。上限は、キャッシュの分も含めた合計で数えます。</p>`;
     $("#oLimSave").onclick=async()=>{
       const v=$("#oLim").value.trim();
       try{ await api(`/api/orgs/${S.orgId}/limits`,{method:"PUT",body:{monthlyTokenLimit: v===""?null:Math.floor(Number(v))}}); toast("上限を保存しました"); loadUsage() }

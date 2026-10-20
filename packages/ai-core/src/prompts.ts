@@ -29,7 +29,11 @@ ${RULE_INSTRUCTIONS}
 - 出力は次の形のJSONのみ。説明文やコードフェンスは付けない
 ${CANDIDATE_SHAPE}`;
 
-export function buildGeneratorPrompt(ctx: PromptContext): string {
+/**
+ * 呼び出しをまたいで変わらない前提（プロジェクトと確定済みの要件）。
+ * フェーズや回答より前に置き、AIのプロンプトキャッシュで使い回せるようにする
+ */
+export function buildProjectContext(ctx: PromptContext): string {
   const existing = ctx.existingRequirements.length
     ? ctx.existingRequirements.map((r) => `- ${r.code ?? r.type} ${r.title}`).join("\n")
     : "（まだありません）";
@@ -37,12 +41,15 @@ export function buildGeneratorPrompt(ctx: PromptContext): string {
 名称: ${ctx.projectName}
 目的: ${ctx.projectPurpose}
 
-# 現在のフェーズ
+# 確定済みの要件
+${existing}`;
+}
+
+/** 毎回変わる部分（フェーズ・質問・回答） */
+export function buildGeneratorTask(ctx: PromptContext): string {
+  return `# 現在のフェーズ
 ${ctx.phase.name}（主に作る要件の区分: ${ctx.phase.type}）
 確認すべき観点: ${ctx.phase.checklist.join("、")}
-
-# 確定済みの要件
-${existing}
 
 # 利用者への質問
 ${ctx.phase.question}
@@ -51,6 +58,13 @@ ${ctx.phase.question}
 ${ctx.userAnswer}
 
 上の回答から、このフェーズの要件案を作ってください。`;
+}
+
+/** 前提と、毎回変わる部分を合わせた全文 */
+export function buildGeneratorPrompt(ctx: PromptContext): string {
+  return `${buildProjectContext(ctx)}
+
+${buildGeneratorTask(ctx)}`;
 }
 
 export const EVALUATOR_SYSTEM = `あなたは要件定義のレビュアーです。複数の要件案を、提供元を知らされずに比較評価します。
@@ -71,7 +85,8 @@ ${EARS_INSTRUCTIONS}
   "merged": ${CANDIDATE_SHAPE.replace(/\n/g, "\n  ")}
 }`;
 
-export function buildEvaluatorPrompt(
+/** 評価AIへの依頼のうち、毎回変わる部分（前提は buildProjectContext を context で渡す） */
+export function buildEvaluatorTask(
   ctx: PromptContext,
   labeled: Array<{ label: string; content: CandidateContent }>,
 ): string {
@@ -84,7 +99,7 @@ export function buildEvaluatorPrompt(
     .join("\n\n");
   if (labeled.length === 1) {
     // 単独AI＋評価AI: 1つの案を審査し、直した案を作る
-    return `${buildGeneratorPrompt(ctx)}
+    return `${buildGeneratorTask(ctx)}
 
 # 審査する案（1つ）
 ${blocks}
@@ -94,10 +109,20 @@ ${blocks}
 - merged には、指摘を直した改善案を入れる（良い項目はそのまま残し、不足を足し、誤りを直す）
 - recommendedLabel は、直す必要がほとんどなければ "${labeled[0]!.label}"、改善案のほうがよければ "merged"`;
   }
-  return `${buildGeneratorPrompt(ctx)}
+  return `${buildGeneratorTask(ctx)}
 
 # 評価対象の案（提示順はランダム）
 ${blocks}
 
 全ての案（${labeled.map((c) => c.label).join(", ")}）を評価してください。`;
+}
+
+/** 評価AIへの依頼の全文 */
+export function buildEvaluatorPrompt(
+  ctx: PromptContext,
+  labeled: Array<{ label: string; content: CandidateContent }>,
+): string {
+  return `${buildProjectContext(ctx)}
+
+${buildEvaluatorTask(ctx, labeled)}`;
 }

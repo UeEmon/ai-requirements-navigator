@@ -5,7 +5,7 @@ import { findPdfFont } from "../src/spec.js";
 import { devAuthenticator } from "../src/auth.js";
 import { LocalKeyEncryptor } from "../src/crypto.js";
 import { MemoryStorage } from "../src/storage.js";
-import { MemoryStore, type Store } from "../src/store.js";
+import { MemoryStore, usageOf, type Store } from "../src/store.js";
 
 export function makeApp(store: Store = new MemoryStore()) {
   const encryptor = new LocalKeyEncryptor(randomBytes(32).toString("base64"));
@@ -486,5 +486,23 @@ describe("API", () => {
     const cur = await (await app.request(`/api/orgs/${org.id}/usage`, h)).json();
     expect(cur.org.used).toBe(100);
     expect(cur.providers[0].deleted).toBe(true); // 登録のないAIの利用分も合計に含める
+  });
+
+  it("利用量: キャッシュから読んだ入力を分けて集計し、上限は合計で数える", async () => {
+    const store = new MemoryStore();
+    const app = createApp({
+      store,
+      encryptor: new LocalKeyEncryptor(randomBytes(32).toString("base64")),
+      storage: new MemoryStorage(),
+      authenticate: devAuthenticator,
+      allowMock: true,
+      devAuth: true,
+    });
+    const org = await store.createOrg("o");
+    await store.addUsage({ orgId: org.id, providerId: "p", projectId: "x", ...usageOf({ inputTokens: 1000, outputTokens: 50, cachedInputTokens: 800 }) });
+    await store.addUsage({ orgId: org.id, providerId: "p", projectId: "x", ...usageOf({ inputTokens: 200, outputTokens: 10 }) });
+    const u = await (await app.request(`/api/orgs/${org.id}/usage`, { headers: { "x-org-id": org.id, "x-role": "admin" } })).json();
+    expect(u.providers[0]).toMatchObject({ inputTokens: 1200, cachedInputTokens: 800, outputTokens: 60, calls: 2, used: 1260 });
+    expect(u.org.used).toBe(1260);
   });
 });
