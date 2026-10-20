@@ -108,6 +108,29 @@ describe("API", () => {
     expect(r.status).toBe(400);
   });
 
+  it("おすすめの組み合わせ: 登録済みのAIから、目的ごとに生成AIと評価AIを提案する（AIは呼び出さない）", async () => {
+    const add = async (vendor: string, model: string, apiKey?: string) =>
+      (await (await t.app.request(`/api/orgs/${orgId}/providers`, as("admin", json({ vendor, model, ...(apiKey ? { apiKey } : {}) })))).json()).id as string;
+    const sonnet = await add("anthropic", "claude-sonnet-5-5", "sk-ant-aaaa1111");
+    const pro = await add("gemini", "gemini-2.5-pro", "AIzaBBBB2222");
+    await add("openai", "gpt-5-mini", "sk-proj-cccc3333");
+    await add("ollama", "llama3.1:70b");
+    const r = await t.app.request(`/api/orgs/${orgId}/ai-advice`, as("viewer"));
+    expect(r.status).toBe(200);
+    const a = await r.json();
+    const balanced = a.review.find((c: { goals: string[] }) => c.goals.includes("balanced"));
+    expect(balanced).toMatchObject({ mode: "review", generatorId: sonnet, evaluatorId: pro });
+    expect(balanced.axes.depth.level).toBeGreaterThanOrEqual(4);
+    expect(a.goals.balanced.title).toContain("おすすめ");
+    expect(a.single.length).toBeGreaterThan(0);
+    // キーは返さない
+    expect(JSON.stringify(a)).not.toMatch(/aaaa1111|BBBB2222|cccc3333/);
+    // 機密プロジェクト: ローカルLLMだけ
+    const conf = await (await t.app.request(`/api/orgs/${orgId}/ai-advice?confidential=1`, as("viewer"))).json();
+    expect(conf.profiles.map((p: { vendor: string }) => p.vendor)).toEqual(["ollama"]);
+    expect(conf.review).toEqual([]);
+  });
+
   it("他の組織のデータは見えない", async () => {
     const other = (await (await t.app.request("/api/orgs", json({ name: "別組織" }))).json()).id;
     const r = await t.app.request(`/api/orgs/${orgId}/providers`, as("admin", {}, other));

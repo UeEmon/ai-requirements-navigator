@@ -4,6 +4,11 @@ import {
   compareUmlModels,
   keyGuides,
   VENDOR_INFO,
+  recommendModelCombos,
+  pickCatalogModels,
+  listModels,
+  KeyCheckError,
+  ADVICE_GOALS,
   vendorName,
   BusinessRule,
   Ears,
@@ -23,6 +28,7 @@ import {
   RoundError,
   runRound,
   type AIProvider,
+  type AdviceProvider,
   type CacheTtl,
   type FetchLike,
   type Guide,
@@ -532,6 +538,93 @@ export function createApp(deps: AppDeps) {
     const orgId = c.req.param("orgId");
     need(c, orgId, "project.view");
     return c.json((await store.listCredentials(orgId)).map(publicCredential));
+  });
+
+  /**
+   * 単一AI・単独AI＋評価AI のおすすめの組み合わせを作る（AI は呼び出さない）。
+   * 応答性・思考の深さ・トークン消費の目安を返し、どれを使うかは利用者が選ぶ。
+   * confidential=1: 機密プロジェクト（ローカルLLMだけ）
+   * catalog=1: 登録済みのキーで提供元のモデル一覧を取り、未登録のモデルも候補にする（系統ごとに代表を1つ。トークンは消費しない）
+   */
+  /** 提供元のモデル一覧（おすすめの組み合わせ用）。何度も開いても問い合わせが増えないよう、AI ごとに10分だけ覚えておく */
+  const catalogCache = new Map<string, { at: number; ids: string[] }>();
+  const catalogOf = async (orgId: string, src: ProviderCredential) => {
+    const key = `${src.id}|${src.updatedAt}`;
+    const hit = catalogCache.get(key);
+    if (hit && nowFn().getTime() - hit.at < 10 * 60_000) return hit.ids;
+    const apiKey = src.encryptedKey ? await deps.encryptor.decrypt(src.encryptedKey, { orgId }) : null;
+    const models = await listModels(src.vendor, { apiKey, endpoint: src.endpoint ?? VENDOR_INFO[src.vendor].endpointDefault }, deps.fetchImpl ?? fetch, AbortSignal.timeout(15_000));
+    const ids = models.map((m) => m.id);
+    catalogCache.set(key, { at: nowFn().getTime(), ids });
+    return ids;
+  };
+  app.get("/api/orgs/:orgId/ai-advice", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "project.view");
+    // 候補は、API キーを設定した標準の AI（Claude・ChatGPT・Gemini）とローカルLLM だけ（模擬AIは使わない）
+    const all = await store.listCredentials(orgId);
+    const creds = all.filter((x) => (VENDOR_INFO[x.vendor]?.standard && x.encryptedKey) || x.vendor === "ollama");
+    const confidential = ["1", "true"].includes(c.req.query("confidential") ?? "");
+    const candidates: AdviceProvider[] = creds.map((x) => ({ id: x.id, vendor: x.vendor, model: x.model, label: x.label, isLocal: x.isLocal }));
+    const catalogNotes: string[] = [];
+    if (["1", "true"].includes(c.req.query("catalog") ?? "")) {
+      // 同じキー・接続先の AI は、一覧を1回だけ取る
+      const sources = new Map<string, ProviderCredential>();
+      for (const x of creds) {
+        if (confidential && !x.isLocal) continue;
+        const k = `${x.vendor}|${x.endpoint ?? ""}|${x.keyLast4 ?? ""}`;
+        if (!sources.has(k)) sources.set(k, x);
+      }
+      const seen = new Set(creds.map((x) => `${x.vendor}|${x.model}`));
+      await Promise.all(
+        [...sources.values()].map(async (src) => {
+          try {
+            const ids = await catalogOf(orgId, src);
+            for (const model of pickCatalogModels(src.vendor, ids)) {
+              if (seen.has(`${src.vendor}|${model}`)) continue;
+              seen.add(`${src.vendor}|${model}`);
+              candidates.push({ id: `catalog:${src.id}:${model}`, vendor: src.vendor, model, label: `${vendorName(src.vendor)} (${model})`, isLocal: src.isLocal, unregistered: true, sourceId: src.id });
+            }
+          } catch (e) {
+            // 理由は自前の文（キーを含まない）だけを出す
+            catalogNotes.push(`${src.label}：モデルの一覧を取れませんでした（${e instanceof KeyCheckError ? e.message : "接続できませんでした"}）`);
+          }
+        }),
+      );
+    }
+    if (all.length > creds.length) catalogNotes.push("模擬AI（開発用）など、API キーを設定した標準の AI とローカルLLM 以外は候補にしていません");
+    const advice = recommendModelCombos(candidates, { confidential });
+    const goals = Object.fromEntries(Object.entries(ADVICE_GOALS).map(([k, g]) => [k, { title: g.title, description: g.description }]));
+    return c.json({ ...advice, notes: [...catalogNotes, ...advice.notes], goals });
+  });
+
+  /** 未登録のモデルを、登録済みの AI と同じキー・接続先で登録する（おすすめの組み合わせから選んだとき） */
+  app.post("/api/orgs/:orgId/providers/:id/copy", async (c) => {
+    const orgId = c.req.param("orgId");
+    need(c, orgId, "ai.manage");
+    const { model, label } = await body(c, z.object({ model: z.string().min(1).max(200), label: z.string().min(1).max(100).optional() }));
+    const src = (await store.listCredentials(orgId)).find((x) => x.id === c.req.param("id"));
+    if (!src) throw new HTTPException(404, { message: "見つかりません" });
+    const cred = await store.addCredential({
+      orgId,
+      vendor: src.vendor,
+      model,
+      label: label ?? `${VENDOR_INFO[src.vendor].name} (${model})`,
+      endpoint: src.endpoint,
+      encryptedKey: src.encryptedKey,
+      keyLast4: src.keyLast4,
+      isLocal: src.isLocal,
+      monthlyTokenLimit: null,
+    });
+    await audit(store, {
+      orgId,
+      actor: actorOf(c),
+      action: "provider.create",
+      targetType: "provider",
+      targetId: cred.id,
+      detail: { vendor: cred.vendor, model: cred.model, label: cred.label, endpoint: cred.endpoint, monthlyTokenLimit: null, copiedFrom: { id: src.id, label: src.label } },
+    });
+    return c.json(publicCredential(cred), 201);
   });
 
   /**
