@@ -352,7 +352,7 @@ const JOB_LABEL = [
 ];
 const AI_LOCK = [
   "#cOrg","#cRole","#cMyOrg","#cOut","[data-jopen]","#jOpenGo","#jGo","#jSample","[data-jarch]","[data-jdel]","#jaEdit","#jaSave","[data-del]",
-  "#send","#regen","#nextPhase","[data-phase]","[data-pick]","#umlGen","#uAdopt","#implGen","#regGo","#gGen","#nfrReview","#nfrSuggest","#nfrApply","#nfrReq",
+  "#send","#regen","#nextPhase","#paGo","[data-phase]","[data-pick]","#umlGen","#uAdopt","#implGen","#regGo","#gGen","#nfrReview","#nfrSuggest","#nfrApply","#nfrReq",
   "#anGo","#anAdopt","#scrGen","#crAdd","#crAnalyze","[data-opt]","#bGo",
 ].join(",");
 const LOCK_TITLE = "AIが考えている間は使えません。終わると使えるようになります";
@@ -1541,8 +1541,13 @@ function renderHear(){
   const nfrNote = ph.key==="quality" ? `<div class="note" style="background:var(--accent-soft);margin:0 0 10px">非機能要件は、ここでの会話に加えて「非機能要件」タブの<b>26項目のシート</b>で漏れなく検討できます。<button class="btn sm ghost" id="goNfr" style="margin-left:6px">シートを開く</button></div>` : "";
   const q = g?.question || ph.question, hint = g?.hint ?? ph.hint, options = g?.options?.length ? g.options : (ph.defaultOptions||[]), glossary = g?.glossary || [];
   const covered = new Set(g?.covered||[]), pct = Math.round((g?.coverage||0)*100);
+  const nxt = phases[ci+1], askKey = `${S.project.id}:${ph.key}`;
+  const ask = canEdit() && g && ph.checklist.length && g.missing.length===0 && !phaseAskOff().includes(askKey);
+  const askNote = ask ? `<div class="note" id="phaseAsk" style="background:var(--accent-soft);margin:0 0 10px"><b>✓ 「${esc(ph.name)}」の観点をすべて確認できました（100%）。</b>${nxt?`次のフェーズ「${esc(nxt.name)}」に進みますか？`:"これが最後のフェーズです。すべてのフェーズを完了にしますか？"}
+    <div class="row" style="margin-top:8px"><button class="btn sm" id="paGo">${nxt?`「${esc(nxt.name)}」へ進む`:"完了にする"}</button><button class="btn sm ghost" id="paStay">このフェーズを続ける</button></div>
+    <p class="hint" style="margin:6px 0 0">続ける場合も、下の「次のフェーズへ」やフェーズ名からいつでも移れます。進んだ後でも戻れます。</p></div>` : "";
   const baseNote = S.baseline ? `<div class="note warn" style="margin:0 0 10px">要件定義は確定済みです（確定版 v${S.baseline.version}）。ここで採用した案は要件に直接加えず、「変更管理」で影響を確認する変更要求になります。</div>` : "";
-  el.innerHTML=`<div class="panel">${baseNote}${nfrNote}${strip}<div class="lbl">${esc(S.project.name)} ・ ${S.project.aiConfig.mode==="multi"?"複数AI＋評価AI":"単一AI"} ・ ${esc(ph.name)}</div>
+  el.innerHTML=`<div class="panel">${baseNote}${nfrNote}${strip}${askNote}<div class="lbl">${esc(S.project.name)} ・ ${S.project.aiConfig.mode==="multi"?"複数AI＋評価AI":"単一AI"} ・ ${esc(ph.name)}</div>
     <p class="q" id="q">${gloss(q, glossary)}</p>${hint?`<p class="hint" style="margin-top:-6px">${gloss(hint, glossary)}</p>`:""}
     <div class="chips" id="opts">${options.map(o=>`<button type="button">${esc(o)}</button>`).join("")}</div>
     <textarea id="ans" rows="3" placeholder="思いつくままに書いてください。上の候補を押すと入力できます"></textarea>
@@ -1569,8 +1574,16 @@ function renderHear(){
     }
     await movePhase(nextKey(ph.key));
   });
+  $("#paGo") && ($("#paGo").onclick=async()=>{
+    if(S.round && !confirm("まだ採用していない案があります。採用せずに次のフェーズへ進みますか？")) return;
+    await movePhase(nextKey(ph.key));
+  });
+  $("#paStay") && ($("#paStay").onclick=()=>{ sess.set("phaseAskOff", JSON.stringify([...phaseAskOff(), askKey].slice(-50))); $("#phaseAsk").remove(); });
+  if(ask && renderHear.asked!==askKey){ renderHear.asked=askKey; $("#phaseAsk").scrollIntoView({block:"nearest"}); }
   if(S.round) renderRound();
 }
+/** 観点が100%になったときの「次のフェーズへ進みますか」を、「続ける」を選んだフェーズでは出さない（このタブを閉じるまで） */
+const phaseAskOff = () => { try{ const v=JSON.parse(sess.get("phaseAskOff")||"[]"); return Array.isArray(v)?v:[]; }catch(e){ return []; } };
 const nextKey = k => { const ps=S.meta.phases, i=ps.findIndex(p=>p.key===k); return ps[i+1]?.key || "done"; };
 document.addEventListener("click", e=>{ if(e.target && e.target.id==="goNfr") switchTab("nfr") });
 function bindPhaseStrip(){
