@@ -52,6 +52,7 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       expect(added.map((r) => r.code)).toEqual(["BR-01", "BR-02"]);
       await store.addUsage({ orgId: org.id, providerId: cred.id, projectId: project.id, inputTokens: 5, outputTokens: 3 });
       expect(await store.usageSummary(org.id)).toEqual([{ providerId: cred.id, inputTokens: 5, outputTokens: 3, cachedInputTokens: 0, calls: 1 }]);
+      expect(await store.usageByProject(org.id)).toEqual([{ projectId: project.id, providerId: cred.id, inputTokens: 5, outputTokens: 3, cachedInputTokens: 0, calls: 1 }]);
       expect((await store.getProject(project.id))!.aiConfig.generatorIds).toEqual([cred.id]);
 
       // 上限と変更（003_limits）

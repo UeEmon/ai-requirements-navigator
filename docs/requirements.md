@@ -79,7 +79,7 @@
 | F6-3 | エクスポート（Markdown / Word / PDF、図の画像埋め込み）・版の保存 | 必須 | 済 | `apps/api/src/spec.ts`、`POST /api/projects/:id/exports` |
 | F8-1 | AIの登録・変更・削除（組織の管理者） | 必須 | 済 | `POST/PATCH/DELETE /api/orgs/:orgId/providers` |
 | F8-2 | 月間トークン上限（組織全体・AIごと）と80%警告 | 推奨 | 済 | `apps/api/src/usage.ts`、`PUT /api/orgs/:orgId/limits` |
-| F8-3 | 今月の利用量の確認 | 推奨 | 済 | `GET /api/orgs/:orgId/usage` |
+| F8-3 | 今月の利用量の確認（AIごと、プロジェクトごと・AIごと。プロジェクトごとは今月／全期間） | 推奨 | 済 | `GET /api/orgs/:orgId/usage`、`GET /api/orgs/:orgId/usage/projects?period=month\|all` |
 | F8-4 | 監査ログ（誰が・いつ・どのAIに何を送ったか） | 推奨 | 済 | `GET /api/orgs/:orgId/audit` |
 | F8-5 | ログイン画面（OIDC 認可コード＋PKCE、Cognito / Keycloak） | 推奨 | 済 | `apps/api/src/auth.ts`、[auth.md](./auth.md) |
 | F8-6 | AI処理の非同期実行と進み具合の表示 | 推奨 | 済 | `apps/api/src/jobs.ts`、`GET /api/jobs/:id` |

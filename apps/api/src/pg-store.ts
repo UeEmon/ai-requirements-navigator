@@ -1129,6 +1129,14 @@ export class PgStore implements Store {
     );
     return rows.map((r: any) => ({ providerId: r.provider_id, inputTokens: r.i, outputTokens: r.o, cachedInputTokens: r.c, calls: r.n }));
   }
+  async usageByProject(orgId: string, since?: Date) {
+    const { rows } = await this.pool.query(
+      `SELECT project_id, provider_id, sum(input_tokens)::int AS i, sum(output_tokens)::int AS o, sum(cached_input_tokens)::int AS c, count(*)::int AS n
+       FROM usage_records WHERE org_id = $1 AND at >= $2 GROUP BY project_id, provider_id ORDER BY project_id, provider_id`,
+      [orgId, since ?? new Date(0)],
+    );
+    return rows.map((r: any) => ({ projectId: r.project_id ?? "", providerId: r.provider_id, inputTokens: r.i, outputTokens: r.o, cachedInputTokens: r.c, calls: r.n }));
+  }
 
   async createApiToken(t: Omit<ApiToken, "id" | "createdAt" | "lastUsedAt" | "revokedAt">) {
     const { rows } = await this.pool.query(

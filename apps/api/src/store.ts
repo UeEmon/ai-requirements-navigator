@@ -286,6 +286,11 @@ export interface Decision {
   createdAt: string;
 }
 
+/** プロジェクト・AIごとの利用量（projectId が空なのはプロジェクトに結び付かない呼び出し） */
+export interface ProjectUsageRow extends UsageRow {
+  projectId: string;
+}
+
 export interface UsageRecord {
   orgId: string;
   providerId: string;
@@ -736,6 +741,8 @@ export interface Store {
   addUsage(u: Omit<UsageRecord, "at">): Promise<void>;
   /** since 以降（省略時は全期間）の利用量をAIごとに集計する */
   usageSummary(orgId: string, since?: Date): Promise<UsageRow[]>;
+  /** since 以降（省略時は全期間）の利用量を、プロジェクトとAIの組ごとに集計する */
+  usageByProject(orgId: string, since?: Date): Promise<ProjectUsageRow[]>;
 
   createApiToken(t: Omit<ApiToken, "id" | "createdAt" | "lastUsedAt" | "revokedAt">): Promise<ApiToken>;
   findApiToken(tokenHash: string): Promise<ApiToken | null>;
@@ -1316,6 +1323,20 @@ export class MemoryStore implements Store {
       s.cachedInputTokens += u.cachedInputTokens ?? 0;
       s.calls += 1;
       m.set(u.providerId, s);
+    }
+    return [...m.values()];
+  }
+  async usageByProject(orgId: string, since?: Date) {
+    const m = new Map<string, ProjectUsageRow>();
+    const from = since?.toISOString() ?? "";
+    for (const u of this.usage.filter((x) => x.orgId === orgId && x.at >= from)) {
+      const key = `${u.projectId ?? ""}\0${u.providerId}`;
+      const s = m.get(key) ?? { projectId: u.projectId ?? "", providerId: u.providerId, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, calls: 0 };
+      s.inputTokens += u.inputTokens;
+      s.outputTokens += u.outputTokens;
+      s.cachedInputTokens += u.cachedInputTokens ?? 0;
+      s.calls += 1;
+      m.set(key, s);
     }
     return [...m.values()];
   }

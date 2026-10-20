@@ -16,7 +16,7 @@
 | チームでの利用 | プロジェクト単位のメンバー（メンバーに限る・プロジェクトでの役割）、要件へのコメント、プロジェクトの複製・書き出し・取り込み | [auth.md](auth.md)・[ADR 0012](adr/0012-team-collaboration.md) |
 | 実装・テストへの引き継ぎ | タスク分解と GitHub Issues・Jira・Backlog への登録、テスト仕様、引き継ぎパッケージ、AIコーディングツール連携（API トークン・MCP・Webhook） | [integrations.md](integrations.md)・[handoff.md](handoff.md)・[connect.md](connect.md) |
 | AI設定 | Claude・ChatGPT・Gemini ごとの登録、キーの自動発行（ChatGPT: 管理用キー、Gemini: Google でログイン）、モデル一覧の自動取得、月間トークン上限 | [ai-keys.md](ai-keys.md) |
-| トークンの節約 | プロンプトのキャッシュ（変わらない部分を先に並べる、Claude の印と `AI_CACHE_TTL`、ChatGPT の prompt_cache_key、Ollama の keep_alive）、利用量の「うちキャッシュ」 | [ai-keys.md](ai-keys.md#プロンプトのキャッシュトークンの節約)・[ADR 0013](adr/0013-prompt-caching.md) |
+| トークンの節約 | プロンプトのキャッシュ（変わらない部分を先に並べる、Claude の印と `AI_CACHE_TTL`、ChatGPT の prompt_cache_key、Ollama の keep_alive）、利用量の「うちキャッシュ」、プロジェクトごと・AIごとの利用量 | [ai-keys.md](ai-keys.md#プロンプトのキャッシュトークンの節約)・[ADR 0013](adr/0013-prompt-caching.md) |
 | 連携の自動化 | 課題管理ツールの設定の自動読み込み、GitHub リポジトリの自動作成 | [integrations.md](integrations.md) |
 | 組織とユーザー | 組織設定の編集（名前・説明・問い合わせ先・招待できるドメイン・月間上限）、ユーザーの招待と役割、役割ごとの権限の変更、管理者は1人以上 | [auth.md](auth.md) |
 | ログイン | 開発用（dev）／要件ナビのログイン（local: メールアドレスとパスワード、招待・再設定のリンク）／Cognito・Keycloak（oidc） | [auth.md](auth.md) |
@@ -56,7 +56,7 @@
 
 | 日付 | 内容 |
 | --- | --- |
-| 2026-10-20 | プロンプトのキャッシュでトークンの消費を抑える（ヒアリングと資料の分析の並びを変更、利用量に「うちキャッシュ」） |
+| 2026-10-20 | プロンプトのキャッシュでトークンの消費を抑える（ヒアリングと資料の分析の並びを変更、利用量に「うちキャッシュ」）、プロジェクトごと・AIごとの利用量の表示 |
 | 2026-10-10 | 要件の手入力、要件へのコメント、プロジェクト単位のメンバー、プロジェクトの複製・書き出し・取り込み、CI の actions の更新（Node.js 24） |
 | 2026-10-09 | Claude のプロジェクトで開発を管理するための資料（CLAUDE.md・この一覧・claude-project.md）を追加 |
 | 2026-10-07 | 組織設定の編集・役割ごとの権限・要件ナビのログイン（ユーザー管理） |
