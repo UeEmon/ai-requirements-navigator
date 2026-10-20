@@ -51,7 +51,7 @@
 | F2-2 | 選択肢つき質問（AIが回答候補を作成） | 必須 | 済 | `ai-core/src/guide.ts`、`POST /api/projects/:id/guide` |
 | F2-3 | 用語解説（標準の用語集＋AIの解説） | 必須 | 済 | `ai-core/src/glossary.ts` |
 | F2-4 | 曖昧さ検出 | 必須 | 済 | `ai-core/src/ambiguity.ts`、`POST /api/projects/:id/ambiguity` |
-| F2-5 | 抜け漏れチェック（観点ごとの網羅状況と網羅率） | 必須 | 済 | `GET /api/projects/:id/coverage` |
+| F2-5 | 抜け漏れチェック（観点ごとの網羅状況と網羅率）。網羅率が100%になったら、次のフェーズへ進むかを利用者に確かめ、「進む」を選ぶと移る（「このフェーズを続ける」を選ぶと、そのフェーズでは画面を閉じるまで聞かない） | 必須 | 済 | `GET /api/projects/:id/coverage`、画面の `#phaseAsk` |
 | F2-6 | 資料取込（議事録・既存システムの資料。テキスト / Word / PDF） | 推奨 | 済 | `apps/api/src/extract.ts`、`POST /api/projects/:id/documents` |
 | F2-7 | 資料の分析（現状の業務フロー・課題と根拠の照合・業務の見直し（ECRS）・見直し後のフロー・引き継がないもの・初回の要件案） | 推奨 | 済 | `ai-core/src/analysis.ts`、`POST /api/projects/:id/analyses`・`/api/analyses/:id/adopt` |
 | F3-1 | 単一 / 複数モード選択 | 必須 | 済 | `aiConfig.mode` |
