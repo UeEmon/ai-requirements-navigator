@@ -123,6 +123,7 @@ describe("API", () => {
     expect(balanced.axes.depth.level).toBeGreaterThanOrEqual(4);
     expect(a.goals.balanced.title).toContain("おすすめ");
     expect(a.single.length).toBeGreaterThan(0);
+    expect(a.multi[0].generatorIds).toHaveLength(2);
     // キーは返さない
     expect(JSON.stringify(a)).not.toMatch(/aaaa1111|BBBB2222|cccc3333/);
     // 機密プロジェクト: ローカルLLMだけ

@@ -1033,29 +1033,28 @@ const adviceMeter=n=>"●".repeat(n)+"○".repeat(5-n);
 async function renderAiAdvice(box, opts){
   if(!box) return;
   const {mode, confidential, apply}=opts;
-  if(mode==="multi"){ box.innerHTML=""; return; }
   const catalog=S.adviceCatalog!==false; // 既定は各AIのモデル一覧から
   const seq=(box.dataset.seq=(+box.dataset.seq||0)+1);
   if(catalog) box.innerHTML=`<p class="hint">各AIのモデル一覧を取得しています…</p>`;
   const q=[confidential?"confidential=1":"", catalog?"catalog=1":""].filter(Boolean).join("&");
   let a; try{ a=await api(`/api/orgs/${S.orgId}/ai-advice${q?"?"+q:""}`) }catch(e){ box.innerHTML=`<div class="note err">${esc(e.message)}</div>`; return }
   if(String(seq)!==box.dataset.seq) return; // 新しい表示が始まっていれば捨てる
-  const list = mode==="review" ? a.review : a.single;
+  const list = a[mode]||[];
   const prof=id=>a.profiles.find(x=>x.id===id);
   const nm=id=>{ const p=prof(id); return p?`${esc(p.label)}${p.label.includes(p.model)?"":` <span class="hint">${esc(p.model)}</span>`}${p.unregistered?' <span class="tag">未登録</span>':""}`:"（不明）"; };
-  const hasUn=c=>[c.generatorId,c.evaluatorId].some(id=>id&&prof(id)?.unregistered);
+  const hasUn=c=>[...c.generatorIds,c.evaluatorId].some(id=>id&&prof(id)?.unregistered);
   const canReg=can("ai.manage");
   const lvl=(k,ax)=>`<td>${ADVICE_AXES.find(x=>x[0]===k)[1]}</td><td class="mono" aria-label="5段階の${ax.level}">${adviceMeter(ax.level)}</td><td>${esc(ax.word)}</td>`;
   const btn=(c,i)=>!apply?"":hasUn(c)&&!canReg?`<p class="hint">未登録のモデルを含みます。使うには、管理者に「AI設定」での登録を頼んでください</p>`
     :`<div><button class="btn sm ghost" type="button" data-advice="${i}">${hasUn(c)?"モデルを登録して選ぶ":"この組み合わせを選ぶ"}</button></div>`;
-  box.innerHTML=`<details class="addbox" style="margin-top:8px" open><summary><b>おすすめの組み合わせ</b> <span class="hint">${mode==="review"?"生成AI と評価AI":"生成AI"}を、目的ごとに提案します（目安です。どれを使うかはあなたが決めてください）</span></summary>
+  box.innerHTML=`<details class="addbox" style="margin-top:8px" open><summary><b>おすすめの組み合わせ</b> <span class="hint">${mode==="multi"?"生成AI 2つと評価AI":mode==="review"?"生成AI と評価AI":"生成AI"}を、目的ごとに提案します（目安です。どれを使うかはあなたが決めてください）</span></summary>
     <div class="row" style="margin-top:6px;align-items:center;gap:8px"><span class="hint">候補：<b>${catalog?"API キーを設定した標準の AI とローカルLLM のモデル（未登録のモデルを含む）":"登録済みの AI（標準の AI とローカルLLM）"}</b></span>
       <button class="btn sm ghost" type="button" data-advice-catalog>${catalog?"登録済みの AI だけで考える":"各AIのモデル一覧からも探す"}</button></div>
     ${catalog?"":`<p class="hint">「各AIのモデル一覧からも探す」は、API キーを設定した Claude・ChatGPT・Gemini とローカルLLM のモデル一覧を取得し、系統（Haiku・Sonnet・Opus、mini・pro、Flash・Pro など）ごとの最新のモデルも候補にします（トークンは消費しません）。</p>`}
     ${list.length?`<div class="cands">${list.map((c,i)=>`<div class="cand ${c.goals.includes("balanced")?"rec":""}">
       <header><b>${c.goals.map(g=>esc(a.goals[g]?.title||g)).join("／")}</b>${c.goals.includes("balanced")?'<span class="pill">推奨</span>':""}</header>
       <div class="hint">${c.goals.map(g=>esc(a.goals[g]?.description||"")).join("。")}</div>
-      <div>生成AI：${nm(c.generatorId)}${c.evaluatorId?`<br>評価AI：${nm(c.evaluatorId)}`:""}</div>
+      <div>生成AI：${c.generatorIds.map(nm).join("<br>　　　　")}${c.evaluatorId?`<br>評価AI：${nm(c.evaluatorId)}`:""}</div>
       <table class="advice-axes"><tbody>${ADVICE_AXES.map(([k])=>`<tr>${lvl(k,c.axes[k])}</tr>`).join("")}</tbody></table>
       <ul class="hint" style="margin:0;padding-left:18px">${c.reasons.map(r=>`<li>${esc(r)}</li>`).join("")}</ul>
       ${c.cautions.length?`<div class="note warn">${c.cautions.map(esc).join("<br>")}</div>`:""}
@@ -1071,8 +1070,10 @@ async function renderAiAdvice(box, opts){
     try{
       // 未登録のモデルは、同じキーの登録済みの AI から写して登録する
       let added=false;
-      for(const k of ["generatorId","evaluatorId"]){ const p=c[k]&&prof(c[k]); if(!p?.unregistered) continue;
-        const r=await api(`/api/orgs/${S.orgId}/providers/${p.sourceId}/copy`,{method:"POST",body:{model:p.model}}); c[k]=r.id; added=true; }
+      const reg=async id=>{ const p=id&&prof(id); if(!p?.unregistered) return id;
+        const r=await api(`/api/orgs/${S.orgId}/providers/${p.sourceId}/copy`,{method:"POST",body:{model:p.model}}); added=true; return r.id; };
+      c.generatorIds=[]; for(const id of list[+b.dataset.advice].generatorIds) c.generatorIds.push(await reg(id));
+      c.generatorId=c.generatorIds[0]; c.evaluatorId=await reg(c.evaluatorId);
       if(added) await loadProviders();
       apply(c, added);
       toast(added?"モデルを登録し、組み合わせを選びました。プロジェクトは保存するまで変わりません":"組み合わせを選びました。保存するまでは変わりません");
@@ -1123,7 +1124,7 @@ function renderProjectAi(){
     if(added){ const mode=$("#jaMode").value; renderProjectAi(); $("#jaEdit").click(); $("#jaMode").value=mode; $("#jaMode").onchange(); return renderProjectAi.pick(c); }
     renderProjectAi.pick(c); }});
   renderProjectAi.pick=c=>{ const f=$("#jaForm");
-    f.querySelectorAll('input[name=jaGen]').forEach(i=>{ i.checked = i.value===c.generatorId; });
+    f.querySelectorAll('input[name=jaGen]').forEach(i=>{ i.checked = c.generatorIds.includes(i.value); });
     if(c.evaluatorId) $("#jaEv").value=c.evaluatorId;
     sync(); };
   $("#jaEdit").onclick=()=>{ form.hidden=!form.hidden; sync(); if(!form.hidden) advise(); };
@@ -1245,9 +1246,10 @@ function renderProject(){
     if(added){ // AI が増えたので、入力を残したまま作り直す
       const keep={n:$("#jN").value, p:$("#jP").value, c:$("#jC").checked, m:$("#jMode").value};
       renderProject(); $("#jN").value=keep.n; $("#jP").value=keep.p; $("#jC").checked=keep.c; $("#jMode").value=keep.m; $("#jMode").onchange(); }
-    document.querySelectorAll('input[name=g]').forEach(i=>{ i.checked = i.value===c.generatorId; });
+    document.querySelectorAll('input[name=g]').forEach(i=>{ i.checked = c.generatorIds.includes(i.value); });
     if(c.evaluatorId) $("#jEv").value=c.evaluatorId; }}); };
   $("#jC").onchange=adviseNew;
+  adviseNew(); // 作成の既定は複数AI＋評価AI なので、はじめから出す
   $("#jOpenGo").onclick=()=>openProject($("#jOpen").value.trim());
   loadProjectList();
   if($("#jToAi")) $("#jToAi").onclick=()=>switchTab("admin");

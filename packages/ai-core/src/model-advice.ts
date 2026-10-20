@@ -127,8 +127,11 @@ export interface AdviceAxes {
 export interface ModelCombo {
   /** この組み合わせが最も合う目的（同じ組み合わせが複数の目的で選ばれたら、すべて） */
   goals: AdviceGoal[];
-  mode: "single" | "review";
+  mode: "single" | "review" | "multi";
+  /** 生成AI（複数AI＋評価AI では最初の1つ） */
   generatorId: string;
+  /** 生成AI のすべて（単一AI・単独AI＋評価AI では1つ） */
+  generatorIds: string[];
   evaluatorId: string | null;
   axes: AdviceAxes;
   /** 選んだ理由（短い文） */
@@ -141,6 +144,7 @@ export interface ModelAdvice {
   profiles: Array<AdviceProvider & { profile: ModelProfile }>;
   single: ModelCombo[];
   review: ModelCombo[];
+  multi: ModelCombo[];
   /** 提案できない理由など */
   notes: string[];
 }
@@ -225,6 +229,57 @@ function singleReasons(g: AdviceProvider & { profile: ModelProfile }) {
   return { reasons, cautions };
 }
 
+type P = AdviceProvider & { profile: ModelProfile };
+
+/**
+ * 複数AI＋評価AI の組み合わせの目安（生成AI は2つ）。
+ * - 応答性: 生成AI は同時に動くので、遅いほうの待ち時間 ＋ 評価AI の待ち時間
+ * - 思考の深さ: 評価AI が比べて良いところを合わせるため、評価AI と、生成AI のうち深いほうを重く見る
+ * - トークン消費: 生成AI が増えるほど増え、評価AI はすべての案を読むので入力が多い
+ */
+function multiRaw(gens: ModelProfile[], ev: ModelProfile) {
+  const wait = Math.max(...gens.map((g) => 6 - g.speed)) + (6 - ev.speed);
+  const speed = 5 - (wait - 2) / 2;
+  const depth = 0.25 * Math.max(...gens.map((g) => g.depth)) + 0.15 * (gens.reduce((a, g) => a + g.depth, 0) / gens.length) + 0.6 * ev.depth;
+  const cost = 0.4 * (gens.reduce((a, g) => a + g.cost, 0) / gens.length) + 0.6 * ev.cost + 0.5 * (gens.length - 1);
+  return { speed, depth, cost };
+}
+export function multiAxes(gens: ModelProfile[], ev: ModelProfile): AdviceAxes {
+  const r = multiRaw(gens, ev);
+  return axes(r.speed, r.depth, r.cost);
+}
+function multiScore(gens: P[], e: P, goal: AdviceGoal) {
+  const r = multiRaw(gens.map((g) => g.profile), e.profile);
+  const w = ADVICE_GOALS[goal].weights;
+  let s = w.speed * r.speed + w.depth * r.depth + w.light * (6 - Math.min(5, r.cost));
+  // 生成AI の提供元が違うと、案の幅が広がり、比べる意味が大きい
+  if (gens[0]!.vendor !== gens[1]!.vendor) s += 1.5;
+  // 評価AI は、どの生成AI とも別の提供元だと、自分の側の案をひいきしにくい
+  if (gens.every((g) => g.vendor !== e.vendor)) s += 0.7;
+  const top = Math.max(...gens.map((g) => g.profile.depth));
+  if (e.profile.depth < top) s -= 0.7 * (top - e.profile.depth);
+  if ([...gens, e].some((x) => x.vendor === "mock")) s -= 3;
+  return s;
+}
+function multiReasons(gens: P[], e: P) {
+  const reasons: string[] = [];
+  const cautions: string[] = [];
+  const names = gens.map(name).join("・");
+  if (gens[0]!.vendor !== gens[1]!.vendor) reasons.push(`生成AI（${names}）は提供元が違い、別の視点の案が並ぶため、比べる意味が大きくなります`);
+  else cautions.push(`生成AI がどちらも ${vendorName(gens[0]!.vendor)} です。同じ提供元の案は似やすいため、別の提供元の AI を加えると比べる効果が上がります`);
+  if (gens.every((g) => g.profile.speed >= 4)) reasons.push("生成AI はどちらも応答が速く、同時に案を作るので待ち時間を抑えられます");
+  if (e.profile.depth >= 4) reasons.push(`評価AI（${name(e)}）は推論力が高く、案を比べて良いところを合わせた案の質を支えます`);
+  if (gens.every((g) => g.vendor !== e.vendor)) reasons.push("評価AI はどの生成AI とも別の提供元のため、自分の側の案をひいきしにくくなります");
+  else cautions.push("評価AI が生成AI と同じ提供元です。提供元を伏せて比べますが、似た書き方の案を高く見ることがあります");
+  if (gens.every((g) => g.profile.cost <= 2)) reasons.push("生成AI は費用の安いモデルにし、案を2つ作っても消費を抑えています");
+  if (e.profile.depth < Math.max(...gens.map((g) => g.profile.depth))) cautions.push("評価AI のほうが推論力が低めのため、案の良し悪しを見誤ることがあります");
+  cautions.push("案を2つ作り、評価AI がそのすべてを読むため、単独AI＋評価AI よりトークンの消費が多くなります");
+  for (const x of [...gens, e]) if (!x.profile.family) cautions.push(`${name(x)} はモデル名から性格を推定できなかったため、目安は普通として計算しています`);
+  const un = [...gens, e].filter((x) => x.unregistered);
+  if (un.length) cautions.push(`${un.map((x) => x.model).join("・")} はまだ登録していないモデルです（登録済みのキーで使えます。選ぶと登録します）`);
+  return { reasons, cautions };
+}
+
 /**
  * 組織に登録済みの AI から、目的ごとのおすすめの組み合わせを作る。
  * confidential: 機密プロジェクト（社外に送る AI は使わない）
@@ -235,14 +290,16 @@ export function recommendModelCombos(providers: AdviceProvider[], opts: { confid
   const notes: string[] = [];
   if (!profiles.length) {
     notes.push(opts.confidential ? "機密プロジェクトで使えるローカルLLMが登録されていません" : "AI が登録されていません。「AI設定」で登録してください");
-    return { profiles, single: [], review: [], notes };
+    return { profiles, single: [], review: [], multi: [], notes };
   }
   const goals = Object.keys(ADVICE_GOALS) as AdviceGoal[];
   // 同じ組み合わせが複数の目的で選ばれたら、1つにまとめる
-  const add = (list: ModelCombo[], goal: AdviceGoal, c: Omit<ModelCombo, "goals">) => {
-    const same = list.find((x) => x.generatorId === c.generatorId && x.evaluatorId === c.evaluatorId);
+  const add = (list: ModelCombo[], goal: AdviceGoal, c: Omit<ModelCombo, "goals" | "generatorIds"> & { generatorIds?: string[] }) => {
+    const ids = c.generatorIds ?? [c.generatorId];
+    const same = list.find((x) => x.generatorIds.join() === ids.join() && x.evaluatorId === c.evaluatorId);
+    const full = { ...c, generatorIds: ids };
     if (same) same.goals.push(goal);
-    else list.push({ goals: [goal], ...c });
+    else list.push({ goals: [goal], ...full });
   };
   // 点数が同じなら、登録の順（先に登録した AI）を優先する
   const single: ModelCombo[] = [];
@@ -273,8 +330,34 @@ export function recommendModelCombos(providers: AdviceProvider[], opts: { confid
     }
     if (new Set(profiles.map((x) => x.vendor)).size < 2) notes.push("登録済みの AI がすべて同じ提供元です。評価AI は別の提供元にすると、見落としに気づきやすくなります");
   }
+  const multi: ModelCombo[] = [];
+  if (profiles.length < 3) {
+    notes.push("複数AI＋評価AI には、生成AI 2つと、それとは別の評価AI の、合わせて3つの AI が必要です");
+  } else {
+    for (const goal of goals) {
+      let best: { gens: P[]; ev: P } | null = null;
+      let bestScore = -Infinity;
+      for (let i = 0; i < profiles.length; i++)
+        for (let j = i + 1; j < profiles.length; j++)
+          for (const e of profiles) {
+            const gens = [profiles[i]!, profiles[j]!];
+            if (gens.some((g) => g.id === e.id)) continue;
+            const s = multiScore(gens, e, goal);
+            if (s > bestScore + 1e-9) [best, bestScore] = [{ gens, ev: e }, s];
+          }
+      const { gens, ev } = best!;
+      add(multi, goal, {
+        mode: "multi",
+        generatorId: gens[0]!.id,
+        generatorIds: gens.map((g) => g.id),
+        evaluatorId: ev.id,
+        axes: multiAxes(gens.map((g) => g.profile), ev.profile),
+        ...multiReasons(gens, ev),
+      });
+    }
+  }
   notes.push("目安はモデル名の系統から推定したものです。実際の速さ・料金は、提供元の最新の案内と「使用量」で確かめてください。どれを使うかは、あなたが決めてください");
-  return { profiles, single, review, notes };
+  return { profiles, single, review, multi, notes };
 }
 
 /** 文章の生成に使わないモデル（音声・画像・埋め込み・実験用など）。提供元の一覧から候補を選ぶときに除く */

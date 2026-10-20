@@ -57,7 +57,7 @@
 | F3-1 | 単一 / 複数モード選択 | 必須 | 済 | `aiConfig.mode` |
 | F3-2 | 生成AI選択（1〜4） | 必須 | 済 | `aiConfig.generatorIds` |
 | F3-3 | 評価AI選択と同一時の警告 | 必須 | 済 | `orchestrator.ts` |
-| F3-5 | おすすめの組み合わせ（単一AI・単独AI＋評価AI。応答性・思考の深さ・トークン消費の目安で、目的ごとに提案。候補は API キーを設定した標準の AI とローカルLLM のモデル（未登録のモデルを含み、選ぶときに登録できる）。選ぶのは利用者） | 推奨 | 済 | `ai-core/src/model-advice.ts`、`GET /api/orgs/:orgId/ai-advice`・`POST /api/orgs/:orgId/providers/:id/copy` |
+| F3-5 | おすすめの組み合わせ（複数AI＋評価AI・単独AI＋評価AI・単一AI。応答性・思考の深さ・トークン消費の目安で、目的ごとに提案。候補は API キーを設定した標準の AI とローカルLLM のモデル（未登録のモデルを含み、選ぶときに登録できる）。選ぶのは利用者） | 推奨 | 済 | `ai-core/src/model-advice.ts`、`GET /api/orgs/:orgId/ai-advice`・`POST /api/orgs/:orgId/providers/:id/copy` |
 | F3-4 | 評価基準の重み設定 | 推奨 | 済（API未公開） | `RoundOptions.weights` |
 | F4-1 | 並列生成 | 必須 | 済 | `runRound` |
 | F4-2 | 評価・分析 | 必須 | 済 | 同上 |
