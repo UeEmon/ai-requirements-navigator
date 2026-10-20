@@ -84,6 +84,7 @@
 | F8-4 | 監査ログ（誰が・いつ・どのAIに何を送ったか） | 推奨 | 済 | `GET /api/orgs/:orgId/audit` |
 | F8-5 | ログイン画面（OIDC 認可コード＋PKCE、Cognito / Keycloak） | 推奨 | 済 | `apps/api/src/auth.ts`、[auth.md](./auth.md) |
 | F8-6 | AI処理の非同期実行と進み具合の表示 | 推奨 | 済 | `apps/api/src/jobs.ts`、`GET /api/jobs/:id` |
+| F8-8 | AIが考えている間の表示（どのタブでも経過時間を出す）と、取り違えのおそれがある操作だけを止める | 推奨 | 済 | `apps/web/public/index.html` の `thinking`・`AI_LOCK`、[ADR 0015](./adr/0015-thinking-indicator-and-lock.md) |
 | F8-7 | プロンプトのキャッシュでトークンの消費を抑える（変わらない部分を先に並べる・Claude の印・利用量の「うちキャッシュ」） | 推奨 | 済 | `packages/ai-core/src/providers/cache.ts`、[ADR 0013](./adr/0013-prompt-caching.md) |
 | F6-4 | UML生成の複数AI比較（匿名評価して選択） | 推奨 | 済 | `compareUmlModels`、`POST /api/uml-rounds/:id/adopt` |
 | F6-5 | 画面設計（画面一覧・画面遷移図。見た目の情報は持たない） | 推奨 | 済 | `ai-core/src/screens.ts`、`POST /api/projects/:id/screens/generate` |
@@ -118,7 +119,7 @@
 | セキュリティ | 通信 | ALBでHTTPS終端（証明書指定時）、RDSへはTLS（証明書検証あり） |
 | セキュリティ | 外部連携 | APIトークンは SHA-256 のみ保存し、発行時に一度だけ表示。権限（参照／報告）・プロジェクト・有効期限（最長365日）で制限。Webhook は https のみ、社内アドレスへの送信を拒否（送信のたびに名前解決を確認）、HMAC-SHA256 で署名。JUnit XML は DOCTYPE・ENTITY を拒否 |
 | 監査 | AI呼出の記録 | 監査ログに、利用者・日時・操作・送信した回答・使ったAIとトークン数を記録。APIキーは記録しない。`AUDIT_RETENTION_DAYS`（既定365日）を過ぎたものは自動削除 |
-| 性能 | AI処理の待ち | AI処理はジョブとして実行し、画面は進み具合を表示。複数コンテナでも1回だけ実行（PostgreSQL の SKIP LOCKED） |
+| 性能 | AI処理の待ち | AI処理はジョブとして実行し、画面は進み具合と「AIが考えています」（経過時間）を表示。その間は取り違えのおそれがある操作だけを止める。複数コンテナでも1回だけ実行（PostgreSQL の SKIP LOCKED） |
 | コスト | 利用上限 | 組織全体とAIごとに月間トークン上限。組織の上限で停止、AIの上限ではそのAIを除外して続行。月の区切りは `USAGE_TIMEZONE`（既定 Asia/Tokyo）。AI への入力は変わらない部分を先に並べ、プロンプトのキャッシュで使い回す（Claude は `AI_CACHE_TTL`、既定 5m）。上限はキャッシュの分も含めた合計で数える |
 | 拡張性 | AIプロバイダ追加 | `ai-core/src/providers` にアダプタを追加し、factory に1行登録 |
 | 拡張性 | マルチテナント | 全データを組織IDで分離 |
