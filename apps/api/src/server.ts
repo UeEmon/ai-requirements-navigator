@@ -115,6 +115,8 @@ async function main() {
     bootstrapToken: env.BOOTSTRAP_TOKEN || undefined,
     timeoutMs: Number(env.AI_TIMEOUT_MS ?? 90_000),
     usageTimezone: env.USAGE_TIMEZONE || "Asia/Tokyo",
+    // Claude のプロンプトのキャッシュを保つ時間（5m / 1h。docs/ai-keys.md）
+    aiCacheTtl: env.AI_CACHE_TTL === "1h" ? "1h" : "5m",
     oidc,
     localAuth: local,
     publicUrl: env.PUBLIC_URL || undefined,

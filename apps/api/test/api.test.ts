@@ -5,7 +5,7 @@ import { findPdfFont } from "../src/spec.js";
 import { devAuthenticator } from "../src/auth.js";
 import { LocalKeyEncryptor } from "../src/crypto.js";
 import { MemoryStorage } from "../src/storage.js";
-import { MemoryStore, type Store } from "../src/store.js";
+import { MemoryStore, usageOf, type Store } from "../src/store.js";
 
 export function makeApp(store: Store = new MemoryStore()) {
   const encryptor = new LocalKeyEncryptor(randomBytes(32).toString("base64"));
@@ -486,5 +486,82 @@ describe("API", () => {
     const cur = await (await app.request(`/api/orgs/${org.id}/usage`, h)).json();
     expect(cur.org.used).toBe(100);
     expect(cur.providers[0].deleted).toBe(true); // 登録のないAIの利用分も合計に含める
+  });
+
+  it("利用量: キャッシュから読んだ入力を分けて集計し、上限は合計で数える", async () => {
+    const store = new MemoryStore();
+    const app = createApp({
+      store,
+      encryptor: new LocalKeyEncryptor(randomBytes(32).toString("base64")),
+      storage: new MemoryStorage(),
+      authenticate: devAuthenticator,
+      allowMock: true,
+      devAuth: true,
+    });
+    const org = await store.createOrg("o");
+    await store.addUsage({ orgId: org.id, providerId: "p", projectId: "x", ...usageOf({ inputTokens: 1000, outputTokens: 50, cachedInputTokens: 800 }) });
+    await store.addUsage({ orgId: org.id, providerId: "p", projectId: "x", ...usageOf({ inputTokens: 200, outputTokens: 10 }) });
+    const u = await (await app.request(`/api/orgs/${org.id}/usage`, { headers: { "x-org-id": org.id, "x-role": "admin" } })).json();
+    expect(u.providers[0]).toMatchObject({ inputTokens: 1200, cachedInputTokens: 800, outputTokens: 60, calls: 2, used: 1260 });
+    expect(u.org.used).toBe(1260);
+  });
+
+  it("利用量: プロジェクトごと・AIごとに集計し、見る権限のないプロジェクトは名前を出さない", async () => {
+    let now = new Date();
+    const store = new MemoryStore();
+    const app = createApp({
+      store,
+      encryptor: new LocalKeyEncryptor(randomBytes(32).toString("base64")),
+      storage: new MemoryStorage(),
+      authenticate: devAuthenticator,
+      allowMock: true,
+      devAuth: true,
+      now: () => now,
+    });
+    const org = await store.createOrg("o");
+    const cred = await store.addCredential({ orgId: org.id, vendor: "mock", model: "mock", label: "模擬A", encryptedKey: null, keyLast4: null, endpoint: null, monthlyTokenLimit: null } as never);
+    const ai = { mode: "single" as const, generatorIds: [cred.id], evaluatorId: null };
+    const a = await store.createProject({ orgId: org.id, name: "予約", purpose: "", confidential: false, aiConfig: ai });
+    const b = await store.createProject({ orgId: org.id, name: "秘密の案件", purpose: "", confidential: false, aiConfig: ai });
+    await store.updateProjectAccess(b.id, { restricted: true, members: [] });
+    const add = (projectId: string, providerId: string, i: number, o: number, cached = 0) =>
+      store.addUsage({ orgId: org.id, providerId, projectId, inputTokens: i, outputTokens: o, cachedInputTokens: cached });
+    await add(a.id, cred.id, 100, 10, 60);
+    await add(a.id, cred.id, 50, 5);
+    await add(a.id, "gone", 30, 0);
+    await add(b.id, cred.id, 500, 50);
+    await add("00000000-0000-0000-0000-000000000000", cred.id, 7, 0);
+
+    const get = async (role: string, q = "") =>
+      (await app.request(`/api/orgs/${org.id}/usage/projects${q}`, { headers: { "x-org-id": org.id, "x-role": role, "x-user-id": "u1" } })).json();
+    const admin = await get("admin");
+    expect(admin.period).toBe("month");
+    expect(admin.projects.map((p: any) => [p.name, p.used])).toEqual([
+      ["秘密の案件", 550],
+      ["予約", 195],
+      ["（削除済みのプロジェクト）", 7],
+    ]);
+    const yoyaku = admin.projects[1];
+    expect(yoyaku).toMatchObject({ projectId: a.id, kind: "project", inputTokens: 180, cachedInputTokens: 60, outputTokens: 15, calls: 3 });
+    expect(yoyaku.providers).toEqual([
+      expect.objectContaining({ providerId: cred.id, label: "模擬A", inputTokens: 150, cachedInputTokens: 60, outputTokens: 15, calls: 2, used: 165 }),
+      expect.objectContaining({ providerId: "gone", label: "（削除済みのAI）", used: 30 }),
+    ]);
+
+    // 利用量の確認を渡した編集者は、メンバーに入っていないプロジェクトの名前を見られない
+    await store.updateOrg(org.id, { rolePermissions: { editor: ["project.view", "usage.view"] } });
+    const editor = await get("editor");
+    expect(editor.projects.map((p: any) => p.name)).toContain("（見る権限のないプロジェクト）");
+    expect(JSON.stringify(editor)).not.toContain("秘密の案件");
+    expect(JSON.stringify(editor)).not.toContain(b.id);
+    // 閲覧者（利用量の確認の権限なし）は見られない
+    expect((await app.request(`/api/orgs/${org.id}/usage/projects`, { headers: { "x-org-id": org.id, "x-role": "viewer" } })).status).toBe(403);
+
+    // 翌月は今月分が空になり、全期間では残る
+    now = new Date(Date.now() + 40 * 24 * 3600 * 1000);
+    expect((await get("admin")).projects).toEqual([]);
+    const all = await get("admin", "?period=all");
+    expect(all.period).toBe("all");
+    expect(all.projects).toHaveLength(3);
   });
 });

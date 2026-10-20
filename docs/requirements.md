@@ -79,10 +79,11 @@
 | F6-3 | エクスポート（Markdown / Word / PDF、図の画像埋め込み）・版の保存 | 必須 | 済 | `apps/api/src/spec.ts`、`POST /api/projects/:id/exports` |
 | F8-1 | AIの登録・変更・削除（組織の管理者） | 必須 | 済 | `POST/PATCH/DELETE /api/orgs/:orgId/providers` |
 | F8-2 | 月間トークン上限（組織全体・AIごと）と80%警告 | 推奨 | 済 | `apps/api/src/usage.ts`、`PUT /api/orgs/:orgId/limits` |
-| F8-3 | 今月の利用量の確認 | 推奨 | 済 | `GET /api/orgs/:orgId/usage` |
+| F8-3 | 今月の利用量の確認（AIごと、プロジェクトごと・AIごと。プロジェクトごとは今月／全期間） | 推奨 | 済 | `GET /api/orgs/:orgId/usage`、`GET /api/orgs/:orgId/usage/projects?period=month\|all` |
 | F8-4 | 監査ログ（誰が・いつ・どのAIに何を送ったか） | 推奨 | 済 | `GET /api/orgs/:orgId/audit` |
 | F8-5 | ログイン画面（OIDC 認可コード＋PKCE、Cognito / Keycloak） | 推奨 | 済 | `apps/api/src/auth.ts`、[auth.md](./auth.md) |
 | F8-6 | AI処理の非同期実行と進み具合の表示 | 推奨 | 済 | `apps/api/src/jobs.ts`、`GET /api/jobs/:id` |
+| F8-7 | プロンプトのキャッシュでトークンの消費を抑える（変わらない部分を先に並べる・Claude の印・利用量の「うちキャッシュ」） | 推奨 | 済 | `packages/ai-core/src/providers/cache.ts`、[ADR 0013](./adr/0013-prompt-caching.md) |
 | F6-4 | UML生成の複数AI比較（匿名評価して選択） | 推奨 | 済 | `compareUmlModels`、`POST /api/uml-rounds/:id/adopt` |
 | F6-5 | 画面設計（画面一覧・画面遷移図。見た目の情報は持たない） | 推奨 | 済 | `ai-core/src/screens.ts`、`POST /api/projects/:id/screens/generate` |
 | F6-6 | プロトタイプ（クリックで移動できるワイヤーフレーム）と、見た目の指摘を申し送りにする仕組み | 推奨 | 済 | `GET .../screens/prototype.html`、`POST .../screens/feedback` |
@@ -117,7 +118,7 @@
 | セキュリティ | 外部連携 | APIトークンは SHA-256 のみ保存し、発行時に一度だけ表示。権限（参照／報告）・プロジェクト・有効期限（最長365日）で制限。Webhook は https のみ、社内アドレスへの送信を拒否（送信のたびに名前解決を確認）、HMAC-SHA256 で署名。JUnit XML は DOCTYPE・ENTITY を拒否 |
 | 監査 | AI呼出の記録 | 監査ログに、利用者・日時・操作・送信した回答・使ったAIとトークン数を記録。APIキーは記録しない。`AUDIT_RETENTION_DAYS`（既定365日）を過ぎたものは自動削除 |
 | 性能 | AI処理の待ち | AI処理はジョブとして実行し、画面は進み具合を表示。複数コンテナでも1回だけ実行（PostgreSQL の SKIP LOCKED） |
-| コスト | 利用上限 | 組織全体とAIごとに月間トークン上限。組織の上限で停止、AIの上限ではそのAIを除外して続行。月の区切りは `USAGE_TIMEZONE`（既定 Asia/Tokyo） |
+| コスト | 利用上限 | 組織全体とAIごとに月間トークン上限。組織の上限で停止、AIの上限ではそのAIを除外して続行。月の区切りは `USAGE_TIMEZONE`（既定 Asia/Tokyo）。AI への入力は変わらない部分を先に並べ、プロンプトのキャッシュで使い回す（Claude は `AI_CACHE_TTL`、既定 5m）。上限はキャッシュの分も含めた合計で数える |
 | 拡張性 | AIプロバイダ追加 | `ai-core/src/providers` にアダプタを追加し、factory に1行登録 |
 | 拡張性 | マルチテナント | 全データを組織IDで分離 |
 | 移植性 | 動作環境 | AWS（ECS Fargate）とローカルDockerで同じイメージ |

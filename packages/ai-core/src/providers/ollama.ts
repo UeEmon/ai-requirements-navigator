@@ -1,4 +1,5 @@
 import type { AIProvider, CompletionRequest, CompletionResult, FetchLike, ProviderConfig } from "../types.js";
+import { withContext } from "./cache.js";
 import { postJson, trimSlash } from "./http.js";
 
 /** Ollama（ローカルLLM）。社外にデータを送らないため機密プロジェクトで使える */
@@ -28,7 +29,10 @@ export class OllamaProvider implements AIProvider {
       {
         model: this.model,
         stream: false,
-        messages: [{ role: "system", content: req.system }, ...req.messages],
+        // 直前と先頭が同じ部分は、読み込み済みの計算結果（KVキャッシュ）を使い回す。変わらない部分を先に並べる
+        messages: [{ role: "system", content: req.system }, ...withContext(req)],
+        // モデルとキャッシュをメモリに残す時間（既定の5分では、利用者が考えている間に消えやすい）
+        keep_alive: "30m",
         ...(req.json ? { format: "json" } : {}),
         options: { num_predict: req.maxTokens ?? 4096 },
       },

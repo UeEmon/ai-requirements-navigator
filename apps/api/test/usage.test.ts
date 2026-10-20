@@ -30,6 +30,7 @@ const report = (orgLimit: number | null, orgUsed: number, providers: Array<[stri
     used,
     inputTokens: used,
     outputTokens: 0,
+    cachedInputTokens: 0,
     calls: 1,
     deleted: false,
   })),

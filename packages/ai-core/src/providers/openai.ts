@@ -1,5 +1,6 @@
 import type { AIProvider, CompletionRequest, CompletionResult, FetchLike, ProviderConfig } from "../types.js";
 import { ProviderError } from "../types.js";
+import { promptCacheKey, withContext } from "./cache.js";
 import { postJson, trimSlash } from "./http.js";
 
 /** OpenAI Chat Completions API（互換APIのエンドポイントにも endpoint で対応） */
@@ -29,7 +30,10 @@ export class OpenAIProvider implements AIProvider {
       { authorization: `Bearer ${this.cfg.apiKey}` },
       {
         model: this.model,
-        messages: [{ role: "system", content: req.system }, ...req.messages],
+        // 先頭が同じなら自動でキャッシュされる（1024トークン以上）。変わらない部分を先に並べる
+        messages: [{ role: "system", content: req.system }, ...withContext(req)],
+        // 同じ指示・前提の呼び出しを同じサーバーに寄せ、キャッシュに当たりやすくする
+        ...(this.cfg.endpoint ? {} : { prompt_cache_key: promptCacheKey(req) }),
         max_completion_tokens: req.maxTokens ?? 4096,
         ...(req.json ? { response_format: { type: "json_object" } } : {}),
       },
@@ -37,7 +41,11 @@ export class OpenAIProvider implements AIProvider {
     );
     return {
       text: data.choices?.[0]?.message?.content ?? "",
-      usage: { inputTokens: data.usage?.prompt_tokens, outputTokens: data.usage?.completion_tokens },
+      usage: {
+        inputTokens: data.usage?.prompt_tokens,
+        outputTokens: data.usage?.completion_tokens,
+        cachedInputTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      },
       latencyMs: Date.now() - t0,
     };
   }
