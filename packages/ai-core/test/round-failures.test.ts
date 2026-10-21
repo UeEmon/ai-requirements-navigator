@@ -84,3 +84,23 @@ describe("案の生成の失敗", () => {
     await expect(runRound(ctx, { generators: [slow], timeoutMs: 10 })).rejects.toThrow(/時間内に応答がありませんでした/);
   });
 });
+
+describe("AIが null で返す項目", () => {
+  it("ears・rule・説明などが null でも、省略と同じに扱って案にする", async () => {
+    const gen = new MockProvider("n", () =>
+      JSON.stringify({
+        items: [
+          { title: "勤怠を記録する", type: "BR", description: null, priority: null, ears: null, rule: null },
+          { title: "出勤を打刻できる", type: "FR", ears: { pattern: "event", trigger: "出勤ボタンを押した", state: null, response: "出勤時刻を記録する" } },
+        ],
+        questions: null,
+        notes: null,
+      }),
+    );
+    const res = await runRound(ctx, { generators: [gen] });
+    const items = res.candidates[0]!.content.items;
+    expect(items[0]).toMatchObject({ title: "勤怠を記録する", description: "", priority: "should" });
+    expect(items[0]!.ears).toBeUndefined();
+    expect(items[1]!.title).toBe("出勤ボタンを押したとき、システムは、出勤時刻を記録しなければならない。");
+  });
+});

@@ -9,13 +9,24 @@ import type { AIProvider, CompletionResult, Usage } from "./types.js";
  */
 export const ROUND_MAX_TOKENS = 16000;
 
+/**
+ * 値が null の項目を、項目がないものとして扱う（再帰的に）。
+ * AIは「該当なし」を null で返すことがある（例: 業務要件の ears: null）。省略と同じ意味なので、既定値に任せる
+ */
+export function dropNulls(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(dropNulls);
+  if (v && typeof v === "object")
+    return Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null).map(([k, x]) => [k, dropNulls(x)]));
+  return v;
+}
+
 /** AIの応答からJSONを取り出す。取り出せないときは、途中で切れたのか形が違うのかを分かる言葉にする */
 export function parseAiJson<T>(res: CompletionResult, parse: (v: unknown) => T): T {
   if (res.truncated)
     throw new Error("応答が長さの上限で途中で切れました（考える過程に多くのトークンを使うモデルで起きやすい。別のモデルを選ぶか、回答を短く分けてください）");
   if (!res.text.trim()) throw new Error("AIの応答が空でした");
   try {
-    return parse(extractJson(res.text));
+    return parse(dropNulls(extractJson(res.text)));
   } catch (e) {
     if (e instanceof SyntaxError) throw new Error(`応答のJSONが読み取れませんでした: ${e.message}`);
     if ((e as Error).name === "ZodError") {
