@@ -1627,7 +1627,11 @@ async function sendAnswer(){
   try{
     S.round = await runJob(`/api/projects/${S.project.id}/rounds`, {answer}, p=>{ const el=$("#prog"); if(el) el.innerHTML=stepsHtml(p); });
     renderRound();
-  }catch(e){ $("#roundOut").innerHTML=`<div class="note err">${esc(e.message)}</div>` }
+  }catch(e){
+    // どのAIがなぜ失敗したか（進み具合の一覧）は消さずに残す
+    const prog=$("#prog")?.innerHTML||"";
+    $("#roundOut").innerHTML=`<div class="note err">${esc(e.message)}</div>${prog?`<div class="panel"><h3>AIごとの結果</h3>${prog}</div>`:""}`;
+  }
   finally{ if($("#send")){ $("#send").disabled=false; $("#sendMsg").textContent="" } }
 }
 const RULE_KIND={calc:"計算",judge:"判定",constraint:"制約",transition:"状態が変わる条件"};

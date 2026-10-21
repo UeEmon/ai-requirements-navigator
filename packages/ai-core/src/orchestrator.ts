@@ -1,7 +1,30 @@
 import { extractJson } from "./json.js";
 import { buildEvaluatorTask, buildGeneratorTask, buildProjectContext, EVALUATOR_SYSTEM, GENERATOR_SYSTEM, type PromptContext } from "./prompts.js";
 import { CandidateContent, EvaluationContent, type Criterion, type CriterionScores } from "./schema.js";
-import type { AIProvider, Usage } from "./types.js";
+import type { AIProvider, CompletionResult, Usage } from "./types.js";
+
+/**
+ * 1回の応答で出せるトークンの上限。案は要件・EARS・業務ルールを含み、確定済みの要件が増えると長くなる。
+ * 考える過程のトークンも上限に数えるモデル（GPT-5・o 系、Gemini 2.5 以降の Pro など）では、少ないと答えが途中で切れる
+ */
+export const ROUND_MAX_TOKENS = 16000;
+
+/** AIの応答からJSONを取り出す。取り出せないときは、途中で切れたのか形が違うのかを分かる言葉にする */
+export function parseAiJson<T>(res: CompletionResult, parse: (v: unknown) => T): T {
+  if (res.truncated)
+    throw new Error("応答が長さの上限で途中で切れました（考える過程に多くのトークンを使うモデルで起きやすい。別のモデルを選ぶか、回答を短く分けてください）");
+  if (!res.text.trim()) throw new Error("AIの応答が空でした");
+  try {
+    return parse(extractJson(res.text));
+  } catch (e) {
+    if (e instanceof SyntaxError) throw new Error(`応答のJSONが読み取れませんでした: ${e.message}`);
+    if ((e as Error).name === "ZodError") {
+      const i = (e as { issues?: Array<{ path: Array<string | number>; message: string }> }).issues?.[0];
+      throw new Error(`応答の形が決まった形と違いました${i ? `（${i.path.join(".") || "全体"}: ${i.message}）` : ""}`);
+    }
+    throw e;
+  }
+}
 
 export type Weights = Record<Criterion, number>;
 
@@ -137,9 +160,9 @@ export async function runRound(ctx: PromptContext, opts: RoundOptions): Promise<
       emit({ type: "generator", providerId: p.id, status: "running" });
       try {
         const res = await withTimeout(timeoutMs, (signal) =>
-          p.complete({ system: GENERATOR_SYSTEM, context, messages: [{ role: "user", content: userPrompt }], json: true, signal }),
+          p.complete({ system: GENERATOR_SYSTEM, context, messages: [{ role: "user", content: userPrompt }], json: true, maxTokens: ROUND_MAX_TOKENS, signal }),
         );
-        const content = CandidateContent.parse(extractJson(res.text));
+        const content = parseAiJson(res, (v) => CandidateContent.parse(v));
         emit({ type: "generator", providerId: p.id, status: "done" });
         return { ok: true as const, providerId: p.id, content, usage: res.usage, latencyMs: res.latencyMs };
       } catch (e) {
@@ -151,7 +174,12 @@ export async function runRound(ctx: PromptContext, opts: RoundOptions): Promise<
 
   const failures: Failure[] = settled.filter((s) => !s.ok).map((s) => ({ providerId: s.providerId, reason: (s as any).reason }));
   const okOnes = settled.filter((s) => s.ok);
-  if (!okOnes.length) throw new RoundError("すべてのAIで案の生成に失敗しました", "all_failed", failures);
+  if (!okOnes.length) {
+    // 理由が画面に出ないと直しようがないため、AIごとの理由を文に含める
+    const label = new Map(generators.map((g) => [g.id, g.label]));
+    const detail = failures.map((f) => `${label.get(f.providerId) ?? f.providerId}: ${f.reason.slice(0, 300)}`).join(" ／ ");
+    throw new RoundError(`すべてのAIで案の生成に失敗しました（${detail}）`, "all_failed", failures);
+  }
   if (failures.length) warnings.push(`${failures.length}件のAIで生成に失敗しました。取得できた案で続行します。`);
 
   const candidates: LabeledCandidate[] = shuffle(okOnes, random).map((s, i) => ({
@@ -168,9 +196,9 @@ export async function runRound(ctx: PromptContext, opts: RoundOptions): Promise<
     try {
       const prompt = buildEvaluatorTask(ctx, candidates.map((c) => ({ label: c.label, content: c.content })));
       const res = await withTimeout(timeoutMs, (signal) =>
-        evaluator.complete({ system: EVALUATOR_SYSTEM, context, messages: [{ role: "user", content: prompt }], json: true, signal }),
+        evaluator.complete({ system: EVALUATOR_SYSTEM, context, messages: [{ role: "user", content: prompt }], json: true, maxTokens: ROUND_MAX_TOKENS, signal }),
       );
-      const ev = EvaluationContent.parse(extractJson(res.text));
+      const ev = parseAiJson(res, (v) => EvaluationContent.parse(v));
       const totals: Record<string, number> = {};
       for (const c of candidates) {
         const s = ev.scores[c.label];

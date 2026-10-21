@@ -44,6 +44,7 @@ export class AnthropicProvider implements AIProvider {
     const write = u.cache_creation_input_tokens ?? 0;
     return {
       text,
+      truncated: data.stop_reason === "max_tokens",
       usage: {
         inputTokens: u.input_tokens === undefined ? undefined : u.input_tokens + read + write,
         outputTokens: u.output_tokens,

@@ -226,6 +226,13 @@ describe("API", () => {
     ).json();
     const r = await t.app.request(`/api/projects/${project.id}/rounds`, as("editor", json({ answer: "a" })));
     expect(r.status).toBe(502);
+    // どのAIがなぜ失敗したかを、エラーの文に含める（画面の非同期の実行でも同じ）
+    expect((await r.json()).error).toMatch(/すべてのAIで案の生成に失敗しました（.+: HTTP 404/);
+    const { jobId } = await (await t.app.request(`/api/projects/${project.id}/rounds?async=1`, as("editor", json({ answer: "a" })))).json();
+    await t.app.jobs.drain();
+    const job = await (await t.app.request(`/api/jobs/${jobId}`, as("editor"))).json();
+    expect(job.status).toBe("failed");
+    expect(job.error).toMatch(/HTTP 404/);
   });
 
   /** 決定まで進めたプロジェクトを用意する */

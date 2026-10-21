@@ -40,6 +40,7 @@ export class OllamaProvider implements AIProvider {
     );
     return {
       text: data.message?.content ?? "",
+      truncated: data.done_reason === "length",
       usage: { inputTokens: data.prompt_eval_count, outputTokens: data.eval_count },
       latencyMs: Date.now() - t0,
     };

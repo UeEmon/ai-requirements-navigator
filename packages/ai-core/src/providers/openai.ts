@@ -41,6 +41,7 @@ export class OpenAIProvider implements AIProvider {
     );
     return {
       text: data.choices?.[0]?.message?.content ?? "",
+      truncated: data.choices?.[0]?.finish_reason === "length",
       usage: {
         inputTokens: data.usage?.prompt_tokens,
         outputTokens: data.usage?.completion_tokens,
