@@ -12,10 +12,13 @@ export const RequirementItem = z
     description: z.string().default(""),
     type: RequirementType,
     priority: z.enum(["must", "should", "could"]).default("should"),
-    /** 機能要件・非機能要件の EARS 記法の構造。あれば title はここから組み立てる */
-    ears: Ears.optional(),
-    /** 業務ルール（RL）の種類と具体例 */
-    rule: BusinessRule.optional(),
+    /**
+     * 機能要件・非機能要件の EARS 記法の構造。あれば title はここから組み立てる。
+     * 形が崩れていれば（例: response が空）構造だけを捨て、AI が書いた title で要件として残す（1項目のために案や評価の全体を捨てない）
+     */
+    ears: Ears.optional().catch(undefined),
+    /** 業務ルール（RL）の種類と具体例。形が崩れていれば構造だけを捨てる */
+    rule: BusinessRule.optional().catch(undefined),
   })
   .transform((it) => withEars(it))
   .refine((it) => it.title.trim().length > 0, { message: "要件の文がありません" });

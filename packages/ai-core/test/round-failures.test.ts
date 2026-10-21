@@ -121,3 +121,24 @@ describe("AIが要件を1件も出さないとき", () => {
     expect(res.failures[0]).toMatchObject({ providerId: "e", reason: "この回答からは新しい要件が見つかりませんでした" });
   });
 });
+
+describe("要件の1項目の構造が崩れているとき", () => {
+  it("EARS・業務ルールの構造だけを捨て、AIが書いた文で要件として残す（評価の統合案も同じ）", async () => {
+    const bad = {
+      items: [
+        { title: "出勤を打刻できる", type: "FR", ears: { pattern: "event", trigger: "出勤ボタンを押した", response: "" } },
+        { title: "残業は月45時間まで", type: "RL", rule: { kind: "constraint", examples: [{ given: "", expected: "" }] } },
+      ],
+    };
+    const gen = new MockProvider("g", () => JSON.stringify(bad));
+    const ev = new MockProvider("ev", () =>
+      JSON.stringify({ scores: { A: { coverage: 80, accuracy: 80, consistency: 80, feasibility: 80, clarity: 80 } }, comments: {}, recommendedLabel: "A", recommendation: "Aがよい", merged: bad }),
+    );
+    const res = await runRound(ctx, { generators: [gen], evaluator: ev });
+    const items = res.candidates[0]!.content.items;
+    expect(items.map((x) => x.title)).toEqual(["出勤を打刻できる", "残業は月45時間まで"]);
+    expect(items[0]!.ears).toBeUndefined();
+    expect(items[1]!.rule).toBeUndefined();
+    expect(res.evaluation?.merged.items.map((x) => x.title)).toEqual(["出勤を打刻できる", "残業は月45時間まで"]);
+  });
+});
