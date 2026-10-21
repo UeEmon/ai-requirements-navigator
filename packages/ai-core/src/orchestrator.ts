@@ -1,6 +1,7 @@
+import { z } from "zod";
 import { extractJson } from "./json.js";
 import { buildEvaluatorTask, buildGeneratorTask, buildProjectContext, EVALUATOR_SYSTEM, GENERATOR_SYSTEM, type PromptContext } from "./prompts.js";
-import { CandidateContent, EvaluationContent, type Criterion, type CriterionScores } from "./schema.js";
+import { CandidateContent, EvaluationContent, RequirementItem, type Criterion, type CriterionScores } from "./schema.js";
 import type { AIProvider, CompletionResult, Usage } from "./types.js";
 
 /**
@@ -99,7 +100,7 @@ export interface RoundResult {
 export class RoundError extends Error {
   constructor(
     message: string,
-    readonly code: "no_generator" | "confidential" | "all_failed",
+    readonly code: "no_generator" | "confidential" | "all_failed" | "no_items",
     readonly failures: Failure[] = [],
   ) {
     super(message);
@@ -108,6 +109,15 @@ export class RoundError extends Error {
 }
 
 const LABELS = ["A", "B", "C", "D", "E", "F"];
+
+/** AIが要件を1件も出さなかった（回答に新しい要件がない、既存の要件と重なるなど）。失敗ではないので、AIの確認したいことを添える */
+class NoItems extends Error {
+  constructor(readonly content: { questions: string[]; notes: string }) {
+    super("この回答からは新しい要件が見つかりませんでした");
+  }
+}
+/** 要件が0件でも形の検査は通し、0件かどうかは別に扱う */
+const CandidateOrEmpty = CandidateContent.extend({ items: z.array(RequirementItem) });
 
 export function weightedTotal(s: CriterionScores, w: Weights = DEFAULT_WEIGHTS): number {
   const sum = Object.values(w).reduce((a, b) => a + b, 0) || 1;
@@ -173,18 +183,28 @@ export async function runRound(ctx: PromptContext, opts: RoundOptions): Promise<
         const res = await withTimeout(timeoutMs, (signal) =>
           p.complete({ system: GENERATOR_SYSTEM, context, messages: [{ role: "user", content: userPrompt }], json: true, maxTokens: ROUND_MAX_TOKENS, signal }),
         );
-        const content = parseAiJson(res, (v) => CandidateContent.parse(v));
+        const content = parseAiJson(res, (v) => CandidateOrEmpty.parse(v));
+        if (!content.items.length) throw new NoItems(content);
         emit({ type: "generator", providerId: p.id, status: "done" });
         return { ok: true as const, providerId: p.id, content, usage: res.usage, latencyMs: res.latencyMs };
       } catch (e) {
         emit({ type: "generator", providerId: p.id, status: "failed", reason: (e as Error).message });
-        return { ok: false as const, providerId: p.id, reason: (e as Error).message };
+        return { ok: false as const, providerId: p.id, reason: (e as Error).message, noItems: e instanceof NoItems ? e.content : undefined };
       }
     }),
   );
 
   const failures: Failure[] = settled.filter((s) => !s.ok).map((s) => ({ providerId: s.providerId, reason: (s as any).reason }));
   const okOnes = settled.filter((s) => s.ok);
+  if (!okOnes.length && settled.every((s) => !s.ok && s.noItems)) {
+    // どのAIも新しい要件を出さなかった。エラーではなく、AIが確認したいことを利用者に伝える
+    const asks = [...new Set(settled.flatMap((s) => (!s.ok && s.noItems ? [...s.noItems.questions, s.noItems.notes] : [])).filter((x) => x.trim()))];
+    throw new RoundError(
+      `この回答からは、新しい要件が見つかりませんでした（すでにある要件と重なっている可能性があります）。回答を具体的にするか、次のフェーズへ進んでください。${asks.length ? `AIからの確認: ${asks.slice(0, 5).join(" ／ ")}` : ""}`,
+      "no_items",
+      failures,
+    );
+  }
   if (!okOnes.length) {
     // 理由が画面に出ないと直しようがないため、AIごとの理由を文に含める
     const label = new Map(generators.map((g) => [g.id, g.label]));

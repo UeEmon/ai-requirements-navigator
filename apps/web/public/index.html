@@ -1630,7 +1630,9 @@ async function sendAnswer(){
   }catch(e){
     // どのAIがなぜ失敗したか（進み具合の一覧）は消さずに残す
     const prog=$("#prog")?.innerHTML||"";
-    $("#roundOut").innerHTML=`<div class="note err">${esc(e.message)}</div>${prog?`<div class="panel"><h3>AIごとの結果</h3>${prog}</div>`:""}`;
+    // 新しい要件がなかったときは失敗ではないので、注意の色で出す
+    const cls=/新しい要件が見つかりませんでした/.test(e.message)?"warn":"err";
+    $("#roundOut").innerHTML=`<div class="note ${cls}">${esc(e.message)}</div>${prog?`<div class="panel"><h3>AIごとの結果</h3>${prog}</div>`:""}`;
   }
   finally{ if($("#send")){ $("#send").disabled=false; $("#sendMsg").textContent="" } }
 }
