@@ -1,5 +1,5 @@
 import type { FetchLike, Vendor } from "../types.js";
-import { trimSlash } from "./http.js";
+import { redactSecrets, trimSlash } from "./http.js";
 
 /**
  * API キーで提供元のモデル一覧を取得する（キーの確認を兼ねる。トークンは消費しない）。
@@ -23,14 +23,7 @@ export class KeyCheckError extends Error {
   }
 }
 
-/** キーらしい文字列を伏せる（エラー文に混ざったときのため） */
-export function redactSecrets(s: string): string {
-  return s
-    .replace(/sk-[A-Za-z0-9_\-*]{4,}/g, "sk-…")
-    .replace(/AIza[0-9A-Za-z_\-]{10,}/g, "AIza…")
-    .replace(/AQ\.[0-9A-Za-z_\-.]{6,}/g, "AQ.…")
-    .replace(/ya29\.[0-9A-Za-z_\-.]+/g, "ya29.…");
-}
+export { redactSecrets };
 
 const NAMES: Record<string, string> = { anthropic: "Claude", openai: "ChatGPT（OpenAI）", gemini: "Gemini", ollama: "ローカルLLM" };
 

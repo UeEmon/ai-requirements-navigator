@@ -44,7 +44,9 @@ export class GeminiProvider implements AIProvider {
     );
     const parts = data.candidates?.[0]?.content?.parts ?? [];
     return {
-      text: parts.map((p: any) => p.text ?? "").join(""),
+      // 考える過程（thought）は答えに含めない
+      text: parts.filter((p: any) => !p.thought).map((p: any) => p.text ?? "").join(""),
+      truncated: data.candidates?.[0]?.finishReason === "MAX_TOKENS",
       usage: {
         inputTokens: data.usageMetadata?.promptTokenCount,
         outputTokens: data.usageMetadata?.candidatesTokenCount,

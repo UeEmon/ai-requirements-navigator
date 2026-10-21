@@ -57,6 +57,8 @@ export interface CompletionResult {
   text: string;
   usage: Usage;
   latencyMs: number;
+  /** 出力の長さの上限（maxTokens）に達して途中で切れた。考える過程のトークンも上限に数えるモデルで起きやすい */
+  truncated?: boolean;
 }
 
 export interface AIProvider {
