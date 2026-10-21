@@ -104,3 +104,20 @@ describe("AIが null で返す項目", () => {
     expect(items[1]!.title).toBe("出勤ボタンを押したとき、システムは、出勤時刻を記録しなければならない。");
   });
 });
+
+describe("AIが要件を1件も出さないとき", () => {
+  const empty = (q: string[]) => new MockProvider("e", () => JSON.stringify({ items: [], questions: q, notes: "" }));
+
+  it("どのAIも0件なら、失敗ではなく、新しい要件がないことと AI の確認したいことを伝える", async () => {
+    const err = await runRound(ctx, { generators: [empty(["退勤の打刻忘れはどう扱いますか？"])] }).catch((e) => e);
+    expect(err).toMatchObject({ code: "no_items" });
+    expect(err.message).toContain("新しい要件が見つかりませんでした");
+    expect(err.message).toContain("退勤の打刻忘れはどう扱いますか？");
+  });
+
+  it("ほかのAIが案を出していれば、0件のAIは除いて続ける", async () => {
+    const res = await runRound(ctx, { generators: [empty([]), new MockProvider("ok")] });
+    expect(res.candidates.map((c) => c.providerId)).toEqual(["ok"]);
+    expect(res.failures[0]).toMatchObject({ providerId: "e", reason: "この回答からは新しい要件が見つかりませんでした" });
+  });
+});
