@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # 同じイメージをローカルDockerとAWS（ECS Fargate）の両方で使う
 
-FROM node:22-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY packages/ai-core/package.json packages/ai-core/
@@ -14,7 +14,7 @@ RUN npm run build \
  && node scripts/check-licenses.mjs --production --notices apps/web/public/THIRD_PARTY_NOTICES.txt \
  && npm prune --omit=dev
 
-FROM node:22-alpine
+FROM node:25-alpine
 # PDF の日本語表示用フォント（Noto Sans CJK、SIL Open Font License 1.1）
 RUN apk add --no-cache font-noto-cjk
 ENV NODE_ENV=production \
