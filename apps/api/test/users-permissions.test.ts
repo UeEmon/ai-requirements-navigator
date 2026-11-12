@@ -11,11 +11,11 @@ const json = (b: unknown, method = "POST") => ({ method, body: JSON.stringify(b)
 const PW = "kaname-Passw0rd";
 
 /** 要件ナビのログイン（AUTH_MODE=local）で動かす */
-function setupLocal(o: { setupToken?: string } = {}) {
+function setupLocal(o: { setupToken?: string; signupRequests?: boolean } = {}) {
   const store = new MemoryStore();
   let clock = Date.parse("2026-10-01T00:00:00Z");
   const now = () => new Date(clock);
-  const local = localAuth(store, { scryptN: 1024, passwordMinLength: 10, sessionHours: 12, setupToken: o.setupToken }, now);
+  const local = localAuth(store, { scryptN: 1024, passwordMinLength: 10, sessionHours: 12, setupToken: o.setupToken, signupRequests: o.signupRequests }, now);
   const app = createApp({
     store,
     encryptor: new LocalKeyEncryptor(randomBytes(32).toString("base64")),
@@ -204,6 +204,98 @@ describe("要件ナビのログイン（AUTH_MODE=local）", () => {
     const { memberId } = await invite(t, admin, orgId, "second@example.com", "admin");
     expect((await t.call(admin, `/api/orgs/${orgId}/members/${me.id}`, json({ role: "editor" }, "PATCH"))).status).toBe(200);
     expect((await t.call(admin, `/api/orgs/${orgId}/members/${memberId}`, json({ role: "viewer" }, "PATCH"))).status).toBe(403); // もう管理者ではない
+  });
+});
+
+describe("新規登録のリクエスト（ログイン画面から）", () => {
+  const request = (t: ReturnType<typeof setupLocal>, b: Record<string, unknown>) => t.app.request("/api/auth/local/signup-request", json(b));
+
+  it("アカウントのない人が送り、管理者が承認すると招待になり、パスワードを決めるリンクを発行する", async () => {
+    const t = setupLocal();
+    // 初期設定の前は受け付けない（ログイン画面にも出さない）
+    expect((await (await t.app.request("/api/auth/local/status")).json()).signupRequests).toBe(false);
+    expect((await request(t, { email: "new@example.com", name: "新人" })).status).toBe(409);
+    const { admin, orgId } = await bootstrap(t);
+    expect((await (await t.app.request("/api/auth/local/status")).json()).signupRequests).toBe(true);
+
+    // 名前は必須・メールアドレスの形式
+    expect((await request(t, { email: "new@example.com", name: "" })).status).toBe(400);
+    expect((await request(t, { email: "not-an-email", name: "新人" })).status).toBe(400);
+    const r = await request(t, { email: "New@Example.com", name: "新人 一郎", message: "営業部です。要件定義に使いたいです" });
+    expect(r.status).toBe(202);
+    expect((await r.json()).message).toContain("管理者");
+    // 送り直すと上書き（1つのまま）
+    await request(t, { email: "new@example.com", name: "新人 一郎", message: "営業部の新人です" });
+    const list = (await (await t.call(admin, `/api/orgs/${orgId}/signup-requests`)).json()).requests;
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ email: "new@example.com", name: "新人 一郎", message: "営業部の新人です", status: "pending" });
+    expect((await (await t.call(admin, `/api/orgs/${orgId}/summary`)).json()).counts.members.requested).toBe(1);
+    // リクエストだけでは、ログインもアカウントの作成もできない
+    expect((await t.login("new@example.com", PW)).status).toBe(401);
+    expect(await t.store.getUserByEmail("new@example.com")).toBeNull();
+
+    // 管理者が役割を選んで承認する → 招待と同じリンク
+    const ok = await (await t.call(admin, `/api/orgs/${orgId}/signup-requests/${list[0].id}/approve`, json({ role: "editor" }))).json();
+    expect(ok.member).toMatchObject({ email: "new@example.com", name: "新人 一郎", role: "editor", status: "invited" });
+    expect(ok.setupUrl).toMatch(/#auth=/);
+    expect(ok.message).toContain(ok.setupUrl);
+    const a = await t.app.request("/api/auth/local/accept", json({ token: t.tokenOfUrl(ok.setupUrl), password: PW }));
+    expect(a.status).toBe(200);
+    expect(await (await t.call((await a.json()).token, "/api/me")).json()).toMatchObject({ orgId, role: "editor", name: "新人 一郎" });
+    // 対応済みは一覧（未対応）から消え、2回は承認できない
+    expect((await (await t.call(admin, `/api/orgs/${orgId}/signup-requests`)).json()).requests).toHaveLength(0);
+    expect((await (await t.call(admin, `/api/orgs/${orgId}/signup-requests?all=1`)).json()).requests[0].status).toBe("approved");
+    expect((await t.call(admin, `/api/orgs/${orgId}/signup-requests/${list[0].id}/approve`, json({ role: "editor" }))).status).toBe(404);
+    // すでにメンバーの人が送っても、リクエストは増えない（答えは同じ）
+    expect((await request(t, { email: "new@example.com", name: "新人 一郎" })).status).toBe(202);
+    expect((await (await t.call(admin, `/api/orgs/${orgId}/signup-requests`)).json()).requests).toHaveLength(0);
+
+    // 監査ログ
+    const logs = (await (await t.call(admin, `/api/orgs/${orgId}/audit`)).json()).entries ?? [];
+    const actions = logs.map((x: { action: string }) => x.action);
+    expect(actions).toEqual(expect.arrayContaining(["member.request", "member.request.approve", "member.invite"]));
+  });
+
+  it("見送る。管理者だけが見られる。受け付けない設定にもできる", async () => {
+    const t = setupLocal();
+    const { admin, orgId } = await bootstrap(t);
+    await request(t, { email: "spam@example.com", name: "だれか" });
+    const [x] = (await (await t.call(admin, `/api/orgs/${orgId}/signup-requests`)).json()).requests;
+    // 編集者は見られない
+    const { token: editor } = await invite(t, admin, orgId, "editor@example.com", "editor");
+    expect((await t.call(editor, `/api/orgs/${orgId}/signup-requests`)).status).toBe(403);
+    expect((await t.call(editor, `/api/orgs/${orgId}/signup-requests/${x.id}/approve`, json({ role: "admin" }))).status).toBe(403);
+    const no = await t.call(admin, `/api/orgs/${orgId}/signup-requests/${x.id}/reject`, { method: "POST" });
+    expect(no.status).toBe(200);
+    expect((await no.json()).status).toBe("rejected");
+    expect((await (await t.call(admin, `/api/orgs/${orgId}/signup-requests`)).json()).requests).toHaveLength(0);
+    expect((await t.call(admin, `/api/orgs/${orgId}/signup-requests/${x.id}/approve`, json({ role: "viewer" }))).status).toBe(404);
+    expect((await t.call(admin, `/api/orgs/${orgId}/members`)).status).toBe(200);
+    expect((await (await t.call(admin, `/api/orgs/${orgId}/members`)).json()).members.some((m: { email: string }) => m.email === "spam@example.com")).toBe(false);
+
+    const off = setupLocal({ signupRequests: false });
+    await bootstrap(off);
+    expect((await (await off.app.request("/api/auth/local/status")).json()).signupRequests).toBe(false);
+    expect((await request(off, { email: "new@example.com", name: "新人" })).status).toBe(404);
+  });
+
+  it("宛先は、招待できるドメインにそのメールアドレスのドメインを入れている組織。どこにもなければ、どこにも届かない（答えは同じ）", async () => {
+    const t = setupLocal();
+    const { admin, orgId } = await bootstrap(t);
+    const b = await (await t.app.request("/api/orgs", { ...json({ name: "組織B", adminEmail: "boss-b@b.example.jp" }), headers: { "content-type": "application/json", "x-bootstrap-token": "boot" } })).json();
+    const bossB = (await (await t.app.request("/api/auth/local/accept", json({ token: t.tokenOfUrl(b.adminSetupUrl), password: PW }))).json()).token;
+    await t.call(bossB, `/api/orgs/${b.id}`, json({ allowedEmailDomains: ["b.example.jp"] }, "PATCH"), b.id);
+    // 組織が2つあり、ドメインが合わない → どこにも届かない（答えは同じ）
+    expect((await request(t, { email: "x@example.com", name: "X" })).status).toBe(202);
+    expect((await (await t.call(admin, `/api/orgs/${orgId}/signup-requests`)).json()).requests).toHaveLength(0);
+    expect((await (await t.call(bossB, `/api/orgs/${b.id}/signup-requests`, {}, b.id)).json()).requests).toHaveLength(0);
+    // ドメインが合う組織Bにだけ届く
+    expect((await request(t, { email: "y@b.example.jp", name: "Y" })).status).toBe(202);
+    expect((await (await t.call(bossB, `/api/orgs/${b.id}/signup-requests`, {}, b.id)).json()).requests.map((r: { email: string }) => r.email)).toEqual(["y@b.example.jp"]);
+    expect((await (await t.call(admin, `/api/orgs/${orgId}/signup-requests`)).json()).requests).toHaveLength(0);
+    // ほかの組織のリクエストは承認できない
+    const [yr] = (await (await t.call(bossB, `/api/orgs/${b.id}/signup-requests`, {}, b.id)).json()).requests;
+    expect((await t.call(admin, `/api/orgs/${orgId}/signup-requests/${yr.id}/approve`, json({ role: "viewer" }))).status).toBe(404);
   });
 });
 

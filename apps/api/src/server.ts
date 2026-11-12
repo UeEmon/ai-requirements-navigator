@@ -75,6 +75,7 @@ async function main() {
       sessionHours: Number(env.LOCAL_SESSION_HOURS ?? 12),
       passwordMinLength: Number(env.LOCAL_PASSWORD_MIN_LENGTH ?? 10),
       setupToken: env.LOCAL_SETUP_TOKEN || undefined,
+      signupRequests: !/^(off|false|0|no)$/i.test(env.LOCAL_SIGNUP_REQUESTS ?? ""),
     });
     authenticate = local.authenticate;
   } else if (!devAuth) {

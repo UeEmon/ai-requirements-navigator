@@ -7,6 +7,9 @@
  * - 最初の1人（初期設定）: 利用者が1人もいないときだけ、組織と管理者のアカウントを作れる（LOCAL_SETUP_TOKEN を設定すると、その値も必要）
  * - 招待・パスワードの再設定: 管理者が一回限りのリンクを発行し、本人に渡す（要件ナビからはメールを送らない）
  *   ほかの組織にも入っている人のパスワードは、管理者は再設定できない（本人の「パスワードの変更」だけ）
+ * - 新規登録のリクエスト: まだアカウントのない人が、ログイン画面から名前と用件を送る。宛先は、招待できるドメインにその人の
+ *   メールアドレスのドメインを入れている組織（なければ、組織が1つだけでドメインを決めていないときはその組織）。
+ *   組織の管理者が承認すると、招待と同じリンクを発行する（org-admin.ts）。宛先があったか・すでにメンバーかは答えに出さない
  */
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import type { Context, Hono } from "hono";
@@ -26,12 +29,16 @@ export interface LocalAuthOptions {
   setupToken?: string;
   /** scrypt の強さ（テスト用に下げられる。既定 16384） */
   scryptN?: number;
+  /** ログイン画面からの新規登録のリクエストを受け付けるか（LOCAL_SIGNUP_REQUESTS。既定 true） */
+  signupRequests?: boolean;
 }
 
 export const SESSION_PREFIX = "arn_s_";
 const MAX_FAILS = 5;
 const LOCK_MS = 15 * 60_000;
 const LINK_HOURS = { setup: 7 * 24, reset: 72 } as const;
+/** 1つの組織が抱えられる未対応の新規登録のリクエストの数（いたずらで増え続けないように） */
+export const MAX_PENDING_SIGNUP_REQUESTS = 100;
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 const newToken = (prefix = "") => prefix + randomBytes(32).toString("base64url");
@@ -84,6 +91,11 @@ const TicketInput = z.object({ token: z.string().min(10).max(200) });
 const AcceptInput = z.object({ token: z.string().min(10).max(200), name: z.string().trim().max(100).optional(), password: z.string().min(1).max(200) });
 const PasswordInput = z.object({ currentPassword: z.string().min(1).max(200), newPassword: z.string().min(1).max(200) });
 const ProfileInput = z.object({ name: z.string().trim().max(100) });
+const SignupRequestInput = z.object({
+  email: emailSchema,
+  name: z.string().trim().min(1, "名前を入れてください").max(100),
+  message: z.string().trim().max(1000).default(""),
+});
 
 type Body = <T extends z.ZodTypeAny>(c: Context, schema: T) => Promise<z.infer<T>>;
 
@@ -98,10 +110,13 @@ export interface LocalAuth {
   /** 招待のときに、アカウントがあるか（パスワードを設定済みか） */
   hasPassword(email: string): Promise<boolean>;
   passwordMinLength: number;
+  /** ログイン画面からの新規登録のリクエストを受け付けるか */
+  signupRequests: boolean;
 }
 
 export function localAuth(store: Store, opts: LocalAuthOptions = {}, nowFn: () => Date = () => new Date()): LocalAuth {
   const minLength = opts.passwordMinLength ?? 10;
+  const signupRequests = opts.signupRequests ?? true;
   const sessionMs = (opts.sessionHours ?? 12) * 3600_000;
   const N = opts.scryptN ?? 16384;
   // 存在しないメールアドレスのときにも同じ時間をかけるためのハッシュ
@@ -143,6 +158,9 @@ export function localAuth(store: Store, opts: LocalAuthOptions = {}, nowFn: () =
     if (problem) throw new HTTPException(400, { message: problem });
   };
 
+  /** 招待のときに管理者が入れた名前（アカウントを作るときの名前の初期値） */
+  const invitedName = async (t: AuthTicket) => (t.orgId ? ((await store.listMembers(t.orgId)).find((m) => m.email === t.email && m.status !== "removed")?.name ?? "") : "");
+
   /** リンクのトークンを確かめる */
   const ticketOf = async (token: string) => {
     const t = await store.getTicketByHash(sha256(token));
@@ -155,7 +173,36 @@ export function localAuth(store: Store, opts: LocalAuthOptions = {}, nowFn: () =
     /** ログイン画面の表示に使う（初期設定が必要か・パスワードの決まり） */
     app.get("/api/auth/local/status", async (c) => {
       const setupRequired = (await store.countUsers()) === 0;
-      return c.json({ setupRequired, setupTokenRequired: setupRequired && Boolean(opts.setupToken), passwordMinLength: minLength, sessionHours: sessionMs / 3600_000 });
+      return c.json({ setupRequired, setupTokenRequired: setupRequired && Boolean(opts.setupToken), passwordMinLength: minLength, sessionHours: sessionMs / 3600_000, signupRequests: signupRequests && !setupRequired });
+    });
+
+    /**
+     * 新規登録のリクエスト（まだアカウントのない人が、ログイン画面から送る）。
+     * 宛先の組織があったか・すでにメンバーかは答えに出さない（どの組織があるか・誰がいるかを探れないように）
+     */
+    app.post("/api/auth/local/signup-request", async (c) => {
+      if (!signupRequests) throw new HTTPException(404, { message: "この要件ナビでは、新規登録のリクエストを受け付けていません。組織の管理者に招待を依頼してください" });
+      const input = await body(c, SignupRequestInput);
+      if ((await store.countUsers()) === 0) throw new HTTPException(409, { message: "まだ初期設定が済んでいません。ログイン画面の「初期設定」で組織と管理者を作ってください" });
+      const domain = input.email.split("@")[1]!;
+      const orgs = await store.listOrgs();
+      const byDomain = orgs.filter((o) => (o.allowedEmailDomains ?? []).includes(domain));
+      const targets = byDomain.length ? byDomain : orgs.length === 1 && !(orgs[0]!.allowedEmailDomains ?? []).length ? orgs : [];
+      for (const org of targets) {
+        const member = (await store.listMembers(org.id)).find((m) => m.email === input.email && m.status !== "removed");
+        if (member) continue;
+        const pending = await store.listSignupRequests(org.id, "pending");
+        if (!pending.some((r) => r.email === input.email) && pending.length >= MAX_PENDING_SIGNUP_REQUESTS) continue;
+        const r = await store.saveSignupRequest({ orgId: org.id, email: input.email, name: input.name, message: input.message });
+        await audit(store, { orgId: org.id, actor: "signup-request", action: "member.request", targetType: "signup_request", targetId: r.id, detail: { email: r.email, name: r.name } });
+      }
+      return c.json(
+        {
+          ok: true,
+          message: "新規登録のリクエストを送りました。組織の管理者が確認し、承認するとパスワードを決めるリンクを送ります（要件ナビからはメールを送らないため、管理者から届きます）。しばらくたっても連絡がないときは、組織の管理者に直接ご連絡ください。",
+        },
+        202,
+      );
     });
 
     /** 初期設定: 最初の組織と管理者のアカウントを作る（利用者が1人もいないときだけ） */
@@ -204,7 +251,7 @@ export function localAuth(store: Store, opts: LocalAuthOptions = {}, nowFn: () =
       const t = await ticketOf((await body(c, TicketInput)).token);
       const u = await store.getUserByEmail(t.email);
       const org = t.orgId ? await store.getOrg(t.orgId) : null;
-      return c.json({ email: t.email, purpose: t.purpose, orgName: org?.name ?? null, name: u?.name ?? "", expiresAt: t.expiresAt, passwordMinLength: minLength });
+      return c.json({ email: t.email, purpose: t.purpose, orgName: org?.name ?? null, name: u?.name || (await invitedName(t)), expiresAt: t.expiresAt, passwordMinLength: minLength });
     });
 
     /** リンクからパスワードを決める（招待されたアカウントの作成・パスワードの再設定） */
@@ -215,7 +262,7 @@ export function localAuth(store: Store, opts: LocalAuthOptions = {}, nowFn: () =
       const hash = await hashPassword(input.password, N);
       if (!(await store.useTicket(t.id))) throw new HTTPException(400, { message: "このリンクは使用済みです" });
       let u = await store.getUserByEmail(t.email);
-      if (!u) u = await store.createUser({ email: t.email, name: input.name ?? "", passwordHash: hash });
+      if (!u) u = await store.createUser({ email: t.email, name: input.name || (await invitedName(t)), passwordHash: hash });
       else u = (await store.updateUser(u.id, { passwordHash: hash, passwordChangedAt: nowFn().toISOString(), failedLogins: 0, lockedUntil: null, ...(input.name ? { name: input.name } : {}) }))!;
       await store.revokeTickets(t.email);
       // パスワードを変えたので、ほかでのログインは終わらせる
@@ -285,5 +332,6 @@ export function localAuth(store: Store, opts: LocalAuthOptions = {}, nowFn: () =
     issueLink,
     hasPassword: async (email) => Boolean((await store.getUserByEmail(email))?.passwordHash),
     passwordMinLength: minLength,
+    signupRequests,
   };
 }

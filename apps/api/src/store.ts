@@ -56,6 +56,22 @@ export interface AuthTicket {
   createdAt: string;
 }
 
+/** 新規登録のリクエスト（ログイン画面から、まだアカウントのない人が送る。組織の管理者が承認すると招待になる） */
+export interface SignupRequest {
+  id: string;
+  orgId: string;
+  /** 小文字 */
+  email: string;
+  name: string;
+  /** 所属・使いたい理由など（本人が書いた文） */
+  message: string;
+  status: "pending" | "approved" | "rejected";
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** 組織の管理者が登録したAIの接続情報。APIキーは暗号化して保存する */
 export interface ProviderCredential {
   id: string;
@@ -597,7 +613,7 @@ export interface Webhook {
 
 export interface Store {
   createOrg(name: string): Promise<Org>;
-  /** すべての組織（開発用ログインで組織を選ぶため。本番では使わない） */
+  /** すべての組織（開発用ログインで組織を選ぶため・新規登録のリクエストの宛先を決めるため。画面にそのまま出さない） */
   listOrgs(): Promise<Org[]>;
   renameOrg(id: string, name: string): Promise<Org | null>;
   /* 組織のメンバー */
@@ -629,6 +645,12 @@ export interface Store {
   useTicket(id: string): Promise<boolean>;
   /** 同じメールアドレスの、まだ使われていないリンクを無効にする */
   revokeTickets(email: string): Promise<void>;
+  /** 新規登録のリクエストを保存する（同じ組織・メールアドレスの未対応のものがあれば、名前と文を新しくする） */
+  saveSignupRequest(r: { orgId: string; email: string; name: string; message: string }): Promise<SignupRequest>;
+  /** 組織への新規登録のリクエスト（新しい順。status を省くとすべて） */
+  listSignupRequests(orgId: string, status?: SignupRequest["status"]): Promise<SignupRequest[]>;
+  /** 未対応のリクエストを承認・見送りにする（未対応でなければ null） */
+  decideSignupRequest(orgId: string, id: string, d: { status: "approved" | "rejected"; decidedBy: string }): Promise<SignupRequest | null>;
 
   addCredential(c: Omit<ProviderCredential, "id" | "createdAt" | "updatedAt">): Promise<ProviderCredential>;
   listCredentials(orgId: string): Promise<ProviderCredential[]>;
@@ -947,6 +969,30 @@ export class MemoryStore implements Store {
   }
   async revokeTickets(email: string) {
     for (const t of this.tickets) if (t.email === email.toLowerCase() && !t.usedAt) t.usedAt = now();
+  }
+  private signupRequests: SignupRequest[] = [];
+  async saveSignupRequest(r: { orgId: string; email: string; name: string; message: string }) {
+    const email = r.email.toLowerCase();
+    const cur = this.signupRequests.find((x) => x.orgId === r.orgId && x.email === email && x.status === "pending");
+    if (cur) {
+      Object.assign(cur, { name: r.name, message: r.message, updatedAt: now() });
+      return { ...cur };
+    }
+    const x: SignupRequest = { id: randomUUID(), orgId: r.orgId, email, name: r.name, message: r.message, status: "pending", decidedBy: null, decidedAt: null, createdAt: now(), updatedAt: now() };
+    this.signupRequests.push(x);
+    return { ...x };
+  }
+  async listSignupRequests(orgId: string, status?: SignupRequest["status"]) {
+    return this.signupRequests
+      .filter((x) => x.orgId === orgId && (!status || x.status === status))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((x) => ({ ...x }));
+  }
+  async decideSignupRequest(orgId: string, id: string, d: { status: "approved" | "rejected"; decidedBy: string }) {
+    const x = this.signupRequests.find((r) => r.orgId === orgId && r.id === id);
+    if (!x || x.status !== "pending") return null;
+    Object.assign(x, { status: d.status, decidedBy: d.decidedBy, decidedAt: now(), updatedAt: now() });
+    return { ...x };
   }
   async addCredential(c: Omit<ProviderCredential, "id" | "createdAt" | "updatedAt">) {
     const r: ProviderCredential = { ...c, id: randomUUID(), createdAt: now(), updatedAt: null };

@@ -48,6 +48,7 @@ import type {
   LocalUserPatch,
   LocalSession,
   AuthTicket,
+  SignupRequest,
   ProjectAccess,
   ImportedRequirement,
   RequirementComment,
@@ -89,6 +90,18 @@ const toTicket = (r: any): AuthTicket => ({
   expiresAt: iso(r.expires_at),
   usedAt: r.used_at ? iso(r.used_at) : null,
   createdAt: iso(r.created_at),
+});
+const toSignup = (r: any): SignupRequest => ({
+  id: r.id,
+  orgId: r.org_id,
+  email: r.email,
+  name: r.name,
+  message: r.message,
+  status: r.status,
+  decidedBy: r.decided_by,
+  decidedAt: r.decided_at ? iso(r.decided_at) : null,
+  createdAt: iso(r.created_at),
+  updatedAt: iso(r.updated_at),
 });
 const toCred = (r: any): ProviderCredential => ({
   id: r.id,
@@ -580,6 +593,26 @@ export class PgStore implements Store {
   }
   async revokeTickets(email: string) {
     await this.pool.query("UPDATE auth_tickets SET used_at = now() WHERE email = $1 AND used_at IS NULL", [email.toLowerCase()]);
+  }
+  async saveSignupRequest(r: { orgId: string; email: string; name: string; message: string }) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO signup_requests(org_id, email, name, message) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (org_id, email) WHERE status = 'pending' DO UPDATE SET name = EXCLUDED.name, message = EXCLUDED.message, updated_at = now()
+       RETURNING *`,
+      [r.orgId, r.email.toLowerCase(), r.name, r.message],
+    );
+    return toSignup(rows[0]);
+  }
+  async listSignupRequests(orgId: string, status?: SignupRequest["status"]) {
+    const { rows } = await this.pool.query("SELECT * FROM signup_requests WHERE org_id = $1 AND ($2::text IS NULL OR status = $2) ORDER BY created_at DESC", [orgId, status ?? null]);
+    return rows.map(toSignup);
+  }
+  async decideSignupRequest(orgId: string, id: string, d: { status: "approved" | "rejected"; decidedBy: string }) {
+    const { rows } = await this.pool.query(
+      "UPDATE signup_requests SET status = $3, decided_by = $4, decided_at = now(), updated_at = now() WHERE org_id = $1 AND id = $2 AND status = 'pending' RETURNING *",
+      [orgId, id, d.status, d.decidedBy],
+    );
+    return rows[0] ? toSignup(rows[0]) : null;
   }
 
   async addCredential(c: Omit<ProviderCredential, "id" | "createdAt" | "updatedAt">) {
