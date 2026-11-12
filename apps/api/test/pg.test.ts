@@ -94,6 +94,18 @@ describe.skipIf(!url)("PgStore (PostgreSQL)", () => {
       expect((await store.listAudit(org.id, { limit: 10, action: "ai." })).map((e) => e.action)).toEqual(["ai.uml", "ai.round"]);
       expect(await store.purgeAudit(new Date(Date.now() + 60_000))).toBe(3);
 
+      // 新規登録のリクエスト（016）: 未対応は組織・メールアドレスで1つ（送り直すと上書き）、対応は1回だけ
+      const su = await store.saveSignupRequest({ orgId: org.id, email: "New@Example.com", name: "新人", message: "使いたい" });
+      const su2 = await store.saveSignupRequest({ orgId: org.id, email: "new@example.com", name: "新人 一郎", message: "営業部" });
+      expect(su2.id).toBe(su.id);
+      expect(await store.listSignupRequests(org.id, "pending")).toMatchObject([{ email: "new@example.com", name: "新人 一郎", message: "営業部", status: "pending" }]);
+      expect((await store.decideSignupRequest(org.id, su.id, { status: "approved", decidedBy: "u1" }))!.status).toBe("approved");
+      expect(await store.decideSignupRequest(org.id, su.id, { status: "rejected", decidedBy: "u1" })).toBeNull();
+      expect(await store.listSignupRequests(org.id, "pending")).toEqual([]);
+      const su3 = await store.saveSignupRequest({ orgId: org.id, email: "new@example.com", name: "新人", message: "" });
+      expect(su3.id).not.toBe(su.id);
+      expect((await store.listSignupRequests(org.id)).map((r) => r.status)).toEqual(["pending", "approved"]);
+
       // ジョブ: 取り出しは1件ずつ、同時に取っても重複しない
       const j1 = await store.createJob({ orgId: org.id, projectId: project.id, kind: "round", input: { answer: "a" }, createdBy: "u1" });
       await store.createJob({ orgId: org.id, projectId: project.id, kind: "uml", input: {}, createdBy: "u1" });

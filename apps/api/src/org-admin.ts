@@ -21,7 +21,7 @@ import { ROLES, type Principal, type Role } from "./auth.js";
 import type { AnyContext, ImplementationContext } from "./implementation.js";
 import type { LocalAuth } from "./local-auth.js";
 import { CONFIGURABLE_ROLES, normalizeRolePermissions, permissionMatrix, permissionsOf, PERMISSION_KEYS, type Permission } from "./permissions.js";
-import type { OrgMember, Project, Store } from "./store.js";
+import type { OrgMember, Project, SignupRequest, Store } from "./store.js";
 
 const RoleSchema = z.enum(["admin", "editor", "reviewer", "viewer"]);
 const email = z
@@ -31,6 +31,7 @@ const email = z
   .max(254)
   .regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "メールアドレスの形式が正しくありません");
 const InviteInput = z.object({ email, role: RoleSchema, name: z.string().trim().max(100).optional() });
+const SignupApproveInput = z.object({ role: RoleSchema });
 const MemberPatchInput = z.object({ role: RoleSchema.optional(), name: z.string().trim().max(100).optional() }).strict();
 const domain = z
   .string()
@@ -135,6 +136,17 @@ const publicMember = (m: OrgMember) => ({
   linked: Boolean(m.userSub),
 });
 
+const publicSignupRequest = (r: SignupRequest) => ({
+  id: r.id,
+  email: r.email,
+  name: r.name,
+  message: r.message,
+  status: r.status,
+  decidedAt: r.decidedAt,
+  createdAt: r.createdAt,
+  updatedAt: r.updatedAt,
+});
+
 export interface OrgAdminOptions {
   devAuth: boolean;
   /** 要件ナビのログイン（AUTH_MODE=local） */
@@ -158,6 +170,50 @@ export function orgAdmin(ctx: ImplementationContext, opts: OrgAdminOptions) {
 
   const loginUrl = (c: Context) => (opts.publicUrl ? opts.publicUrl.replace(/\/+$/, "") : new URL(c.req.url).origin) + "/";
 
+  /** メールアドレスで招待する（招待と、新規登録のリクエストの承認で使う） */
+  const invite = async (c: Context, orgId: string, input: z.infer<typeof InviteInput>) => {
+    const org0 = await store.getOrg(orgId);
+    const domains = org0?.allowedEmailDomains ?? [];
+    if (domains.length && !domains.includes(input.email.split("@")[1]!)) {
+      throw new HTTPException(400, { message: `この組織で招待できるのは ${domains.map((d) => "@" + d).join("・")} のメールアドレスだけです（組織設定で変えられます）` });
+    }
+    const cur = (await store.listMembers(orgId)).find((m) => m.email === input.email);
+    let m: OrgMember | null;
+    if (cur && cur.status !== "removed") throw new HTTPException(409, { message: `${input.email} はすでに${cur.status === "invited" ? "招待しています" : "メンバーです"}` });
+    if (cur) {
+      // 外した人を招待し直す（ログインしたことがあれば、そのまま使える）
+      m = await store.updateMember(orgId, cur.id, { role: input.role, status: cur.userSub ? "active" : "invited", ...(input.name ? { name: input.name } : {}) });
+    } else {
+      m = await store.addMember({ orgId, email: input.email, userSub: null, name: input.name ?? "", role: input.role, status: "invited", source: "invite", invitedBy: ctx.actorOf(c), lastSeenAt: null });
+    }
+    if (!m) throw new HTTPException(404, { message: "見つかりません" });
+    await audit(store, { orgId, actor: ctx.actorOf(c), action: "member.invite", targetType: "member", targetId: m.id, detail: { email: m.email, role: m.role, again: Boolean(cur) } });
+    const org = await store.getOrg(orgId);
+    const url = loginUrl(c);
+    const contact = org?.contactEmail ? `\nわからないことは ${org.contactEmail} までご連絡ください。` : "";
+    // 要件ナビのログイン: アカウントがなければ、パスワードを決めるリンクを発行する
+    if (opts.local) {
+      const has = await opts.local.hasPassword(m.email);
+      const link = has || m.status !== "invited" ? null : await opts.local.issueLink({ member: m, actor: ctx.actorOf(c), baseUrl: url });
+      if (link) await audit(store, { orgId, actor: ctx.actorOf(c), action: "member.link", targetType: "member", targetId: m.id, detail: { email: m.email, purpose: link.purpose, expiresAt: link.expiresAt } });
+      return {
+        member: publicMember(m),
+        loginUrl: url,
+        setupUrl: link?.url ?? null,
+        setupExpiresAt: link?.expiresAt ?? null,
+        message: link
+          ? `「${org?.name ?? ""}」の要件ナビに招待しました（役割: ${ROLE_JA[m.role]}）。\n次のリンクを開いて、パスワードを決めてください（${fmtJa(link.expiresAt)} まで・1回だけ使えます）。\n${link.url}\n以後は ${url} から ${m.email} とパスワードでログインします。${contact}`
+          : `「${org?.name ?? ""}」の要件ナビに招待しました（役割: ${ROLE_JA[m.role]}）。\n${url}\nを開き、いつものメールアドレス（${m.email}）とパスワードでログインしてください。右上で組織を切り替えられます。${contact}`,
+      };
+    }
+    return {
+      member: publicMember(m),
+      loginUrl: url,
+      // 招待のメッセージ（メールやチャットで送る文。要件ナビからはメールを送らない）
+      message: `「${org?.name ?? ""}」の要件ナビに招待しました（役割: ${ROLE_JA[m.role]}）。\n${url}\nを開き、「ログイン」から ${m.email} でログインしてください（アカウントがなければ、ログイン画面で作れます）。${contact}`,
+    };
+  };
+
   function routes(app: Hono<any>) {
     /** ログインしている人と、入っている組織 */
     app.get("/api/me", async (c) => {
@@ -176,17 +232,18 @@ export function orgAdmin(ctx: ImplementationContext, opts: OrgAdminOptions) {
       ctx.need(c, orgId, "project.view");
       const org = await store.getOrg(orgId);
       if (!org) throw new HTTPException(404, { message: "見つかりません" });
-      const [members, providers, integrations, projects, usage] = await Promise.all([
+      const [members, providers, integrations, projects, usage, signupRequests] = await Promise.all([
         store.listMembers(orgId),
         store.listCredentials(orgId),
         store.listIntegrations(orgId),
         store.listProjects(orgId),
         opts.usageOf(orgId),
+        opts.local ? store.listSignupRequests(orgId, "pending") : Promise.resolve([]),
       ]);
       return c.json({
         org: publicOrg(org),
         counts: {
-          members: { active: members.filter((m) => m.status === "active").length, invited: members.filter((m) => m.status === "invited").length, admins: members.filter((m) => m.status === "active" && m.role === "admin").length },
+          members: { active: members.filter((m) => m.status === "active").length, invited: members.filter((m) => m.status === "invited").length, admins: members.filter((m) => m.status === "active" && m.role === "admin").length, requested: signupRequests.length },
           providers: providers.length,
           integrations: integrations.length,
           projects: { active: projects.filter((p) => !p.archivedAt).length, archived: projects.filter((p) => p.archivedAt).length },
@@ -265,52 +322,42 @@ export function orgAdmin(ctx: ImplementationContext, opts: OrgAdminOptions) {
       const orgId = c.req.param("orgId");
       ctx.need(c, orgId, "member.manage");
       const input = await ctx.body(c, InviteInput);
-      const org0 = await store.getOrg(orgId);
-      const domains = org0?.allowedEmailDomains ?? [];
-      if (domains.length && !domains.includes(input.email.split("@")[1]!)) {
-        throw new HTTPException(400, { message: `この組織で招待できるのは ${domains.map((d) => "@" + d).join("・")} のメールアドレスだけです（組織設定で変えられます）` });
-      }
-      const cur = (await store.listMembers(orgId)).find((m) => m.email === input.email);
-      let m: OrgMember | null;
-      if (cur && cur.status !== "removed") throw new HTTPException(409, { message: `${input.email} はすでに${cur.status === "invited" ? "招待しています" : "メンバーです"}` });
-      if (cur) {
-        // 外した人を招待し直す（ログインしたことがあれば、そのまま使える）
-        m = await store.updateMember(orgId, cur.id, { role: input.role, status: cur.userSub ? "active" : "invited", ...(input.name ? { name: input.name } : {}) });
-      } else {
-        m = await store.addMember({ orgId, email: input.email, userSub: null, name: input.name ?? "", role: input.role, status: "invited", source: "invite", invitedBy: ctx.actorOf(c), lastSeenAt: null });
-      }
-      if (!m) throw new HTTPException(404, { message: "見つかりません" });
-      await audit(store, { orgId, actor: ctx.actorOf(c), action: "member.invite", targetType: "member", targetId: m.id, detail: { email: m.email, role: m.role, again: Boolean(cur) } });
-      const org = await store.getOrg(orgId);
-      const url = loginUrl(c);
-      const contact = org?.contactEmail ? `\nわからないことは ${org.contactEmail} までご連絡ください。` : "";
-      // 要件ナビのログイン: アカウントがなければ、パスワードを決めるリンクを発行する
-      if (opts.local) {
-        const has = await opts.local.hasPassword(m.email);
-        const link = has || m.status !== "invited" ? null : await opts.local.issueLink({ member: m, actor: ctx.actorOf(c), baseUrl: url });
-        if (link) await audit(store, { orgId, actor: ctx.actorOf(c), action: "member.link", targetType: "member", targetId: m.id, detail: { email: m.email, purpose: link.purpose, expiresAt: link.expiresAt } });
-        return c.json(
-          {
-            member: publicMember(m),
-            loginUrl: url,
-            setupUrl: link?.url ?? null,
-            setupExpiresAt: link?.expiresAt ?? null,
-            message: link
-              ? `「${org?.name ?? ""}」の要件ナビに招待しました（役割: ${ROLE_JA[m.role]}）。\n次のリンクを開いて、パスワードを決めてください（${fmtJa(link.expiresAt)} まで・1回だけ使えます）。\n${link.url}\n以後は ${url} から ${m.email} とパスワードでログインします。${contact}`
-              : `「${org?.name ?? ""}」の要件ナビに招待しました（役割: ${ROLE_JA[m.role]}）。\n${url}\nを開き、いつものメールアドレス（${m.email}）とパスワードでログインしてください。右上で組織を切り替えられます。${contact}`,
-          },
-          201,
-        );
-      }
-      return c.json(
-        {
-          member: publicMember(m),
-          loginUrl: url,
-          // 招待のメッセージ（メールやチャットで送る文。要件ナビからはメールを送らない）
-          message: `「${org?.name ?? ""}」の要件ナビに招待しました（役割: ${ROLE_JA[m.role]}）。\n${url}\nを開き、「ログイン」から ${m.email} でログインしてください（アカウントがなければ、ログイン画面で作れます）。${contact}`,
-        },
-        201,
-      );
+      return c.json(await invite(c, orgId, input), 201);
+    });
+
+    /* ---------- 新規登録のリクエスト（要件ナビのログイン。ログイン画面から送られる） ---------- */
+    app.get("/api/orgs/:orgId/signup-requests", async (c) => {
+      const orgId = c.req.param("orgId");
+      ctx.need(c, orgId, "member.manage");
+      const status = c.req.query("all") === "1" ? undefined : "pending";
+      const requests = (await store.listSignupRequests(orgId, status)).map(publicSignupRequest);
+      return c.json({ requests, enabled: Boolean(opts.local?.signupRequests) });
+    });
+
+    /** 承認: 選んだ役割で招待し、パスワードを決めるリンクを発行する（招待と同じ） */
+    app.post("/api/orgs/:orgId/signup-requests/:id/approve", async (c) => {
+      const orgId = c.req.param("orgId");
+      ctx.need(c, orgId, "member.manage");
+      const input = await ctx.body(c, SignupApproveInput);
+      const r = (await store.listSignupRequests(orgId, "pending")).find((x) => x.id === c.req.param("id"));
+      if (!r) throw new HTTPException(404, { message: "リクエストが見つからないか、すでに対応済みです" });
+      const cur = (await store.listMembers(orgId)).find((m) => m.email === r.email && m.status !== "removed");
+      if (cur) throw new HTTPException(409, { message: `${r.email} はすでに${cur.status === "invited" ? "招待しています" : "メンバーです"}。このリクエストは「見送る」で片付けてください` });
+      const result = await invite(c, orgId, { email: r.email, role: input.role, name: r.name || undefined });
+      await store.decideSignupRequest(orgId, r.id, { status: "approved", decidedBy: ctx.actorOf(c) });
+      await audit(store, { orgId, actor: ctx.actorOf(c), action: "member.request.approve", targetType: "signup_request", targetId: r.id, detail: { email: r.email, role: input.role } });
+      return c.json(result);
+    });
+
+    /** 見送る（本人には知らせない。必要なら管理者から連絡する） */
+    app.post("/api/orgs/:orgId/signup-requests/:id/reject", async (c) => {
+      const orgId = c.req.param("orgId");
+      ctx.need(c, orgId, "member.manage");
+      const r = (await store.listSignupRequests(orgId, "pending")).find((x) => x.id === c.req.param("id"));
+      if (!r) throw new HTTPException(404, { message: "リクエストが見つからないか、すでに対応済みです" });
+      const done = await store.decideSignupRequest(orgId, r.id, { status: "rejected", decidedBy: ctx.actorOf(c) });
+      await audit(store, { orgId, actor: ctx.actorOf(c), action: "member.request.reject", targetType: "signup_request", targetId: r.id, detail: { email: r.email } });
+      return c.json(publicSignupRequest(done ?? r));
     });
 
     /** 招待・パスワードの再設定のリンクを発行し直す（要件ナビのログインのとき） */
